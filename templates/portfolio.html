@@ -1,0 +1,429 @@
+{% extends "base.html" %}
+
+{% block title %}Portfolio Monitor - News Collector{% endblock %}
+
+{% block extra_css %}
+<style>
+    .chart-container {
+        position: relative;
+        height: 200px;
+        width: 100%;
+        margin-top: 10px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2><i class="bi bi-graph-up"></i> Portfolio Monitor</h2>
+        <p class="text-muted">Monitor your stock portfolio with real-time quotes and latest news</p>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <!-- Left Column: Ticker Selection and Portfolio List -->
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-list-check"></i> Manage Portfolio</h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label for="tickerSelect" class="form-label">Select Ticker</label>
+                    <input type="text" class="form-control" id="tickerSelect" 
+                           list="tickers-list" placeholder="Type or select ticker (e.g., AAPL, MSFT)">
+                    <datalist id="tickers-list">
+                        <option value="AAPL">Apple Inc.</option>
+                        <option value="MSFT">Microsoft Corporation</option>
+                        <option value="GOOGL">Alphabet Inc.</option>
+                        <option value="AMZN">Amazon.com Inc.</option>
+                        <option value="TSLA">Tesla Inc.</option>
+                        <option value="META">Meta Platforms Inc.</option>
+                        <option value="NVDA">NVIDIA Corporation</option>
+                        <option value="JPM">JPMorgan Chase & Co.</option>
+                        <option value="V">Visa Inc.</option>
+                        <option value="JNJ">Johnson & Johnson</option>
+                        <option value="WMT">Walmart Inc.</option>
+                        <option value="PG">Procter & Gamble Co.</option>
+                        <option value="MA">Mastercard Inc.</option>
+                        <option value="UNH">UnitedHealth Group Inc.</option>
+                        <option value="HD">The Home Depot Inc.</option>
+                        <option value="DIS">The Walt Disney Company</option>
+                        <option value="BAC">Bank of America Corp.</option>
+                        <option value="ADBE">Adobe Inc.</option>
+                        <option value="NFLX">Netflix Inc.</option>
+                        <option value="CRM">Salesforce.com Inc.</option>
+                        <option value="PYPL">PayPal Holdings Inc.</option>
+                    </datalist>
+                </div>
+                <button class="btn btn-primary w-100 mb-3" onclick="addTicker()">
+                    <i class="bi bi-plus-circle"></i> Add to Portfolio
+                </button>
+                
+                <div class="mb-3">
+                    <label class="form-label">My Portfolio</label>
+                    <div id="portfolioList" class="list-group">
+                        <!-- Portfolio items will be loaded here -->
+                    </div>
+                </div>
+                
+                <button class="btn btn-success w-100" onclick="updatePortfolio()">
+                    <i class="bi bi-arrow-clockwise"></i> Update Portfolio
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Right Column: Stock Quotes and News -->
+    <div class="col-md-8">
+        <!-- Stock Quotes Table -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5><i class="bi bi-graph-up-arrow"></i> Stock Quotes</h5>
+            </div>
+            <div class="card-body">
+                <div id="quotesLoading" class="text-center" style="display: none;">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <div id="quotesTable">
+                    <p class="text-muted text-center">Add tickers to your portfolio and click "Update Portfolio" to see stock quotes.</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Latest News -->
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-newspaper"></i> Latest News</h5>
+            </div>
+            <div class="card-body">
+                <div id="newsLoading" class="text-center" style="display: none;">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <div id="newsContainer">
+                    <p class="text-muted text-center">News will appear here after updating your portfolio.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Portfolio management using localStorage
+    const STORAGE_KEY = 'portfolio_tickers';
+    
+    // Load portfolio from localStorage on page load
+    function loadPortfolio() {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        const tickers = stored ? JSON.parse(stored) : [];
+        renderPortfolioList(tickers);
+        return tickers;
+    }
+    
+    // Save portfolio to localStorage
+    function savePortfolio(tickers) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(tickers));
+        renderPortfolioList(tickers);
+    }
+    
+    // Render portfolio list
+    function renderPortfolioList(tickers) {
+        const listEl = document.getElementById('portfolioList');
+        if (tickers.length === 0) {
+            listEl.innerHTML = '<p class="text-muted text-center">No tickers in portfolio</p>';
+            return;
+        }
+        
+        listEl.innerHTML = tickers.map(ticker => `
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <span class="badge bg-primary">${ticker}</span>
+                <button class="btn btn-sm btn-outline-danger" onclick="removeTicker('${ticker}')">
+                    <i class="bi bi-x-circle"></i> Remove
+                </button>
+            </div>
+        `).join('');
+    }
+    
+    // Add ticker to portfolio
+    function addTicker() {
+        const input = document.getElementById('tickerSelect');
+        const ticker = input.value.trim().toUpperCase();
+        
+        if (!ticker) {
+            alert('Please enter a ticker symbol');
+            return;
+        }
+        
+        const tickers = loadPortfolio();
+        if (tickers.includes(ticker)) {
+            alert(`${ticker} is already in your portfolio`);
+            return;
+        }
+        
+        tickers.push(ticker);
+        savePortfolio(tickers);
+        input.value = '';
+    }
+    
+    // Remove ticker from portfolio
+    function removeTicker(ticker) {
+        const tickers = loadPortfolio();
+        const index = tickers.indexOf(ticker);
+        if (index > -1) {
+            tickers.splice(index, 1);
+            savePortfolio(tickers);
+        }
+    }
+    
+    // Update portfolio (fetch quotes and news)
+    async function updatePortfolio() {
+        const tickers = loadPortfolio();
+        
+        if (tickers.length === 0) {
+            alert('Please add tickers to your portfolio first');
+            return;
+        }
+        
+        // Show loading indicators
+        document.getElementById('quotesLoading').style.display = 'block';
+        document.getElementById('newsLoading').style.display = 'block';
+        document.getElementById('quotesTable').innerHTML = '';
+        document.getElementById('newsContainer').innerHTML = '';
+        
+        try {
+            // Fetch quotes for all tickers
+            const quotePromises = tickers.map(ticker => 
+                fetch(`/api/portfolio/quote/${ticker}`)
+                    .then(res => res.json())
+                    .then(data => ({ ticker, data }))
+                    .catch(err => ({ ticker, error: err.message }))
+            );
+            
+            const quotes = await Promise.all(quotePromises);
+            
+            // Render quotes table (async - includes charts)
+            await renderQuotesTable(quotes);
+            document.getElementById('quotesLoading').style.display = 'none';
+            
+            // Fetch news for all tickers
+            const tickersStr = tickers.join(',');
+            const newsResponse = await fetch(`/api/portfolio/news/${tickersStr}`);
+            const newsData = await newsResponse.json();
+            
+            if (newsData.error) {
+                document.getElementById('newsContainer').innerHTML = 
+                    `<div class="alert alert-warning">${newsData.error}</div>`;
+            } else {
+                renderNews(newsData.articles || []);
+                // Show success message if saved to DB
+                if (newsData.saved_to_db && newsData.count > 0) {
+                    const successMsg = document.createElement('div');
+                    successMsg.className = 'alert alert-success alert-dismissible fade show';
+                    const inserted = newsData.inserted || 0;
+                    const skipped = newsData.skipped || 0;
+                    successMsg.innerHTML = `
+                        <i class="bi bi-check-circle"></i> ${newsData.count} news articles retrieved: ${inserted} new, ${skipped} already in database
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    `;
+                    document.getElementById('newsContainer').insertBefore(successMsg, 
+                        document.getElementById('newsContainer').firstChild);
+                }
+            }
+            document.getElementById('newsLoading').style.display = 'none';
+            
+        } catch (error) {
+            console.error('Error updating portfolio:', error);
+            document.getElementById('quotesLoading').style.display = 'none';
+            document.getElementById('newsLoading').style.display = 'none';
+            alert('Error updating portfolio: ' + error.message);
+        }
+    }
+    
+    // Render quotes table with charts
+    async function renderQuotesTable(quotes) {
+        const tableEl = document.getElementById('quotesTable');
+        
+        if (quotes.length === 0) {
+            tableEl.innerHTML = '<p class="text-muted">No quotes available</p>';
+            return;
+        }
+        
+        // First render the table structure
+        const table = `
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Price</th>
+                            <th>Change</th>
+                            <th>Change %</th>
+                            <th>Volume</th>
+                            <th>High</th>
+                            <th>Low</th>
+                            <th>Last Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody id="quotesTableBody">
+                        ${quotes.map(({ ticker, data, error }, index) => {
+                            if (error) {
+                                return `<tr id="row-${index}"><td colspan="8" class="text-danger">${ticker}: ${error}</td></tr>`;
+                            }
+                            const change = parseFloat(data.change || 0);
+                            const changeClass = change >= 0 ? 'text-success' : 'text-danger';
+                            const changeIcon = change >= 0 ? '↑' : '↓';
+                            
+                            return `
+                                <tr id="row-${index}">
+                                    <td><strong>${data.symbol || ticker}</strong></td>
+                                    <td><strong>$${data.price || 'N/A'}</strong></td>
+                                    <td class="${changeClass}">${changeIcon} $${Math.abs(change).toFixed(2)}</td>
+                                    <td class="${changeClass}">${data.change_percent || 'N/A'}</td>
+                                    <td>${parseInt(data.volume || 0).toLocaleString()}</td>
+                                    <td>$${data.high || 'N/A'}</td>
+                                    <td>$${data.low || 'N/A'}</td>
+                                    <td>${data.latest_trading_day || 'N/A'}</td>
+                                </tr>
+                                <tr id="chart-row-${index}">
+                                    <td colspan="8">
+                                        <div class="chart-container">
+                                            <canvas id="chart-${index}"></canvas>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+        
+        tableEl.innerHTML = table;
+        
+        // Then fetch and render charts for each ticker
+        for (let i = 0; i < quotes.length; i++) {
+            const { ticker, data, error } = quotes[i];
+            if (!error && data.symbol) {
+                try {
+                    const historyResponse = await fetch(`/api/portfolio/history/${data.symbol}`);
+                    const historyData = await historyResponse.json();
+                    
+                    if (!historyData.error && historyData.dates && historyData.closes) {
+                        renderChart(`chart-${i}`, data.symbol, historyData.dates, historyData.closes);
+                    }
+                } catch (err) {
+                    console.error(`Error fetching history for ${ticker}:`, err);
+                }
+            }
+        }
+    }
+    
+    // Render chart for a ticker
+    function renderChart(canvasId, symbol, dates, closes) {
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+        
+        // Format dates for display (show month/year)
+        const formattedDates = dates.map(date => {
+            const d = new Date(date);
+            return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+        });
+        
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: formattedDates,
+                datasets: [{
+                    label: `${symbol} Close Price (Last 12 Months)`,
+                    data: closes,
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    tension: 0.1,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        ticks: {
+                            callback: function(value) {
+                                return '$' + value.toFixed(2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // Render news
+    function renderNews(articles) {
+        const containerEl = document.getElementById('newsContainer');
+        
+        if (articles.length === 0) {
+            containerEl.innerHTML = '<p class="text-muted">No news available</p>';
+            return;
+        }
+        
+        const newsHtml = articles.map(article => {
+            const sentiment = article.overall_sentiment_label || 'Neutral';
+            const sentimentClass = sentiment.toLowerCase().includes('bullish') ? 'text-success' : 
+                                  sentiment.toLowerCase().includes('bearish') ? 'text-danger' : 'text-secondary';
+            
+            return `
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <h6 class="card-title">
+                            <a href="${article.url || '#'}" target="_blank" class="text-decoration-none">
+                                ${article.title || 'No title'}
+                            </a>
+                        </h6>
+                        <p class="card-text text-muted small">${article.summary || 'No summary'}</p>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <span class="badge bg-secondary">${article.source || 'Unknown'}</span>
+                                <span class="badge ${sentimentClass}">${sentiment}</span>
+                                <small class="text-muted">${article.time_published || ''}</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        containerEl.innerHTML = newsHtml;
+    }
+    
+    // Allow Enter key to add ticker
+    document.getElementById('tickerSelect').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addTicker();
+        }
+    });
+    
+    // Load portfolio on page load
+    loadPortfolio();
+</script>
+{% endblock %}
+

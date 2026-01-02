@@ -173,6 +173,98 @@
             </div>
         </div>
 
+        <!-- Deep Ingestion Section -->
+        <div class="card mt-3 border-warning">
+            <div class="card-header bg-warning text-dark">
+                <h5><i class="bi bi-magic"></i> Deep Ingestion</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    <strong>Magic Button:</strong> Collect articles from ALL topics at maximum API capacity. 
+                    Runs for the specified duration, starting from most recent articles and going backwards in time.
+                    Saves chunk by chunk to database.
+                </p>
+                <form method="POST" action="/deep-ingestion" id="deepIngestionForm">
+                    <div class="mb-3">
+                        <label for="deep_ingestion_api_key" class="form-label">API Key (optional)</label>
+                        <input type="text" class="form-control" id="deep_ingestion_api_key" name="api_key" 
+                               placeholder="Leave empty to use .env">
+                    </div>
+                    <div class="mb-3">
+                        <label for="duration_minutes" class="form-label">Duration (minutes)</label>
+                        <input type="number" class="form-control" id="duration_minutes" name="duration_minutes" 
+                               value="60" min="1" max="1440" required>
+                        <small class="form-text text-muted">How long to run the ingestion (max 1440 = 24 hours)</small>
+                    </div>
+                    <button type="submit" class="btn btn-warning w-100" id="deepIngestionBtn">
+                        <i class="bi bi-magic"></i> Start Deep Ingestion
+                    </button>
+                </form>
+                
+                <!-- Deep Ingestion Status -->
+                <div class="mt-3" id="deepIngestionStatus" style="display: none;">
+                    <div class="alert alert-info">
+                        <p class="mb-1">
+                            <span class="status-indicator" id="deepStatusIndicator"></span>
+                            <strong id="deepStatusMessage">Starting...</strong>
+                        </p>
+                        <small class="text-muted" id="deepStatusDetails"></small>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-danger" onclick="stopDeepIngestion()">
+                                <i class="bi bi-stop-circle"></i> Stop
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deep Research Section -->
+        <div class="card mt-3 border-danger">
+            <div class="card-header bg-danger text-white">
+                <h5><i class="bi bi-rocket"></i> Deep Research</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    <strong>Super Button:</strong> Fetches ALL available stocks from Alpha Vantage, then iterates through each one to collect maximum articles. 
+                    Runs for the specified duration, starting from most recent articles and going backwards in time.
+                    Saves chunk by chunk to database.
+                </p>
+                <form method="POST" action="/deep-research" id="deepResearchForm">
+                    <div class="mb-3">
+                        <label for="deep_research_api_key" class="form-label">API Key (optional)</label>
+                        <input type="text" class="form-control" id="deep_research_api_key" name="api_key" 
+                               placeholder="Leave empty to use .env">
+                    </div>
+                    <div class="mb-3">
+                        <label for="deep_research_duration_minutes" class="form-label">Duration (minutes)</label>
+                        <input type="number" class="form-control" id="deep_research_duration_minutes" name="duration_minutes" 
+                               value="120" min="1" max="1440" required>
+                        <small class="form-text text-muted">How long to run the research (max 1440 = 24 hours). Default: 120 minutes</small>
+                    </div>
+                    <button type="submit" class="btn btn-danger w-100" id="deepResearchBtn">
+                        <i class="bi bi-rocket"></i> Start Deep Research
+                    </button>
+                </form>
+                
+                <!-- Deep Research Status -->
+                <div class="mt-3" id="deepResearchStatus" style="display: none;">
+                    <div class="alert alert-danger">
+                        <p class="mb-1">
+                            <span class="status-indicator" id="deepResearchStatusIndicator"></span>
+                            <strong id="deepResearchStatusMessage">Starting...</strong>
+                        </p>
+                        <small class="text-muted" id="deepResearchStatusDetails"></small>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-dark" onclick="stopDeepResearch()">
+                                <i class="bi bi-stop-circle"></i> Stop
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Collection Status -->
         <div class="card mt-3">
             <div class="card-header">
@@ -327,6 +419,143 @@
     // Update statistics periodically (every 30 seconds) and when collection finishes
     setInterval(updateStatistics, 30000);
     updateStatistics();
+    
+    // Deep Ingestion Status Updates
+    function updateDeepIngestionStatus() {
+        fetch('/api/deep-ingestion/status')
+            .then(response => response.json())
+            .then(data => {
+                const statusContainer = document.getElementById('deepIngestionStatus');
+                const statusIndicator = document.getElementById('deepStatusIndicator');
+                const statusMessage = document.getElementById('deepStatusMessage');
+                const statusDetails = document.getElementById('deepStatusDetails');
+                const deepIngestionBtn = document.getElementById('deepIngestionBtn');
+                
+                if (data.running) {
+                    statusContainer.style.display = 'block';
+                    statusIndicator.className = 'status-indicator status-running';
+                    statusMessage.textContent = data.message || 'Running...';
+                    
+                    let details = [];
+                    if (data.current_topic) {
+                        details.push(`Current topic: ${data.current_topic}`);
+                    }
+                    if (data.topics_total > 0) {
+                        details.push(`Topics: ${data.topics_completed}/${data.topics_total}`);
+                    }
+                    if (data.total_inserted > 0 || data.total_skipped > 0) {
+                        details.push(`Inserted: ${data.total_inserted}, Skipped: ${data.total_skipped}`);
+                    }
+                    if (data.started_at) {
+                        const startTime = new Date(data.started_at);
+                        const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000 / 60);
+                        details.push(`Running for: ${elapsed} minutes`);
+                    }
+                    
+                    statusDetails.textContent = details.join(' | ');
+                    deepIngestionBtn.disabled = true;
+                    deepIngestionBtn.innerHTML = '<i class="bi bi-magic"></i> Deep Ingestion Running...';
+                } else {
+                    if (data.message && data.message !== 'Idle') {
+                        statusContainer.style.display = 'block';
+                        statusIndicator.className = 'status-indicator status-idle';
+                        statusMessage.textContent = data.message;
+                        statusDetails.textContent = '';
+                    } else {
+                        statusContainer.style.display = 'none';
+                    }
+                    deepIngestionBtn.disabled = false;
+                    deepIngestionBtn.innerHTML = '<i class="bi bi-magic"></i> Start Deep Ingestion';
+                }
+            })
+            .catch(error => console.error('Error fetching deep ingestion status:', error));
+    }
+    
+    function stopDeepIngestion() {
+        if (confirm('Are you sure you want to stop deep ingestion?')) {
+            fetch('/api/deep-ingestion/stop', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'stopping') {
+                        alert('Deep ingestion will stop after current chunk completes.');
+                    }
+                })
+                .catch(error => console.error('Error stopping deep ingestion:', error));
+        }
+    }
+    
+    // Update deep ingestion status every 3 seconds
+    setInterval(updateDeepIngestionStatus, 3000);
+    updateDeepIngestionStatus();
+    
+    // Deep Research Status Updates
+    function updateDeepResearchStatus() {
+        fetch('/api/deep-research/status')
+            .then(response => response.json())
+            .then(data => {
+                const statusContainer = document.getElementById('deepResearchStatus');
+                const statusIndicator = document.getElementById('deepResearchStatusIndicator');
+                const statusMessage = document.getElementById('deepResearchStatusMessage');
+                const statusDetails = document.getElementById('deepResearchStatusDetails');
+                const deepResearchBtn = document.getElementById('deepResearchBtn');
+                
+                if (data.running) {
+                    statusContainer.style.display = 'block';
+                    statusIndicator.className = 'status-indicator status-running';
+                    statusMessage.textContent = data.message || 'Running...';
+                    
+                    let details = [];
+                    if (data.current_ticker) {
+                        details.push(`Current ticker: ${data.current_ticker}`);
+                    }
+                    if (data.tickers_total > 0) {
+                        details.push(`Tickers: ${data.tickers_completed}/${data.tickers_total}`);
+                    }
+                    if (data.total_inserted > 0 || data.total_skipped > 0) {
+                        details.push(`Inserted: ${data.total_inserted}, Skipped: ${data.total_skipped}`);
+                    }
+                    if (data.started_at) {
+                        const startTime = new Date(data.started_at);
+                        const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000 / 60);
+                        const elapsedSeconds = Math.floor((Date.now() - startTime.getTime()) / 1000) % 60;
+                        details.push(`Running: ${elapsed}m ${elapsedSeconds}s`);
+                    }
+                    
+                    statusDetails.textContent = details.join(' | ');
+                    deepResearchBtn.disabled = true;
+                    deepResearchBtn.innerHTML = '<i class="bi bi-rocket"></i> Deep Research Running...';
+                } else {
+                    if (data.message && data.message !== 'Idle') {
+                        statusContainer.style.display = 'block';
+                        statusIndicator.className = 'status-indicator status-idle';
+                        statusMessage.textContent = data.message;
+                        statusDetails.textContent = '';
+                    } else {
+                        statusContainer.style.display = 'none';
+                    }
+                    deepResearchBtn.disabled = false;
+                    deepResearchBtn.innerHTML = '<i class="bi bi-rocket"></i> Start Deep Research';
+                }
+            })
+            .catch(error => console.error('Error fetching deep research status:', error));
+    }
+    
+    function stopDeepResearch() {
+        if (confirm('Are you sure you want to stop deep research?')) {
+            fetch('/api/deep-research/stop', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'stopping') {
+                        alert('Deep research will stop after current chunk completes.');
+                    }
+                })
+                .catch(error => console.error('Error stopping deep research:', error));
+        }
+    }
+    
+    // Update deep research status every 3 seconds
+    setInterval(updateDeepResearchStatus, 3000);
+    updateDeepResearchStatus();
 
     // Convert date inputs to YYYYMMDDTHHMM format before form submission
     function formatDateForAPI(dateInput) {

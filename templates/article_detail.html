@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}Article Details - News Collector{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2><i class="bi bi-file-text"></i> Article Details</h2>
+            <div>
+                <a href="/articles" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to Articles
+                </a>
+                {% if article.url %}
+                <a href="{{ article.url }}" target="_blank" class="btn btn-primary">
+                    <i class="bi bi-box-arrow-up-right"></i> Open Original Article
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <h3 class="card-title">{{ article.title or 'No Title' }}</h3>
+                
+                <div class="mb-3">
+                    <p class="text-muted mb-1">
+                        <i class="bi bi-building"></i> <strong>Source:</strong> {{ article.source or 'Unknown' }}
+                        {% if article.source_domain %}
+                            <span class="badge bg-secondary">{{ article.source_domain }}</span>
+                        {% endif %}
+                    </p>
+                    {% if article.time_published %}
+                    <p class="text-muted mb-1">
+                        <i class="bi bi-clock"></i> <strong>Published:</strong> 
+                        {{ article.time_published.strftime('%Y-%m-%d %H:%M:%S') if article.time_published else 'N/A' }}
+                    </p>
+                    {% endif %}
+                    <p class="text-muted mb-1">
+                        <i class="bi bi-link-45deg"></i> <strong>URL:</strong> 
+                        <a href="{{ article.url }}" target="_blank" class="text-break">{{ article.url }}</a>
+                    </p>
+                    {% if article.created_at %}
+                    <p class="text-muted mb-1">
+                        <i class="bi bi-database"></i> <strong>Saved to DB:</strong> 
+                        {{ article.created_at.strftime('%Y-%m-%d %H:%M:%S') if article.created_at else 'N/A' }}
+                    </p>
+                    {% endif %}
+                </div>
+                
+                {% if article.banner_image %}
+                <div class="mb-3">
+                    <img src="{{ article.banner_image }}" alt="Article banner" class="img-fluid rounded">
+                </div>
+                {% endif %}
+                
+                {% if article.summary %}
+                <div class="mb-3">
+                    <h5>Summary</h5>
+                    <p class="card-text">{{ article.summary }}</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <!-- Sentiment Information -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5><i class="bi bi-emoji-smile"></i> Overall Sentiment</h5>
+            </div>
+            <div class="card-body">
+                {% if article.overall_sentiment_label %}
+                <p class="mb-2">
+                    <span class="badge bg-{{ 'success' if 'Bullish' in article.overall_sentiment_label else 'danger' if 'Bearish' in article.overall_sentiment_label else 'secondary' }} fs-6">
+                        {{ article.overall_sentiment_label }}
+                    </span>
+                </p>
+                {% if article.overall_sentiment_score is not none %}
+                <p class="mb-0">
+                    <strong>Score:</strong> 
+                    <span class="badge bg-info">{{ "%.4f"|format(article.overall_sentiment_score) }}</span>
+                </p>
+                {% endif %}
+                {% else %}
+                <p class="text-muted">No sentiment data available</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Ticker Sentiment -->
+        {% if article.ticker_sentiment and article.ticker_sentiment|length > 0 %}
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5><i class="bi bi-graph-up"></i> Ticker Sentiment</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Ticker</th>
+                                <th>Sentiment</th>
+                                <th>Score</th>
+                                <th>Relevance</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ticker_data in article.ticker_sentiment %}
+                            <tr>
+                                <td><strong>{{ ticker_data.ticker or 'N/A' }}</strong></td>
+                                <td>
+                                    <span class="badge bg-{{ 'success' if 'Bullish' in (ticker_data.ticker_sentiment_label or '') else 'danger' if 'Bearish' in (ticker_data.ticker_sentiment_label or '') else 'secondary' }}">
+                                        {{ ticker_data.ticker_sentiment_label or 'N/A' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% if ticker_data.ticker_sentiment_score is not none %}
+                                        {% set score = ticker_data.ticker_sentiment_score | float %}
+                                        <span class="badge bg-info">{{ "%.4f"|format(score) }}</span>
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if ticker_data.relevance_score is not none %}
+                                        {% set rel_score = ticker_data.relevance_score | float %}
+                                        <span class="badge bg-secondary">{{ "%.4f"|format(rel_score) }}</span>
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Topics -->
+        {% if article.topics and article.topics|length > 0 %}
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5><i class="bi bi-tags"></i> Topics</h5>
+            </div>
+            <div class="card-body">
+                {% for topic in article.topics %}
+                    {% if topic.topic %}
+                        <span class="badge bg-light text-dark mb-1">{{ topic.topic }}</span>
+                    {% elif topic is string %}
+                        <span class="badge bg-light text-dark mb-1">{{ topic }}</span>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Database Metadata -->
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-database"></i> Database Info</h5>
+            </div>
+            <div class="card-body">
+                <p class="mb-1"><strong>Article ID:</strong> {{ article.id }}</p>
+                {% if article.created_at %}
+                <p class="mb-1"><strong>Created:</strong> {{ article.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                {% endif %}
+                {% if article.updated_at %}
+                <p class="mb-0"><strong>Updated:</strong> {{ article.updated_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Raw Data Section (Collapsible) -->
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <button class="btn btn-link text-decoration-none text-white p-0" type="button" 
+                            data-bs-toggle="collapse" data-bs-target="#rawData" aria-expanded="false">
+                        <i class="bi bi-code-square"></i> Raw Database Data (JSON)
+                    </button>
+                </h5>
+            </div>
+            <div class="collapse" id="rawData">
+                <div class="card-body">
+                    <pre class="bg-light p-3 rounded"><code>{{ article | tojson(indent=2) }}</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

@@ -50,6 +50,30 @@ collection_status = {
     'articles_collected': 0
 }
 
+deep_ingestion_status = {
+    'running': False,
+    'message': 'Idle',
+    'started_at': None,
+    'total_articles': 0,
+    'total_inserted': 0,
+    'total_skipped': 0,
+    'current_topic': None,
+    'topics_completed': 0,
+    'topics_total': 0
+}
+
+stock_ingestion_status = {
+    'running': False,
+    'message': 'Idle',
+    'started_at': None,
+    'total_articles': 0,
+    'total_inserted': 0,
+    'total_skipped': 0,
+    'current_ticker': None,
+    'tickers_completed': 0,
+    'tickers_total': 0
+}
+
 
 def get_db_manager():
     """Get database manager with environment variables."""
@@ -232,6 +256,437 @@ def get_stats():
     """Get statistics (AJAX endpoint)."""
     stats = get_statistics()
     return jsonify(stats)
+
+
+@app.route('/deep-ingestion', methods=['POST'])
+def deep_ingestion():
+    """Start deep ingestion - collect articles from all topics for a specified duration."""
+    global deep_ingestion_status
+    
+    if deep_ingestion_status['running']:
+        logger.warning("Deep ingestion already in progress")
+        flash('Deep ingestion already in progress. Please wait.', 'warning')
+        return redirect(url_for('index'))
+    
+    # Get duration parameter (in minutes)
+    try:
+        duration_minutes = int(request.form.get('duration_minutes', 60))
+        if duration_minutes < 1:
+            duration_minutes = 1
+        elif duration_minutes > 1440:  # Max 24 hours
+            duration_minutes = 1440
+    except (ValueError, TypeError):
+        duration_minutes = 60
+    
+    logger.info(f"Deep ingestion requested: {duration_minutes} minutes duration")
+    
+    # Get API key
+    form_api_key = request.form.get('api_key', '').strip()
+    env_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    api_key = form_api_key if form_api_key else env_api_key
+    
+    if not api_key:
+        logger.error("API key not provided for deep ingestion")
+        flash('API key is required for deep ingestion.', 'error')
+        return redirect(url_for('index'))
+    
+    # All available topics
+    all_topics = [
+        'blockchain', 'earnings', 'ipo', 'mergers_and_acquisitions',
+        'financial_markets', 'economy_fiscal', 'economy_monetary', 'economy_macro',
+        'energy_transportation', 'finance', 'life_sciences', 'manufacturing',
+        'real_estate', 'retail_wholesale', 'technology'
+    ]
+    
+    # Start deep ingestion in background thread
+    def deep_ingestion_thread():
+        global deep_ingestion_status
+        deep_ingestion_status['running'] = True
+        deep_ingestion_status['started_at'] = datetime.now().isoformat()
+        deep_ingestion_status['total_articles'] = 0
+        deep_ingestion_status['total_inserted'] = 0
+        deep_ingestion_status['total_skipped'] = 0
+        deep_ingestion_status['topics_completed'] = 0
+        deep_ingestion_status['topics_total'] = len(all_topics)
+        deep_ingestion_status['current_topic'] = None
+        
+        logger.info(f"Starting deep ingestion: {duration_minutes} minutes duration, {len(all_topics)} topics")
+        
+        try:
+            rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
+            collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
+            db_manager = get_db_manager()
+            
+            # Calculate end time
+            start_time = datetime.now()
+            end_time = start_time + timedelta(minutes=duration_minutes)
+            
+            logger.info(f"Deep ingestion: Running for {duration_minutes} minutes (until {end_time.strftime('%Y-%m-%d %H:%M:%S')})")
+            deep_ingestion_status['message'] = f'Running for {duration_minutes} minutes, collecting from all topics...'
+            
+            total_inserted = 0
+            total_skipped = 0
+            seen_urls = set()  # Global deduplication across all topics
+            
+            # Start from NOW and go backwards in time
+            current_end = datetime.now()
+            # Go back up to 1 year initially, will continue going back as time allows
+            initial_start = current_end - timedelta(days=365)
+            current_start = initial_start
+            
+            topic_index = 0
+            chunk_num = 0
+            
+            # Keep running until time expires
+            while datetime.now() < end_time and deep_ingestion_status['running']:
+                # Cycle through topics
+                topic = all_topics[topic_index % len(all_topics)]
+                topic_index += 1
+                
+                deep_ingestion_status['current_topic'] = topic
+                deep_ingestion_status['topics_completed'] = (topic_index - 1) // len(all_topics)
+                # Calculate remaining time
+                remaining_seconds = (end_time - datetime.now()).total_seconds()
+                remaining_minutes = int(remaining_seconds / 60)
+                remaining_secs = int(remaining_seconds % 60)
+                deep_ingestion_status['message'] = f'Topic: {topic} | Time remaining: {remaining_minutes}m {remaining_secs}s'
+                
+                chunk_num += 1
+                chunk_days = 30
+                
+                # Go backwards: chunk_end is more recent, chunk_start is older
+                chunk_start = max(current_end - timedelta(days=chunk_days), current_start)
+                chunk_from = chunk_start.strftime('%Y%m%dT%H%M')
+                chunk_to = current_end.strftime('%Y%m%dT%H%M')
+                
+                logger.info(f"Deep ingestion: Topic {topic}, chunk {chunk_num}: {chunk_from} to {chunk_to}")
+                
+                try:
+                    # Fetch articles for this chunk
+                    chunk_data = collector._single_request(
+                        tickers=None,
+                        topics=topic,
+                        time_from=chunk_from,
+                        time_to=chunk_to,
+                        limit=50,
+                        sort="LATEST"
+                    )
+                    
+                    chunk_articles = chunk_data.get('feed', [])
+                    
+                    # Deduplicate globally
+                    new_articles = []
+                    for article in chunk_articles:
+                        url = article.get('url')
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            new_articles.append(article)
+                    
+                    logger.info(f"Deep ingestion: Topic {topic}, chunk {chunk_num}: {len(new_articles)} new articles")
+                    
+                    # Save to DB after each chunk (not waiting for all chunks)
+                    if new_articles:
+                        with db_manager:
+                            result = db_manager.save_articles(new_articles)
+                            total_inserted += result['inserted']
+                            total_skipped += result['skipped']
+                            deep_ingestion_status['total_inserted'] = total_inserted
+                            deep_ingestion_status['total_skipped'] = total_skipped
+                            deep_ingestion_status['total_articles'] = total_inserted + total_skipped
+                            logger.info(f"Deep ingestion: Saved chunk - {result['inserted']} inserted, {result['skipped']} skipped")
+                    
+                    # Move backwards in time for next chunk
+                    current_end = chunk_start - timedelta(seconds=1)
+                    
+                    # If we've gone too far back, reset to now and continue
+                    if current_end < current_start:
+                        current_end = datetime.now()
+                        current_start = current_end - timedelta(days=365)
+                    
+                except Exception as e:
+                    logger.error(f"Error in deep ingestion chunk for topic {topic}: {str(e)}", exc_info=True)
+                    # Continue with next request
+                
+                # Rate limit delay (only if we have time left)
+                if datetime.now() < end_time:
+                    time.sleep(collector.request_delay)
+            
+            # Final status
+            deep_ingestion_status['message'] = (
+                f'✓ Deep ingestion complete! '
+                f'Processed {len(all_topics)} topics, '
+                f'{total_inserted} new articles inserted, '
+                f'{total_skipped} duplicates skipped'
+            )
+            logger.info(f"Deep ingestion completed: {total_inserted} inserted, {total_skipped} skipped")
+            
+        except Exception as e:
+            logger.error(f"Error in deep ingestion thread: {str(e)}", exc_info=True)
+            deep_ingestion_status['message'] = f'Error: {str(e)}'
+        finally:
+            deep_ingestion_status['running'] = False
+            deep_ingestion_status['current_topic'] = None
+            logger.info("Deep ingestion thread finished")
+    
+    thread = threading.Thread(target=deep_ingestion_thread)
+    thread.daemon = True
+    thread.start()
+    
+    flash(f'Deep ingestion started: running for {duration_minutes} minutes, collecting from all topics.', 'info')
+    return redirect(url_for('index'))
+
+
+@app.route('/api/deep-ingestion/status')
+def get_deep_ingestion_status():
+    """Get deep ingestion status (AJAX endpoint)."""
+    return jsonify(deep_ingestion_status)
+
+
+@app.route('/api/deep-ingestion/stop', methods=['POST'])
+def stop_deep_ingestion():
+    """Stop deep ingestion."""
+    global deep_ingestion_status
+    if deep_ingestion_status['running']:
+        deep_ingestion_status['running'] = False
+        logger.info("Deep ingestion stop requested")
+        return jsonify({'status': 'stopping'})
+    return jsonify({'status': 'not_running'})
+
+
+@app.route('/portfolio')
+def portfolio():
+    """Portfolio monitoring page."""
+    logger.info("Portfolio page accessed")
+    return render_template('portfolio.html')
+
+
+@app.route('/api/portfolio/quote/<ticker>')
+def get_stock_quote(ticker):
+    """Get stock quote from Alpha Vantage API."""
+    api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        return jsonify({'error': 'API key not configured'}), 500
+    
+    try:
+        import requests
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "GLOBAL_QUOTE",
+            "symbol": ticker.upper(),
+            "apikey": api_key
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        if "Error Message" in data:
+            logger.error(f"Alpha Vantage API Error: {data['Error Message']}")
+            return jsonify({'error': data['Error Message']}), 400
+        
+        if "Note" in data:
+            logger.warning(f"Alpha Vantage API Note: {data['Note']}")
+            return jsonify({'error': data['Note']}), 400
+        
+        if "Global Quote" in data:
+            quote = data["Global Quote"]
+            return jsonify({
+                'symbol': quote.get('01. symbol', ticker),
+                'open': quote.get('02. open', 'N/A'),
+                'high': quote.get('03. high', 'N/A'),
+                'low': quote.get('04. low', 'N/A'),
+                'price': quote.get('05. price', 'N/A'),
+                'volume': quote.get('06. volume', 'N/A'),
+                'latest_trading_day': quote.get('07. latest trading day', 'N/A'),
+                'previous_close': quote.get('08. previous close', 'N/A'),
+                'change': quote.get('09. change', 'N/A'),
+                'change_percent': quote.get('10. change percent', 'N/A')
+            })
+        else:
+            return jsonify({'error': 'No quote data available'}), 404
+            
+    except Exception as e:
+        logger.error(f"Error fetching stock quote for {ticker}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/portfolio/history/<ticker>')
+def get_stock_history(ticker):
+    """Get stock price history (last year) from Alpha Vantage API."""
+    api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        return jsonify({'error': 'API key not configured'}), 500
+    
+    try:
+        import requests
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_MONTHLY",
+            "symbol": ticker.upper(),
+            "apikey": api_key
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        if "Error Message" in data:
+            logger.error(f"Alpha Vantage API Error: {data['Error Message']}")
+            return jsonify({'error': data['Error Message']}), 400
+        
+        if "Note" in data:
+            logger.warning(f"Alpha Vantage API Note: {data['Note']}")
+            return jsonify({'error': data['Note']}), 400
+        
+        if "Monthly Time Series" in data:
+            time_series = data["Monthly Time Series"]
+            # Get last 12 months
+            dates = sorted(time_series.keys(), reverse=True)[:12]
+            dates.reverse()  # Oldest first for chart
+            
+            history = {
+                'dates': dates,
+                'closes': [float(time_series[date]['4. close']) for date in dates]
+            }
+            return jsonify(history)
+        else:
+            return jsonify({'error': 'No historical data available'}), 404
+            
+    except Exception as e:
+        logger.error(f"Error fetching stock history for {ticker}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/portfolio/news/<tickers>')
+def get_portfolio_news(tickers):
+    """Get latest news for portfolio tickers and save to database."""
+    api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        return jsonify({'error': 'API key not configured'}), 500
+    
+    try:
+        # Limit to 20 articles for portfolio view
+        rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
+        collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
+        
+        # Get news for the tickers (comma-separated)
+        logger.info(f"Fetching portfolio news for tickers: {tickers}")
+        data = collector.get_news_sentiment(
+            tickers=tickers,
+            limit=20,
+            sort="LATEST"
+        )
+        
+        articles = data.get('feed', [])
+        
+        # Save articles to database (idempotent)
+        save_result = {'inserted': 0, 'skipped': 0}
+        if articles:
+            logger.info(f"Saving {len(articles)} portfolio news articles to database")
+            try:
+                db_manager = get_db_manager()
+                with db_manager:
+                    save_result = db_manager.save_articles(articles)
+                    logger.info(f"Portfolio news saved: {save_result['inserted']} inserted, {save_result['skipped']} skipped")
+            except Exception as db_error:
+                logger.error(f"Error saving portfolio news to database: {str(db_error)}", exc_info=True)
+                # Continue even if database save fails
+        
+        return jsonify({
+            'articles': articles,
+            'count': len(articles),
+            'saved_to_db': True,
+            'inserted': save_result['inserted'],
+            'skipped': save_result['skipped']
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching news for {tickers}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/article/<int:article_id>')
+def view_article_detail(article_id):
+    """View full details of a single article from database."""
+    logger.info(f"Article detail page accessed for ID: {article_id}")
+    
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            query = """
+                SELECT id, url, title, source, time_published, summary,
+                       overall_sentiment_score, overall_sentiment_label,
+                       ticker_sentiment, topics, banner_image, source_domain,
+                       created_at, updated_at
+                FROM articles
+                WHERE id = %s
+            """
+            cursor.execute(query, (article_id,))
+            
+            columns = [desc[0] for desc in cursor.description]
+            row = cursor.fetchone()
+            cursor.close()
+            
+            if not row:
+                flash(f'Article with ID {article_id} not found', 'error')
+                return redirect(url_for('view_articles'))
+            
+            article = dict(zip(columns, row))
+            
+            # Convert overall_sentiment_score to float if needed
+            if article.get('overall_sentiment_score') is not None:
+                try:
+                    if isinstance(article['overall_sentiment_score'], str):
+                        article['overall_sentiment_score'] = float(article['overall_sentiment_score'])
+                except (ValueError, TypeError):
+                    article['overall_sentiment_score'] = None
+            
+            # Parse JSONB fields
+            if article.get('ticker_sentiment'):
+                if isinstance(article['ticker_sentiment'], str):
+                    try:
+                        article['ticker_sentiment'] = json.loads(article['ticker_sentiment'])
+                    except json.JSONDecodeError:
+                        article['ticker_sentiment'] = []
+                # Convert ticker sentiment scores to float
+                if isinstance(article['ticker_sentiment'], list):
+                    for ticker_data in article['ticker_sentiment']:
+                        if isinstance(ticker_data, dict):
+                            if 'ticker_sentiment_score' in ticker_data:
+                                try:
+                                    if isinstance(ticker_data['ticker_sentiment_score'], str):
+                                        ticker_data['ticker_sentiment_score'] = float(ticker_data['ticker_sentiment_score'])
+                                    else:
+                                        ticker_data['ticker_sentiment_score'] = float(ticker_data['ticker_sentiment_score'])
+                                except (ValueError, TypeError):
+                                    ticker_data['ticker_sentiment_score'] = None
+                            if 'relevance_score' in ticker_data:
+                                try:
+                                    if isinstance(ticker_data['relevance_score'], str):
+                                        ticker_data['relevance_score'] = float(ticker_data['relevance_score'])
+                                    else:
+                                        ticker_data['relevance_score'] = float(ticker_data['relevance_score'])
+                                except (ValueError, TypeError):
+                                    ticker_data['relevance_score'] = None
+            
+            if article.get('topics'):
+                if isinstance(article['topics'], str):
+                    try:
+                        article['topics'] = json.loads(article['topics'])
+                    except json.JSONDecodeError:
+                        article['topics'] = []
+            
+            logger.info(f"Loaded article detail: {article.get('title', 'Unknown')[:50]}")
+            return render_template('article_detail.html', article=article)
+            
+    except Exception as e:
+        logger.error(f"Error loading article {article_id}: {str(e)}", exc_info=True)
+        flash(f'Error loading article: {str(e)}', 'error')
+        return redirect(url_for('view_articles'))
 
 
 @app.route('/articles')
