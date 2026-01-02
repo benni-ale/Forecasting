@@ -71,9 +71,24 @@ def collect_news():
         return redirect(url_for('index'))
     
     # Get form parameters
-    api_key = request.form.get('api_key') or os.getenv('ALPHA_VANTAGE_API_KEY')
+    form_api_key = request.form.get('api_key', '').strip()
+    env_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    
+    # Use form API key if provided, otherwise use environment variable
+    api_key = form_api_key if form_api_key else env_api_key
+    
+    # Log which source is being used (without exposing the full key)
+    if form_api_key:
+        logger.info(f"Using API key from form (first 8 chars: {form_api_key[:8]}...)")
+    elif env_api_key:
+        logger.info(f"Using API key from environment variable (first 8 chars: {env_api_key[:8]}...)")
+    else:
+        logger.error("No API key provided in form or environment")
+        flash('API key is required. Please provide it in the form or set ALPHA_VANTAGE_API_KEY environment variable.', 'error')
+        return redirect(url_for('index'))
+    
     if not api_key:
-        logger.error("API key not provided")
+        logger.error("API key is empty")
         flash('API key is required. Please provide it in the form or set ALPHA_VANTAGE_API_KEY environment variable.', 'error')
         return redirect(url_for('index'))
     
@@ -115,7 +130,12 @@ def collect_news():
         logger.info("Starting news collection in background thread")
         
         try:
-            collector = AlphaVantageNewsCollector(api_key)
+            # Get rate limit from environment (default: 75 for premium, 5 for free)
+            rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
+            # Log API key being used (first 8 chars for security)
+            api_key_preview = api_key[:8] + "..." if len(api_key) > 8 else api_key
+            logger.info(f"Using API key: {api_key_preview} (rate limit: {rate_limit} calls/minute)")
+            collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
             
             collection_status['message'] = 'Fetching news from Alpha Vantage...'
             logger.info("Fetching news from Alpha Vantage API")
@@ -137,8 +157,8 @@ def collect_news():
                 original_count = len(articles)
                 articles = [
                     article for article in articles
-                    if search_lower in article.get('title', '').lower() or 
-                       search_lower in article.get('summary', '').lower()
+                    if search_lower in (article.get('title') or '').lower() or 
+                       search_lower in (article.get('summary') or '').lower()
                 ]
                 logger.info(f"Filtered articles: {original_count} -> {len(articles)} (search: '{search_query}')")
                 collection_status['message'] = f'Filtered to {len(articles)} articles matching "{search_query}"'
@@ -190,6 +210,13 @@ def get_status():
     if get_status.call_count % 10 == 0:
         logger.debug(f"Status check (call #{get_status.call_count})")
     return jsonify(collection_status)
+
+
+@app.route('/api/stats')
+def get_stats():
+    """Get statistics (AJAX endpoint)."""
+    stats = get_statistics()
+    return jsonify(stats)
 
 
 @app.route('/articles')

@@ -8,7 +8,8 @@ import os
 import json
 import logging
 import requests
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import argparse
 import psycopg2
@@ -29,18 +30,35 @@ class AlphaVantageNewsCollector:
     
     BASE_URL = "https://www.alphavantage.co/query"
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, rate_limit_per_minute: int = 75):
         """
         Initialize the news collector.
         
         Args:
             api_key: Alpha Vantage API key
+            rate_limit_per_minute: API rate limit (default: 75 for premium, use 5 for free tier)
         """
         if not api_key:
             raise ValueError("API key is required")
         self.api_key = api_key
+        self.rate_limit_per_minute = rate_limit_per_minute
+        # Calculate delay between requests: 60 seconds / rate_limit, with safety margin
+        self.request_delay = max(0.5, (60.0 / rate_limit_per_minute) * 1.1)  # 10% safety margin
     
-    def get_news_sentiment(
+    def _parse_time(self, time_str: str) -> Optional[datetime]:
+        """Parse YYYYMMDDTHHMM format to datetime."""
+        if not time_str:
+            return None
+        try:
+            return datetime.strptime(time_str, "%Y%m%dT%H%M")
+        except ValueError:
+            return None
+    
+    def _format_time(self, dt: datetime) -> str:
+        """Format datetime to YYYYMMDDTHHMM format."""
+        return dt.strftime("%Y%m%dT%H%M")
+    
+    def _single_request(
         self,
         tickers: Optional[str] = None,
         topics: Optional[str] = None,
@@ -49,24 +67,11 @@ class AlphaVantageNewsCollector:
         limit: int = 50,
         sort: str = "LATEST"
     ) -> Dict:
-        """
-        Get news and sentiment data from Alpha Vantage.
-        
-        Args:
-            tickers: Comma-separated list of stock tickers (e.g., "AAPL,MSFT")
-            topics: Comma-separated list of topics (e.g., "technology,earnings")
-            time_from: Start time in YYYYMMDDTHHMM format
-            time_to: End time in YYYYMMDDTHHMM format
-            limit: Number of results to return (default: 50, max: 1000)
-            sort: Sort order - "LATEST" or "EARLIEST" (default: "LATEST")
-        
-        Returns:
-            Dictionary containing news and sentiment data
-        """
+        """Make a single API request to Alpha Vantage."""
         params = {
             "function": "NEWS_SENTIMENT",
             "apikey": self.api_key,
-            "limit": limit,
+            "limit": min(limit, 50),  # Alpha Vantage max is 50 per request
             "sort": sort
         }
         
@@ -80,8 +85,6 @@ class AlphaVantageNewsCollector:
             params["time_to"] = time_to
         
         try:
-            logger.info(f"Fetching news from Alpha Vantage: tickers={tickers}, topics={topics}, "
-                       f"limit={limit}, sort={sort}, time_from={time_from}, time_to={time_to}")
             response = requests.get(self.BASE_URL, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
@@ -94,13 +97,160 @@ class AlphaVantageNewsCollector:
                 logger.warning(f"Alpha Vantage API Note: {data['Note']}")
                 raise ValueError(f"API Note: {data['Note']}")
             
-            feed_count = len(data.get('feed', []))
-            logger.info(f"Successfully retrieved {feed_count} articles from Alpha Vantage")
             return data
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to connect to Alpha Vantage API: {str(e)}", exc_info=True)
             raise ConnectionError(f"Failed to connect to Alpha Vantage API: {str(e)}")
+    
+    def get_news_sentiment(
+        self,
+        tickers: Optional[str] = None,
+        topics: Optional[str] = None,
+        time_from: Optional[str] = None,
+        time_to: Optional[str] = None,
+        limit: int = 50,
+        sort: str = "LATEST"
+    ) -> Dict:
+        """
+        Get news and sentiment data from Alpha Vantage.
+        
+        For large limits (>50) or wide time ranges, automatically makes multiple
+        requests to collect more articles, respecting rate limits.
+        
+        Args:
+            tickers: Comma-separated list of stock tickers (e.g., "AAPL,MSFT")
+            topics: Comma-separated list of topics (e.g., "technology,earnings")
+            time_from: Start time in YYYYMMDDTHHMM format
+            time_to: End time in YYYYMMDDTHHMM format
+            limit: Number of results to return (default: 50, max: 1000)
+            sort: Sort order - "LATEST" or "EARLIEST" (default: "LATEST")
+        
+        Returns:
+            Dictionary containing news and sentiment data
+        """
+        logger.info(f"Fetching news from Alpha Vantage: tickers={tickers}, topics={topics}, "
+                   f"limit={limit}, sort={sort}, time_from={time_from}, time_to={time_to}")
+        
+        # If limit <= 50 and no time range, make single request
+        if limit <= 50 and not (time_from and time_to):
+            data = self._single_request(tickers, topics, time_from, time_to, limit, sort)
+            feed_count = len(data.get('feed', []))
+            logger.info(f"Successfully retrieved {feed_count} articles from Alpha Vantage")
+            return data
+        
+        # For larger limits or time ranges, make multiple requests
+        all_articles = []
+        seen_urls = set()  # Deduplicate by URL
+        chunk_data = {}  # Initialize for metadata
+        chunk_num = 0
+        requests_made = 0
+        
+        # Parse time range
+        start_dt = self._parse_time(time_from) if time_from else None
+        end_dt = self._parse_time(time_to) if time_to else None
+        
+        # If we have a time range, split it into chunks
+        if start_dt and end_dt:
+            # Calculate number of days
+            days_diff = (end_dt - start_dt).days
+            
+            # Split into monthly chunks (max 30 days per chunk to get more results)
+            chunk_days = 30
+            num_chunks = max(1, (days_diff + chunk_days - 1) // chunk_days)
+            
+            logger.info(f"Splitting time range ({days_diff} days) into {num_chunks} chunks")
+            
+            current_start = start_dt
+            
+            while current_start < end_dt and len(all_articles) < limit:
+                chunk_num += 1
+                # Calculate chunk end (30 days later or end_dt, whichever is earlier)
+                chunk_end = min(current_start + timedelta(days=chunk_days), end_dt)
+                
+                chunk_from = self._format_time(current_start)
+                chunk_to = self._format_time(chunk_end)
+                
+                logger.info(f"Fetching chunk {chunk_num}/{num_chunks}: {chunk_from} to {chunk_to}")
+                
+                # Make request for this chunk
+                chunk_data = self._single_request(
+                    tickers, topics, chunk_from, chunk_to, 50, sort
+                )
+                
+                chunk_articles = chunk_data.get('feed', [])
+                
+                # Add unique articles
+                for article in chunk_articles:
+                    url = article.get('url')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_articles.append(article)
+                        if len(all_articles) >= limit:
+                            break
+                
+                logger.info(f"Chunk {chunk_num}: retrieved {len(chunk_articles)} articles, "
+                           f"total unique: {len(all_articles)}/{limit}")
+                
+                # Respect rate limit (configurable, default 75 calls/min for premium)
+                if chunk_num < num_chunks and len(all_articles) < limit:
+                    logger.debug(f"Waiting {self.request_delay:.2f}s before next request (rate limit: {self.rate_limit_per_minute}/min)")
+                    time.sleep(self.request_delay)
+                
+                current_start = chunk_end + timedelta(seconds=1)
+        
+        else:
+            # No time range, but limit > 50, make multiple requests with different time windows
+            # This is less effective but we'll try to get more recent articles
+            logger.info(f"Making multiple requests to collect {limit} articles (no time range)")
+            
+            max_requests = (limit + 49) // 50  # Number of requests needed
+            
+            while len(all_articles) < limit and requests_made < max_requests:
+                requests_made += 1
+                logger.info(f"Request {requests_made}/{max_requests}")
+                
+                chunk_data = self._single_request(
+                    tickers, topics, time_from, time_to, 50, sort
+                )
+                
+                chunk_articles = chunk_data.get('feed', [])
+                
+                # Add unique articles
+                for article in chunk_articles:
+                    url = article.get('url')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_articles.append(article)
+                        if len(all_articles) >= limit:
+                            break
+                
+                # If we got fewer than 50, we've reached the end
+                if len(chunk_articles) < 50:
+                    logger.info("Reached end of available articles")
+                    break
+                
+                # Respect rate limit (configurable, default 75 calls/min for premium)
+                if requests_made < max_requests and len(all_articles) < limit:
+                    logger.debug(f"Waiting {self.request_delay:.2f}s before next request (rate limit: {self.rate_limit_per_minute}/min)")
+                    time.sleep(self.request_delay)
+        
+        # Limit to requested amount
+        all_articles = all_articles[:limit]
+        
+        # Build response in same format as API
+        result = {
+            'feed': all_articles,
+            'items': len(all_articles),
+            'sentiment_score_definition': chunk_data.get('sentiment_score_definition', '') if chunk_data else '',
+            'relevance_score_definition': chunk_data.get('relevance_score_definition', '') if chunk_data else ''
+        }
+        
+        requests_count = chunk_num if (start_dt and end_dt) else (requests_made if 'requests_made' in locals() else 1)
+        logger.info(f"Successfully retrieved {len(all_articles)} unique articles from Alpha Vantage "
+                   f"(made {requests_count} requests)")
+        
+        return result
     
     def format_news_output(self, data: Dict, output_format: str = "json") -> str:
         """
