@@ -44,3 +44,49 @@ CREATE TRIGGER update_articles_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Create view for daily ticker sentiment aggregations
+-- Calculates sentiment * relevance per ticker and day
+CREATE OR REPLACE VIEW ticker_daily_sentiment_view AS
+WITH ticker_data AS (
+    SELECT 
+        DATE(time_published) as date,
+        jsonb_array_elements(ticker_sentiment) as ticker_info,
+        time_published
+    FROM articles
+    WHERE time_published IS NOT NULL
+        AND ticker_sentiment IS NOT NULL
+        AND jsonb_array_length(ticker_sentiment) > 0
+),
+ticker_scores AS (
+    SELECT 
+        date,
+        ticker_info->>'ticker' as ticker,
+        (ticker_info->>'ticker_sentiment_score')::numeric as sentiment_score,
+        (ticker_info->>'relevance_score')::numeric as relevance_score,
+        ticker_info->>'ticker_sentiment_label' as sentiment_label,
+        time_published
+    FROM ticker_data
+    WHERE ticker_info->>'ticker' IS NOT NULL
+        AND ticker_info->>'ticker_sentiment_score' IS NOT NULL
+        AND ticker_info->>'relevance_score' IS NOT NULL
+        AND (ticker_info->>'ticker_sentiment_score')::numeric IS NOT NULL
+        AND (ticker_info->>'relevance_score')::numeric IS NOT NULL
+)
+SELECT 
+    ticker,
+    date,
+    AVG(sentiment_score) as avg_sentiment_score,
+    AVG(relevance_score) as avg_relevance_score,
+    AVG(sentiment_score * relevance_score) as weighted_sentiment,
+    SUM(sentiment_score * relevance_score) as total_weighted_sentiment,
+    COUNT(*) as article_count,
+    COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bullish%') as bullish_count,
+    COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bearish%') as bearish_count,
+    COUNT(*) FILTER (WHERE sentiment_label = 'Neutral') as neutral_count,
+    MAX(time_published) as last_article_time
+FROM ticker_scores
+WHERE sentiment_score IS NOT NULL 
+    AND relevance_score IS NOT NULL
+GROUP BY ticker, date
+ORDER BY ticker, date DESC;
+

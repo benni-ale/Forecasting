@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics - News Collector{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2><i class="bi bi-graph-up"></i> Ticker Sentiment Analytics</h2>
+            <a href="/" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-funnel"></i> Filters</h5>
+            </div>
+            <div class="card-body">
+                <form id="analyticsForm" class="row g-3">
+                    <div class="col-md-4">
+                        <label for="tickerFilter" class="form-label">Ticker</label>
+                        <select class="form-select" id="tickerFilter" name="ticker">
+                            <option value="">All Tickers</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="daysBack" class="form-label">Days Back</label>
+                        <input type="number" class="form-control" id="daysBack" name="days_back" 
+                               value="30" min="1" max="365">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="limit" class="form-label">Limit</label>
+                        <input type="number" class="form-control" id="limit" name="limit" 
+                               value="100" min="10" max="1000">
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="bi bi-search"></i> Apply
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-table"></i> Daily Sentiment Aggregations</h5>
+            </div>
+            <div class="card-body">
+                <div id="loading" class="text-center" style="display: none;">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <div id="errorMessage" class="alert alert-danger" style="display: none;"></div>
+                <div id="dataContainer">
+                    <table class="table table-striped table-hover" id="analyticsTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>Ticker</th>
+                                <th>Date</th>
+                                <th>Avg Sentiment</th>
+                                <th>Avg Relevance</th>
+                                <th>Weighted Sentiment</th>
+                                <th>Articles</th>
+                                <th>Bullish</th>
+                                <th>Bearish</th>
+                                <th>Neutral</th>
+                            </tr>
+                        </thead>
+                        <tbody id="analyticsTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-bar-chart"></i> Weighted Sentiment Trend</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="sentimentChart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let sentimentChart = null;
+    
+    // Load tickers list on page load
+    function loadTickers() {
+        fetch('/api/analytics/ticker-sentiment?limit=1')
+            .then(response => response.json())
+            .then(data => {
+                const select = document.getElementById('tickerFilter');
+                data.tickers.forEach(ticker => {
+                    const option = document.createElement('option');
+                    option.value = ticker;
+                    option.textContent = ticker;
+                    select.appendChild(option);
+                });
+            })
+            .catch(error => console.error('Error loading tickers:', error));
+    }
+    
+    // Load analytics data
+    function loadAnalytics() {
+        const ticker = document.getElementById('tickerFilter').value;
+        const daysBack = document.getElementById('daysBack').value;
+        const limit = document.getElementById('limit').value;
+        
+        const params = new URLSearchParams({
+            days_back: daysBack,
+            limit: limit
+        });
+        if (ticker) {
+            params.append('ticker', ticker);
+        }
+        
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('errorMessage').style.display = 'none';
+        document.getElementById('analyticsTable').style.display = 'none';
+        
+        fetch(`/api/analytics/ticker-sentiment?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('loading').style.display = 'none';
+                
+                if (data.error) {
+                    document.getElementById('errorMessage').textContent = data.error;
+                    document.getElementById('errorMessage').style.display = 'block';
+                    return;
+                }
+                
+                renderTable(data.data);
+                renderChart(data.data);
+            })
+            .catch(error => {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('errorMessage').textContent = 'Error loading data: ' + error.message;
+                document.getElementById('errorMessage').style.display = 'block';
+                console.error('Error:', error);
+            });
+    }
+    
+    function renderTable(data) {
+        const tbody = document.getElementById('analyticsTableBody');
+        tbody.innerHTML = '';
+        
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center">No data available</td></tr>';
+            document.getElementById('analyticsTable').style.display = 'table';
+            return;
+        }
+        
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><strong>${row.ticker}</strong></td>
+                <td>${row.date}</td>
+                <td>${row.avg_sentiment_score !== null ? row.avg_sentiment_score.toFixed(4) : 'N/A'}</td>
+                <td>${row.avg_relevance_score !== null ? row.avg_relevance_score.toFixed(4) : 'N/A'}</td>
+                <td><strong>${row.weighted_sentiment !== null ? row.weighted_sentiment.toFixed(4) : 'N/A'}</strong></td>
+                <td>${row.article_count}</td>
+                <td><span class="badge bg-success">${row.bullish_count || 0}</span></td>
+                <td><span class="badge bg-danger">${row.bearish_count || 0}</span></td>
+                <td><span class="badge bg-secondary">${row.neutral_count || 0}</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+        
+        document.getElementById('analyticsTable').style.display = 'table';
+    }
+    
+    function renderChart(data) {
+        if (!data || data.length === 0) {
+            return;
+        }
+        
+        // Group by ticker if multiple tickers, or show single ticker over time
+        const ticker = document.getElementById('tickerFilter').value;
+        
+        if (ticker) {
+            // Single ticker: show trend over time
+            const sortedData = [...data].sort((a, b) => new Date(a.date) - new Date(b.date));
+            const labels = sortedData.map(d => d.date);
+            const weightedSentiment = sortedData.map(d => d.weighted_sentiment || 0);
+            
+            const ctx = document.getElementById('sentimentChart').getContext('2d');
+            
+            if (sentimentChart) {
+                sentimentChart.destroy();
+            }
+            
+            sentimentChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: `${ticker} Weighted Sentiment (Sentiment × Relevance)`,
+                        data: weightedSentiment,
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Weighted Sentiment'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            // Multiple tickers: show top tickers by weighted sentiment
+            const tickerMap = {};
+            data.forEach(row => {
+                if (!tickerMap[row.ticker]) {
+                    tickerMap[row.ticker] = {
+                        ticker: row.ticker,
+                        totalWeighted: 0,
+                        count: 0
+                    };
+                }
+                tickerMap[row.ticker].totalWeighted += row.weighted_sentiment || 0;
+                tickerMap[row.ticker].count += 1;
+            });
+            
+            const tickerArray = Object.values(tickerMap)
+                .map(t => ({ ...t, avgWeighted: t.totalWeighted / t.count }))
+                .sort((a, b) => b.avgWeighted - a.avgWeighted)
+                .slice(0, 10); // Top 10
+            
+            const ctx = document.getElementById('sentimentChart').getContext('2d');
+            
+            if (sentimentChart) {
+                sentimentChart.destroy();
+            }
+            
+            sentimentChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: tickerArray.map(t => t.ticker),
+                    datasets: [{
+                        label: 'Average Weighted Sentiment',
+                        data: tickerArray.map(t => t.avgWeighted),
+                        backgroundColor: tickerArray.map(t => 
+                            t.avgWeighted > 0 ? 'rgba(75, 192, 192, 0.6)' : 'rgba(255, 99, 132, 0.6)'
+                        )
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Average Weighted Sentiment'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    
+    // Form submission
+    document.getElementById('analyticsForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        loadAnalytics();
+    });
+    
+    // Load data on page load
+    loadTickers();
+    loadAnalytics();
+</script>
+{% endblock %}
+

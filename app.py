@@ -290,12 +290,24 @@ def deep_ingestion():
         flash('API key is required for deep ingestion.', 'error')
         return redirect(url_for('index'))
     
-    # All available topics
+    # All available topics supported by Alpha Vantage NEWS_SENTIMENT API
+    # Complete list as per official documentation: https://www.alphavantage.co/documentation/#news-sentiment
     all_topics = [
-        'blockchain', 'earnings', 'ipo', 'mergers_and_acquisitions',
-        'financial_markets', 'economy_fiscal', 'economy_monetary', 'economy_macro',
-        'energy_transportation', 'finance', 'life_sciences', 'manufacturing',
-        'real_estate', 'retail_wholesale', 'technology'
+        'blockchain',                    # Blockchain and cryptocurrency
+        'earnings',                      # Earnings reports and announcements
+        'ipo',                          # Initial Public Offerings
+        'mergers_and_acquisitions',     # Mergers and acquisitions
+        'financial_markets',           # Financial markets
+        'economy_fiscal',               # Fiscal policy and economy
+        'economy_monetary',             # Monetary policy and economy
+        'economy_macro',                # Macroeconomics
+        'energy_transportation',        # Energy and transportation
+        'finance',                      # Finance
+        'life_sciences',                # Life sciences and healthcare
+        'manufacturing',               # Manufacturing
+        'real_estate',                 # Real estate
+        'retail_wholesale',            # Retail and wholesale
+        'technology'                    # Technology
     ]
     
     # Start deep ingestion in background thread
@@ -336,20 +348,34 @@ def deep_ingestion():
             
             topic_index = 0
             chunk_num = 0
+            round_num = 0  # Track how many complete rounds through all topics
             
             # Keep running until time expires
             while datetime.now() < end_time and deep_ingestion_status['running']:
-                # Cycle through topics
+                # Cycle through topics - priority to new topics over older news
                 topic = all_topics[topic_index % len(all_topics)]
+                
+                # Check if we've completed a full round through all topics
+                if topic_index > 0 and (topic_index % len(all_topics)) == 0:
+                    round_num += 1
+                    # After completing a round, go backwards in time for next round
+                    current_end = current_end - timedelta(days=30)
+                    # If we've gone too far back, reset to now and start fresh
+                    if current_end < current_start:
+                        current_end = datetime.now()
+                        current_start = current_end - timedelta(days=365)
+                        round_num = 0
+                    logger.info(f"Deep ingestion: Completed round {round_num}, moving back in time. Next range: {current_end.strftime('%Y%m%dT%H%M')}")
+                
                 topic_index += 1
                 
                 deep_ingestion_status['current_topic'] = topic
-                deep_ingestion_status['topics_completed'] = (topic_index - 1) // len(all_topics)
+                deep_ingestion_status['topics_completed'] = round_num
                 # Calculate remaining time
                 remaining_seconds = (end_time - datetime.now()).total_seconds()
                 remaining_minutes = int(remaining_seconds / 60)
                 remaining_secs = int(remaining_seconds % 60)
-                deep_ingestion_status['message'] = f'Topic: {topic} | Time remaining: {remaining_minutes}m {remaining_secs}s'
+                deep_ingestion_status['message'] = f'Topic: {topic} (Round {round_num + 1}) | Time remaining: {remaining_minutes}m {remaining_secs}s'
                 
                 chunk_num += 1
                 chunk_days = 30
@@ -359,7 +385,7 @@ def deep_ingestion():
                 chunk_from = chunk_start.strftime('%Y%m%dT%H%M')
                 chunk_to = current_end.strftime('%Y%m%dT%H%M')
                 
-                logger.info(f"Deep ingestion: Topic {topic}, chunk {chunk_num}: {chunk_from} to {chunk_to}")
+                logger.info(f"Deep ingestion: Topic {topic}, round {round_num + 1}, chunk {chunk_num}: {chunk_from} to {chunk_to}")
                 
                 try:
                     # Fetch articles for this chunk
@@ -382,7 +408,7 @@ def deep_ingestion():
                             seen_urls.add(url)
                             new_articles.append(article)
                     
-                    logger.info(f"Deep ingestion: Topic {topic}, chunk {chunk_num}: {len(new_articles)} new articles")
+                    logger.info(f"Deep ingestion: Topic {topic}, round {round_num + 1}, chunk {chunk_num}: {len(new_articles)} new articles")
                     
                     # Save to DB after each chunk (not waiting for all chunks)
                     if new_articles:
@@ -394,14 +420,6 @@ def deep_ingestion():
                             deep_ingestion_status['total_skipped'] = total_skipped
                             deep_ingestion_status['total_articles'] = total_inserted + total_skipped
                             logger.info(f"Deep ingestion: Saved chunk - {result['inserted']} inserted, {result['skipped']} skipped")
-                    
-                    # Move backwards in time for next chunk
-                    current_end = chunk_start - timedelta(seconds=1)
-                    
-                    # If we've gone too far back, reset to now and continue
-                    if current_end < current_start:
-                        current_end = datetime.now()
-                        current_start = current_end - timedelta(days=365)
                     
                 except Exception as e:
                     logger.error(f"Error in deep ingestion chunk for topic {topic}: {str(e)}", exc_info=True)
@@ -449,6 +467,326 @@ def stop_deep_ingestion():
     if deep_ingestion_status['running']:
         deep_ingestion_status['running'] = False
         logger.info("Deep ingestion stop requested")
+        return jsonify({'status': 'stopping'})
+    return jsonify({'status': 'not_running'})
+
+
+@app.route('/deep-research', methods=['POST'])
+def deep_research():
+    """Start deep research - collect articles from all available stocks for a specified duration."""
+    global stock_ingestion_status
+    
+    if stock_ingestion_status['running']:
+        logger.warning("Deep research already in progress")
+        flash('Deep research already in progress. Please wait.', 'warning')
+        return redirect(url_for('index'))
+    
+    # Get duration parameter (in minutes)
+    try:
+        duration_minutes = int(request.form.get('duration_minutes', 120))
+        if duration_minutes < 1:
+            duration_minutes = 1
+        elif duration_minutes > 1440:  # Max 24 hours
+            duration_minutes = 1440
+    except (ValueError, TypeError):
+        duration_minutes = 120
+    
+    logger.info(f"Deep research requested: {duration_minutes} minutes duration")
+    
+    # Get API key
+    form_api_key = request.form.get('api_key', '').strip()
+    env_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    api_key = form_api_key if form_api_key else env_api_key
+    
+    if not api_key:
+        logger.error("API key not provided for deep research")
+        flash('API key is required for deep research.', 'error')
+        return redirect(url_for('index'))
+    
+    # Start deep research in background thread
+    def deep_research_thread():
+        global stock_ingestion_status
+        stock_ingestion_status['running'] = True
+        stock_ingestion_status['started_at'] = datetime.now().isoformat()
+        stock_ingestion_status['total_articles'] = 0
+        stock_ingestion_status['total_inserted'] = 0
+        stock_ingestion_status['total_skipped'] = 0
+        stock_ingestion_status['tickers_completed'] = 0
+        stock_ingestion_status['tickers_total'] = 0
+        stock_ingestion_status['current_ticker'] = None
+        
+        logger.info(f"Starting deep research: {duration_minutes} minutes duration")
+        
+        try:
+            import requests
+            import csv
+            import io
+            rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
+            collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
+            db_manager = get_db_manager()
+            
+            # Calculate end time
+            start_time = datetime.now()
+            end_time = start_time + timedelta(minutes=duration_minutes)
+            
+            logger.info(f"Deep research: Running for {duration_minutes} minutes (until {end_time.strftime('%Y-%m-%d %H:%M:%S')})")
+            stock_ingestion_status['message'] = f'Fetching list of all stocks from Alpha Vantage...'
+            
+            # Get list of all available stocks from Alpha Vantage LISTING_STATUS
+            logger.info("Fetching list of all stocks from Alpha Vantage LISTING_STATUS endpoint")
+            listing_url = "https://www.alphavantage.co/query"
+            listing_params = {
+                "function": "LISTING_STATUS",
+                "apikey": api_key,
+                "datatype": "csv"  # Request CSV format for easier parsing
+            }
+            
+            try:
+                listing_response = requests.get(listing_url, params=listing_params, timeout=120)
+                listing_response.raise_for_status()
+                
+                # Parse response - LISTING_STATUS typically returns CSV
+                stocks = []
+                response_text = listing_response.text.strip()
+                
+                # Check if response is CSV (usually starts with header or contains commas)
+                if ',' in response_text and ('symbol' in response_text.lower() or response_text.count(',') > 5):
+                    # CSV format - try to parse as CSV
+                    try:
+                        csv_reader = csv.DictReader(io.StringIO(response_text))
+                        for row in csv_reader:
+                            symbol = row.get('symbol', '').strip().upper()
+                            status = row.get('status', '').strip().lower()
+                            # Only include active stocks
+                            if symbol and status == 'active':
+                                stocks.append(symbol)
+                        logger.info(f"Parsed {len(stocks)} stocks from CSV format")
+                    except Exception as csv_error:
+                        logger.warning(f"Failed to parse as CSV: {str(csv_error)}, trying JSON...")
+                        # Fall through to JSON parsing
+                
+                # If no stocks found from CSV, try JSON format
+                if not stocks:
+                    try:
+                        listing_data = listing_response.json()
+                        if "Error Message" in listing_data:
+                            raise ValueError(f"API Error: {listing_data['Error Message']}")
+                        if "Note" in listing_data:
+                            raise ValueError(f"API Note: {listing_data['Note']}")
+                        
+                        # Try to extract from JSON response
+                        if isinstance(listing_data, list):
+                            stocks = [entry.get('symbol', '').upper().strip() for entry in listing_data 
+                                     if entry.get('symbol') and entry.get('status', '').lower() == 'active']
+                        elif 'data' in listing_data:
+                            stocks = [entry.get('symbol', '').upper().strip() for entry in listing_data['data'] 
+                                     if entry.get('symbol') and entry.get('status', '').lower() == 'active']
+                        logger.info(f"Parsed {len(stocks)} stocks from JSON format")
+                    except (ValueError, json.JSONDecodeError) as json_error:
+                        # If both CSV and JSON fail, log the response for debugging
+                        logger.error(f"Failed to parse response as CSV or JSON. Response preview: {response_text[:500]}")
+                        raise ValueError(f"Could not parse LISTING_STATUS response: {str(json_error)}")
+                
+                # Filter out empty symbols and remove duplicates
+                stocks = list(set([s for s in stocks if s and len(s) > 0]))
+                
+                if not stocks:
+                    raise ValueError("No active stocks found in LISTING_STATUS response")
+                
+                logger.info(f"Retrieved {len(stocks)} active stocks from Alpha Vantage")
+                stock_ingestion_status['tickers_total'] = len(stocks)
+                stock_ingestion_status['message'] = f'Found {len(stocks)} active stocks. Starting ingestion...'
+                
+            except Exception as e:
+                logger.error(f"Error fetching stock list: {str(e)}", exc_info=True)
+                stock_ingestion_status['message'] = f'Error fetching stock list: {str(e)}'
+                return
+            
+            total_inserted = 0
+            total_skipped = 0
+            seen_urls = set()  # Global deduplication across all stocks
+            
+            # Start from NOW and go backwards in time
+            current_end = datetime.now()
+            initial_start = current_end - timedelta(days=365)
+            current_start = initial_start
+            
+            ticker_index = 0
+            chunk_num = 0
+            round_num = 0  # Track how many complete rounds through all stocks
+            
+            # Keep running until time expires
+            while datetime.now() < end_time and stock_ingestion_status['running'] and ticker_index < len(stocks):
+                # Cycle through stocks - priority to new stocks over older news
+                ticker = stocks[ticker_index]
+                
+                # Check if we've completed a full round through all stocks
+                if ticker_index > 0 and (ticker_index % len(stocks)) == 0:
+                    round_num += 1
+                    # After completing a round, go backwards in time for next round
+                    current_end = current_end - timedelta(days=30)
+                    # If we've gone too far back, reset to now and start fresh
+                    if current_end < current_start:
+                        current_end = datetime.now()
+                        current_start = current_end - timedelta(days=365)
+                        round_num = 0
+                    logger.info(f"Deep research: Completed round {round_num}, moving back in time. Next range: {current_end.strftime('%Y%m%dT%H%M')}")
+                
+                ticker_index += 1
+                
+                stock_ingestion_status['current_ticker'] = ticker
+                stock_ingestion_status['tickers_completed'] = round_num
+                
+                # Calculate remaining time
+                remaining_seconds = (end_time - datetime.now()).total_seconds()
+                remaining_minutes = int(remaining_seconds / 60)
+                remaining_secs = int(remaining_seconds % 60)
+                stock_ingestion_status['message'] = (
+                    f'Ticker: {ticker} ({ticker_index}/{len(stocks)}, Round {round_num + 1}) | '
+                    f'Time remaining: {remaining_minutes}m {remaining_secs}s'
+                )
+                
+                chunk_num += 1
+                chunk_days = 30
+                
+                # Go backwards: chunk_end is more recent, chunk_start is older
+                chunk_start = max(current_end - timedelta(days=chunk_days), current_start)
+                chunk_from = chunk_start.strftime('%Y%m%dT%H%M')
+                chunk_to = current_end.strftime('%Y%m%dT%H%M')
+                
+                logger.info(f"Deep research: Ticker {ticker}, round {round_num + 1}, chunk {chunk_num}: {chunk_from} to {chunk_to}")
+                
+                try:
+                    # Fetch articles for this ticker and chunk
+                    # Try original ticker first
+                    ticker_to_use = ticker
+                    chunk_data = None
+                    
+                    try:
+                        chunk_data = collector._single_request(
+                            tickers=ticker_to_use,
+                            topics=None,
+                            time_from=chunk_from,
+                            time_to=chunk_to,
+                            limit=50,
+                            sort="LATEST"
+                        )
+                    except ValueError as e:
+                        error_msg = str(e)
+                        # Check if it's an invalid ticker format error
+                        if "Invalid ticker format" in error_msg:
+                            # Try converting dashes to underscores (as per NEWS_SENTIMENT API requirements)
+                            if "-" in ticker:
+                                ticker_to_use = ticker.replace("-", "_")
+                                logger.info(f"Ticker {ticker} has invalid format for NEWS_SENTIMENT API, trying variant: {ticker_to_use}")
+                                try:
+                                    chunk_data = collector._single_request(
+                                        tickers=ticker_to_use,
+                                        topics=None,
+                                        time_from=chunk_from,
+                                        time_to=chunk_to,
+                                        limit=50,
+                                        sort="LATEST"
+                                    )
+                                    logger.info(f"Successfully used variant {ticker_to_use} for ticker {ticker}")
+                                except ValueError as e2:
+                                    # If variant also fails, log and continue (don't skip the ticker)
+                                    logger.warning(f"Ticker {ticker} and variant {ticker_to_use} both failed for NEWS_SENTIMENT API: {str(e2)}. No news available for this ticker format.")
+                                    # Continue to next ticker without processing this chunk
+                                    current_end = datetime.now()
+                                    current_start = current_end - timedelta(days=365)
+                                    continue
+                            else:
+                                # Other invalid format, log and continue
+                                logger.warning(f"Ticker {ticker} has invalid format for NEWS_SENTIMENT API: {error_msg}. Skipping this ticker.")
+                                current_end = datetime.now()
+                                current_start = current_end - timedelta(days=365)
+                                continue
+                        else:
+                            # Re-raise if it's a different error (rate limit, etc.)
+                            raise
+                    
+                    if not chunk_data:
+                        # No data available, continue to next ticker
+                        current_end = datetime.now()
+                        current_start = current_end - timedelta(days=365)
+                        continue
+                    
+                    chunk_articles = chunk_data.get('feed', [])
+                    
+                    # Deduplicate globally
+                    new_articles = []
+                    for article in chunk_articles:
+                        url = article.get('url')
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            new_articles.append(article)
+                    
+                    logger.info(f"Deep research: Ticker {ticker}, round {round_num + 1}, chunk {chunk_num}: {len(new_articles)} new articles")
+                    
+                    # Save to DB after each chunk
+                    if new_articles:
+                        with db_manager:
+                            result = db_manager.save_articles(new_articles)
+                            total_inserted += result['inserted']
+                            total_skipped += result['skipped']
+                            stock_ingestion_status['total_inserted'] = total_inserted
+                            stock_ingestion_status['total_skipped'] = total_skipped
+                            stock_ingestion_status['total_articles'] = total_inserted + total_skipped
+                            logger.info(f"Deep research: Saved chunk - {result['inserted']} inserted, {result['skipped']} skipped")
+                    
+                except Exception as e:
+                    logger.error(f"Error in deep research chunk for ticker {ticker}: {str(e)}", exc_info=True)
+                    # Continue with next request - don't skip the ticker, just move on
+                    current_end = datetime.now()
+                    current_start = current_end - timedelta(days=365)
+                
+                # Rate limit delay (only if we have time left)
+                if datetime.now() < end_time:
+                    time.sleep(collector.request_delay)
+            
+            # Final status
+            elapsed_minutes = int((datetime.now() - start_time).total_seconds() / 60)
+            elapsed_seconds = int((datetime.now() - start_time).total_seconds() % 60)
+            stock_ingestion_status['message'] = (
+                f'✓ Deep research complete! '
+                f'Ran for {elapsed_minutes}m {elapsed_seconds}s, '
+                f'Processed {ticker_index} stocks, '
+                f'{chunk_num} chunks, '
+                f'{total_inserted} new articles inserted, '
+                f'{total_skipped} duplicates skipped'
+            )
+            logger.info(f"Deep research completed: {elapsed_minutes}m {elapsed_seconds}s, {ticker_index} stocks, {chunk_num} chunks, {total_inserted} inserted, {total_skipped} skipped")
+            
+        except Exception as e:
+            logger.error(f"Error in deep research thread: {str(e)}", exc_info=True)
+            stock_ingestion_status['message'] = f'Error: {str(e)}'
+        finally:
+            stock_ingestion_status['running'] = False
+            stock_ingestion_status['current_ticker'] = None
+            logger.info("Deep research thread finished")
+    
+    thread = threading.Thread(target=deep_research_thread)
+    thread.daemon = True
+    thread.start()
+    
+    flash(f'Deep research started: running for {duration_minutes} minutes, collecting from all available stocks.', 'info')
+    return redirect(url_for('index'))
+
+
+@app.route('/api/deep-research/status')
+def get_deep_research_status():
+    """Get deep research status (AJAX endpoint)."""
+    return jsonify(stock_ingestion_status)
+
+
+@app.route('/api/deep-research/stop', methods=['POST'])
+def stop_deep_research():
+    """Stop deep research."""
+    global stock_ingestion_status
+    if stock_ingestion_status['running']:
+        stock_ingestion_status['running'] = False
+        logger.info("Deep research stop requested")
         return jsonify({'status': 'stopping'})
     return jsonify({'status': 'not_running'})
 
@@ -921,7 +1259,177 @@ def api_articles():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/analytics')
+def analytics():
+    """Analytics page showing aggregated sentiment data."""
+    logger.info("Analytics page accessed")
+    return render_template('analytics.html')
+
+
+@app.route('/api/analytics/ticker-sentiment')
+def get_ticker_sentiment_analytics():
+    """Get aggregated ticker sentiment data from view."""
+    ticker = request.args.get('ticker', '').strip().upper()
+    days_back = int(request.args.get('days_back', 30))
+    limit = int(request.args.get('limit', 100))
+    
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Build query with proper parameterization
+            where_clauses = []
+            params = []
+            
+            where_clauses.append("date >= CURRENT_DATE - INTERVAL '%s days'" % days_back)
+            
+            if ticker:
+                where_clauses.append("ticker = %s")
+                params.append(ticker)
+            
+            where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+            
+            query = f"""
+                SELECT 
+                    ticker,
+                    date,
+                    avg_sentiment_score,
+                    avg_relevance_score,
+                    weighted_sentiment,
+                    total_weighted_sentiment,
+                    article_count,
+                    bullish_count,
+                    bearish_count,
+                    neutral_count
+                FROM ticker_daily_sentiment_view
+                {where_clause}
+                ORDER BY ticker, date DESC
+                LIMIT %s
+            """
+            
+            cursor.execute(query, params + [limit])
+            
+            columns = [desc[0] for desc in cursor.description]
+            results = []
+            for row in cursor.fetchall():
+                result = dict(zip(columns, row))
+                # Convert numeric types
+                for key in ['avg_sentiment_score', 'avg_relevance_score', 'weighted_sentiment', 'total_weighted_sentiment']:
+                    if result.get(key) is not None:
+                        result[key] = float(result[key])
+                # Convert date to ISO format
+                if result.get('date'):
+                    result['date'] = result['date'].isoformat()
+                results.append(result)
+            
+            cursor.close()
+            
+            # Get unique tickers for filter
+            cursor = db_manager.conn.cursor()
+            cursor.execute("SELECT DISTINCT ticker FROM ticker_daily_sentiment_view ORDER BY ticker")
+            tickers = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            
+            return jsonify({
+                'data': results,
+                'tickers': tickers,
+                'count': len(results)
+            })
+            
+    except Exception as e:
+        logger.error(f"Error fetching ticker sentiment analytics: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+def ensure_analytics_view_exists():
+    """Ensure the ticker_daily_sentiment_view exists in the database."""
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                logger.warning("Cannot check/create analytics view: database connection not established")
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if view exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 
+                    FROM information_schema.views 
+                    WHERE table_name = 'ticker_daily_sentiment_view'
+                )
+            """)
+            view_exists = cursor.fetchone()[0]
+            
+            if not view_exists:
+                logger.info("Creating ticker_daily_sentiment_view...")
+                # Create the view
+                create_view_sql = """
+                CREATE OR REPLACE VIEW ticker_daily_sentiment_view AS
+                WITH ticker_data AS (
+                    SELECT 
+                        DATE(time_published) as date,
+                        jsonb_array_elements(ticker_sentiment) as ticker_info,
+                        time_published
+                    FROM articles
+                    WHERE time_published IS NOT NULL
+                        AND ticker_sentiment IS NOT NULL
+                        AND jsonb_array_length(ticker_sentiment) > 0
+                ),
+                ticker_scores AS (
+                    SELECT 
+                        date,
+                        ticker_info->>'ticker' as ticker,
+                        (ticker_info->>'ticker_sentiment_score')::numeric as sentiment_score,
+                        (ticker_info->>'relevance_score')::numeric as relevance_score,
+                        ticker_info->>'ticker_sentiment_label' as sentiment_label,
+                        time_published
+                    FROM ticker_data
+                    WHERE ticker_info->>'ticker' IS NOT NULL
+                        AND ticker_info->>'ticker_sentiment_score' IS NOT NULL
+                        AND ticker_info->>'relevance_score' IS NOT NULL
+                        AND (ticker_info->>'ticker_sentiment_score')::numeric IS NOT NULL
+                        AND (ticker_info->>'relevance_score')::numeric IS NOT NULL
+                )
+                SELECT 
+                    ticker,
+                    date,
+                    AVG(sentiment_score) as avg_sentiment_score,
+                    AVG(relevance_score) as avg_relevance_score,
+                    AVG(sentiment_score * relevance_score) as weighted_sentiment,
+                    SUM(sentiment_score * relevance_score) as total_weighted_sentiment,
+                    COUNT(*) as article_count,
+                    COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bullish%') as bullish_count,
+                    COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bearish%') as bearish_count,
+                    COUNT(*) FILTER (WHERE sentiment_label = 'Neutral') as neutral_count,
+                    MAX(time_published) as last_article_time
+                FROM ticker_scores
+                WHERE sentiment_score IS NOT NULL 
+                    AND relevance_score IS NOT NULL
+                GROUP BY ticker, date
+                ORDER BY ticker, date DESC
+                """
+                cursor.execute(create_view_sql)
+                db_manager.conn.commit()
+                logger.info("Successfully created ticker_daily_sentiment_view")
+            else:
+                logger.debug("ticker_daily_sentiment_view already exists")
+            
+            cursor.close()
+    except Exception as e:
+        logger.error(f"Error ensuring analytics view exists: {str(e)}", exc_info=True)
+        # Don't raise - allow app to start even if view creation fails
+
+
 if __name__ == '__main__':
+    # Ensure analytics view exists before starting the app
+    ensure_analytics_view_exists()
+    
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug)
