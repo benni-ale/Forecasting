@@ -58,13 +58,6 @@
                         </small>
                     </div>
 
-                    <div class="mb-3">
-                        <label for="search_query" class="form-label">Search Query</label>
-                        <input type="text" class="form-control" id="search_query" name="search_query" 
-                               placeholder="Keywords to search in news (e.g., earnings, IPO, merger)">
-                        <small class="form-text text-muted">Optional: Filter news by keywords (searches in title and summary)</small>
-                    </div>
-
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label for="tickers" class="form-label">Tickers</label>
@@ -134,13 +127,19 @@
                             <label for="date_from" class="form-label">From Date</label>
                             <input type="date" class="form-control" id="date_from" name="date_from">
                             <input type="hidden" id="time_from" name="time_from">
-                            <small class="form-text text-muted">Optional: Select start date (time will be set to 00:00)</small>
+                            <small class="form-text text-muted">
+                                Optional: Select start date (time will be set to 00:00). 
+                                <strong>If not specified, defaults to 365 days ago.</strong>
+                            </small>
                         </div>
                         <div class="col-md-6 mb-3">
                             <label for="date_to" class="form-label">To Date</label>
                             <input type="date" class="form-control" id="date_to" name="date_to">
                             <input type="hidden" id="time_to" name="time_to">
-                            <small class="form-text text-muted">Optional: Select end date (time will be set to 23:59)</small>
+                            <small class="form-text text-muted">
+                                Optional: Select end date (time will be set to 23:59). 
+                                <strong>If not specified, defaults to today.</strong>
+                            </small>
                         </div>
                     </div>
 

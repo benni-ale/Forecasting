@@ -12,8 +12,9 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from news_collector import AlphaVantageNewsCollector, DatabaseManager
 import threading
 import time
+from dotenv import load_dotenv
 
-# Configure logging
+# Configure logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,6 +22,19 @@ logging.basicConfig(
     force=True  # Force reconfiguration
 )
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file
+env_loaded = load_dotenv()
+if env_loaded:
+    logger.info("Successfully loaded .env file")
+    # Log which API key is loaded (masked for security)
+    api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    if api_key:
+        logger.info(f"API key found in .env file (first 8 chars: {api_key[:8]}...)")
+    else:
+        logger.warning("ALPHA_VANTAGE_API_KEY not found in .env file")
+else:
+    logger.warning("No .env file found or failed to load")
 
 # Configure Flask logging
 logging.getLogger('werkzeug').setLevel(logging.WARNING)  # Reduce Flask request logs
@@ -74,6 +88,12 @@ def collect_news():
     form_api_key = request.form.get('api_key', '').strip()
     env_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
     
+    # Debug: log all sources
+    logger.info(f"API key sources - Form: {'provided' if form_api_key else 'empty'}, "
+                f"Environment: {'found' if env_api_key else 'not found'}")
+    if env_api_key:
+        logger.info(f"Environment API key value (first 8 chars): {env_api_key[:8]}...")
+    
     # Use form API key if provided, otherwise use environment variable
     api_key = form_api_key if form_api_key else env_api_key
     
@@ -94,9 +114,16 @@ def collect_news():
     
     tickers = request.form.get('tickers', '').strip()
     topics = request.form.get('topics', '').strip()
-    search_query = request.form.get('search_query', '').strip()
     time_from = request.form.get('time_from', '').strip()
     time_to = request.form.get('time_to', '').strip()
+    
+    # If no time range is specified, default to last 365 days
+    if not time_from or not time_to:
+        now = datetime.now()
+        one_year_ago = now - timedelta(days=365)
+        time_from = one_year_ago.strftime('%Y%m%dT0000')
+        time_to = now.strftime('%Y%m%dT2359')
+        logger.info(f"No time range specified, using default: last 365 days ({time_from} to {time_to})")
     
     # Date inputs are already converted to YYYYMMDDTHHMM format by JavaScript
     # But handle legacy format conversion if needed
@@ -120,7 +147,7 @@ def collect_news():
     save_to_db = request.form.get('save_to_db') == 'on'
     
     logger.info(f"Collection parameters: tickers={tickers}, topics={topics}, limit={limit}, sort={sort}, "
-                f"time_from={time_from}, time_to={time_to}, search_query={search_query}, save_to_db={save_to_db}")
+                f"time_from={time_from}, time_to={time_to}, save_to_db={save_to_db}")
     
     # Start collection in background thread
     def collect_thread():
@@ -142,26 +169,14 @@ def collect_news():
             data = collector.get_news_sentiment(
                 tickers=tickers if tickers else None,
                 topics=topics if topics else None,
-                time_from=time_from if time_from else None,
-                time_to=time_to if time_to else None,
+                time_from=time_from,  # Already set to default if empty
+                time_to=time_to,  # Already set to default if empty
                 limit=limit,
                 sort=sort
             )
             
             articles = data.get('feed', [])
             logger.info(f"Retrieved {len(articles)} articles from API")
-            
-            # Filter by search query if provided (searches in title and summary)
-            if search_query:
-                search_lower = search_query.lower()
-                original_count = len(articles)
-                articles = [
-                    article for article in articles
-                    if search_lower in (article.get('title') or '').lower() or 
-                       search_lower in (article.get('summary') or '').lower()
-                ]
-                logger.info(f"Filtered articles: {original_count} -> {len(articles)} (search: '{search_query}')")
-                collection_status['message'] = f'Filtered to {len(articles)} articles matching "{search_query}"'
             
             collection_status['articles_collected'] = len(articles)
             

@@ -44,7 +44,6 @@ services:
     env_file:
       - .env
     environment:
-      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
       - DB_HOST=db
       - DB_PORT=${POSTGRES_PORT:-5432}
       - DB_NAME=${POSTGRES_DB:-newsdb}

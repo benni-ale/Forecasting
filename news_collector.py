@@ -65,9 +65,10 @@ class AlphaVantageNewsCollector:
         time_from: Optional[str] = None,
         time_to: Optional[str] = None,
         limit: int = 50,
-        sort: str = "LATEST"
+        sort: str = "LATEST",
+        max_retries: int = 3
     ) -> Dict:
-        """Make a single API request to Alpha Vantage."""
+        """Make a single API request to Alpha Vantage with retry logic."""
         params = {
             "function": "NEWS_SENTIMENT",
             "apikey": self.api_key,
@@ -84,24 +85,38 @@ class AlphaVantageNewsCollector:
         if time_to:
             params["time_to"] = time_to
         
-        try:
-            response = requests.get(self.BASE_URL, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Check for API errors
-            if "Error Message" in data:
-                logger.error(f"Alpha Vantage API Error: {data['Error Message']}")
-                raise ValueError(f"API Error: {data['Error Message']}")
-            if "Note" in data:
-                logger.warning(f"Alpha Vantage API Note: {data['Note']}")
-                raise ValueError(f"API Note: {data['Note']}")
-            
-            return data
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to connect to Alpha Vantage API: {str(e)}", exc_info=True)
-            raise ConnectionError(f"Failed to connect to Alpha Vantage API: {str(e)}")
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(self.BASE_URL, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Check for API errors
+                if "Error Message" in data:
+                    logger.error(f"Alpha Vantage API Error: {data['Error Message']}")
+                    raise ValueError(f"API Error: {data['Error Message']}")
+                if "Note" in data:
+                    logger.warning(f"Alpha Vantage API Note: {data['Note']}")
+                    raise ValueError(f"API Note: {data['Note']}")
+                
+                return data
+                
+            except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 2  # Exponential backoff: 2s, 4s, 8s
+                    logger.warning(f"SSL/Connection error (attempt {attempt + 1}/{max_retries}): {str(e)}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to connect to Alpha Vantage API after {max_retries} attempts: {str(e)}")
+            except requests.exceptions.RequestException as e:
+                # For other request exceptions, don't retry
+                logger.error(f"Failed to connect to Alpha Vantage API: {str(e)}", exc_info=True)
+                raise ConnectionError(f"Failed to connect to Alpha Vantage API: {str(e)}")
+        
+        # If we get here, all retries failed
+        raise ConnectionError(f"Failed to connect to Alpha Vantage API after {max_retries} attempts: {str(last_exception)}")
     
     def get_news_sentiment(
         self,
@@ -173,12 +188,15 @@ class AlphaVantageNewsCollector:
                 
                 logger.info(f"Fetching chunk {chunk_num}/{num_chunks}: {chunk_from} to {chunk_to}")
                 
-                # Make request for this chunk
-                chunk_data = self._single_request(
-                    tickers, topics, chunk_from, chunk_to, 50, sort
-                )
-                
-                chunk_articles = chunk_data.get('feed', [])
+                # Make request for this chunk with error handling
+                try:
+                    chunk_data = self._single_request(
+                        tickers, topics, chunk_from, chunk_to, 50, sort
+                    )
+                    chunk_articles = chunk_data.get('feed', [])
+                except (ConnectionError, ValueError) as e:
+                    logger.error(f"Failed to fetch chunk {chunk_num}/{num_chunks}: {str(e)}. Skipping this chunk.")
+                    chunk_articles = []  # Continue with empty list
                 
                 # Add unique articles
                 for article in chunk_articles:
