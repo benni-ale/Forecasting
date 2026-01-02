@@ -71,6 +71,7 @@
                                 <th>Avg Sentiment</th>
                                 <th>Avg Relevance</th>
                                 <th>Weighted Sentiment</th>
+                                <th>Weighted Sentiment (Diffused)</th>
                                 <th>Articles</th>
                                 <th>Bullish</th>
                                 <th>Bearish</th>
@@ -230,18 +231,24 @@
             comparisonChart.destroy();
         }
         
-        // Filter out null values for sentiment
+        // Filter out null values for sentiment (use diffused sentiment if available)
         const validIndices = [];
         const validDates = [];
         const validNormalizedSentiment = [];
+        const validNormalizedSentimentDiffused = [];
         const validNormalizedPrices = [];
         const validArticleCounts = [];
         
         for (let i = 0; i < data.dates.length; i++) {
-            if (data.normalized_sentiment[i] !== null && data.normalized_sentiment[i] !== undefined) {
+            // Prefer diffused sentiment, fallback to regular sentiment
+            const hasSentiment = (data.normalized_sentiment_diffused && data.normalized_sentiment_diffused[i] !== null && data.normalized_sentiment_diffused[i] !== undefined) ||
+                                 (data.normalized_sentiment && data.normalized_sentiment[i] !== null && data.normalized_sentiment[i] !== undefined);
+            
+            if (hasSentiment) {
                 validIndices.push(i);
                 validDates.push(data.dates[i]);
                 validNormalizedSentiment.push(data.normalized_sentiment[i]);
+                validNormalizedSentimentDiffused.push(data.normalized_sentiment_diffused ? data.normalized_sentiment_diffused[i] : null);
                 validNormalizedPrices.push(data.normalized_prices[i]);
                 validArticleCounts.push(data.article_counts[i] || 0);
             }
@@ -267,6 +274,17 @@
                         data: validNormalizedSentiment,
                         borderColor: 'rgb(255, 99, 132)',
                         backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                        tension: 0.1,
+                        fill: false,
+                        yAxisID: 'y',
+                        pointRadius: 2,
+                        borderDash: [5, 5]
+                    },
+                    {
+                        label: `${data.ticker} Weighted Sentiment Diffused (Normalized, Half-life 7d)`,
+                        data: validNormalizedSentimentDiffused,
+                        borderColor: 'rgb(153, 102, 255)',
+                        backgroundColor: 'rgba(153, 102, 255, 0.1)',
                         tension: 0.1,
                         fill: false,
                         yAxisID: 'y',
@@ -302,9 +320,12 @@
                                     if (datasetLabel.includes('Price')) {
                                         const actualPrice = data.prices[actualIndex];
                                         label += ` (Actual: $${actualPrice.toFixed(2)})`;
-                                    } else if (datasetLabel.includes('Sentiment')) {
+                                    } else if (datasetLabel.includes('Sentiment Diffused')) {
+                                        const actualSentiment = data.sentiment_diffused[actualIndex];
+                                        label += ` (Actual: ${actualSentiment !== null && actualSentiment !== undefined ? actualSentiment.toFixed(4) : 'N/A'})`;
+                                    } else if (datasetLabel.includes('Sentiment') && !datasetLabel.includes('Diffused')) {
                                         const actualSentiment = data.sentiment[actualIndex];
-                                        label += ` (Actual: ${actualSentiment.toFixed(4)})`;
+                                        label += ` (Actual: ${actualSentiment !== null && actualSentiment !== undefined ? actualSentiment.toFixed(4) : 'N/A'})`;
                                     }
                                     
                                     return label;
@@ -379,9 +400,10 @@
             tr.innerHTML = `
                 <td><strong>${row.ticker}</strong></td>
                 <td>${row.date}</td>
-                <td>${row.avg_sentiment_score !== null ? row.avg_sentiment_score.toFixed(4) : 'N/A'}</td>
-                <td>${row.avg_relevance_score !== null ? row.avg_relevance_score.toFixed(4) : 'N/A'}</td>
-                <td><strong>${row.weighted_sentiment !== null ? row.weighted_sentiment.toFixed(4) : 'N/A'}</strong></td>
+                <td>${row.avg_sentiment_score !== null && row.avg_sentiment_score !== undefined ? row.avg_sentiment_score.toFixed(4) : 'N/A'}</td>
+                <td>${row.avg_relevance_score !== null && row.avg_relevance_score !== undefined ? row.avg_relevance_score.toFixed(4) : 'N/A'}</td>
+                <td><strong>${row.weighted_sentiment !== null && row.weighted_sentiment !== undefined ? row.weighted_sentiment.toFixed(4) : 'N/A'}</strong></td>
+                <td><strong class="text-primary">${row.weighted_sentiment_diffused !== null && row.weighted_sentiment_diffused !== undefined ? row.weighted_sentiment_diffused.toFixed(4) : 'N/A'}</strong></td>
                 <td>${row.article_count}</td>
                 <td><span class="badge bg-success">${row.bullish_count || 0}</span></td>
                 <td><span class="badge bg-danger">${row.bearish_count || 0}</span></td>

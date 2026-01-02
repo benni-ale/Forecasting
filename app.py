@@ -1301,6 +1301,7 @@ def get_ticker_sentiment_analytics():
                     avg_relevance_score,
                     weighted_sentiment,
                     total_weighted_sentiment,
+                    weighted_sentiment_diffused,
                     article_count,
                     bullish_count,
                     bearish_count,
@@ -1318,7 +1319,7 @@ def get_ticker_sentiment_analytics():
             for row in cursor.fetchall():
                 result = dict(zip(columns, row))
                 # Convert numeric types
-                for key in ['avg_sentiment_score', 'avg_relevance_score', 'weighted_sentiment', 'total_weighted_sentiment']:
+                for key in ['avg_sentiment_score', 'avg_relevance_score', 'weighted_sentiment', 'total_weighted_sentiment', 'weighted_sentiment_diffused']:
                     if result.get(key) is not None:
                         result[key] = float(result[key])
                 # Convert date to ISO format
@@ -1394,6 +1395,7 @@ def get_price_vs_sentiment(ticker):
                 SELECT 
                     date,
                     weighted_sentiment,
+                    weighted_sentiment_diffused,
                     article_count
                 FROM ticker_daily_sentiment_view
                 WHERE ticker = %s
@@ -1404,11 +1406,13 @@ def get_price_vs_sentiment(ticker):
             cursor.execute(query, (ticker.upper(), cutoff_date))
             
             sentiment_data = {}
+            sentiment_diffused_data = {}
             article_count_data = {}
             for row in cursor.fetchall():
                 date_str = row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])
                 sentiment_data[date_str] = float(row[1]) if row[1] is not None else None
-                article_count_data[date_str] = int(row[2]) if row[2] is not None else 0
+                sentiment_diffused_data[date_str] = float(row[2]) if row[2] is not None else None
+                article_count_data[date_str] = int(row[3]) if row[3] is not None else 0
             
             cursor.close()
         
@@ -1429,6 +1433,7 @@ def get_price_vs_sentiment(ticker):
             
             price_points = []
             sentiment_points = []
+            sentiment_diffused_points = []
             article_counts = []
             dates = []
             
@@ -1453,24 +1458,29 @@ def get_price_vs_sentiment(ticker):
                         
                         # Get sentiment for this date (exact match or closest previous date)
                         sentiment_value = sentiment_data.get(date_str)
+                        sentiment_diffused_value = sentiment_diffused_data.get(date_str)
                         article_count = article_count_data.get(date_str, 0)
                         
                         if sentiment_value is None:
                             # Try to find closest previous date (sentiment might be from previous day)
                             closest_date = None
                             closest_value = None
+                            closest_diffused_value = None
                             closest_count = 0
                             for sent_date, sent_val in sorted(sentiment_data.items()):
                                 if sent_date <= date_str:
                                     closest_date = sent_date
                                     closest_value = sent_val
+                                    closest_diffused_value = sentiment_diffused_data.get(sent_date)
                                     closest_count = article_count_data.get(sent_date, 0)
                                 else:
                                     break
                             sentiment_value = closest_value
+                            sentiment_diffused_value = closest_diffused_value
                             article_count = closest_count
                         
                         sentiment_points.append(sentiment_value)
+                        sentiment_diffused_points.append(sentiment_diffused_value)
                         article_counts.append(article_count)
                 except (ValueError, KeyError) as e:
                     logger.warning(f"Error processing date {date_str}: {str(e)}")
@@ -1493,6 +1503,23 @@ def get_price_vs_sentiment(ticker):
             else:
                 normalized_sentiment = [None] * len(sentiment_points)
             
+            # Normalize diffused sentiment (Min-Max normalization)
+            sentiment_diffused_values = [s for s in sentiment_diffused_points if s is not None]
+            if sentiment_diffused_values:
+                min_sentiment_diffused = min(sentiment_diffused_values)
+                max_sentiment_diffused = max(sentiment_diffused_values)
+                sentiment_diffused_range = max_sentiment_diffused - min_sentiment_diffused if max_sentiment_diffused != min_sentiment_diffused else 1
+                
+                normalized_sentiment_diffused = []
+                for i, sent in enumerate(sentiment_diffused_points):
+                    if sent is not None:
+                        normalized = (sent - min_sentiment_diffused) / sentiment_diffused_range
+                        normalized_sentiment_diffused.append(normalized)
+                    else:
+                        normalized_sentiment_diffused.append(None)
+            else:
+                normalized_sentiment_diffused = [None] * len(sentiment_diffused_points)
+            
             # Normalize price (Min-Max normalization)
             if price_points:
                 min_price = min(price_points)
@@ -1510,11 +1537,15 @@ def get_price_vs_sentiment(ticker):
                 'normalized_prices': normalized_price,
                 'sentiment': sentiment_points,
                 'normalized_sentiment': normalized_sentiment,
+                'sentiment_diffused': sentiment_diffused_points,
+                'normalized_sentiment_diffused': normalized_sentiment_diffused,
                 'article_counts': article_counts,
                 'price_min': min_price if price_points else None,
                 'price_max': max_price if price_points else None,
                 'sentiment_min': min_sentiment if sentiment_values else None,
-                'sentiment_max': max_sentiment if sentiment_values else None
+                'sentiment_max': max_sentiment if sentiment_values else None,
+                'sentiment_diffused_min': min_sentiment_diffused if sentiment_diffused_values else None,
+                'sentiment_diffused_max': max_sentiment_diffused if sentiment_diffused_values else None
             })
         else:
             return jsonify({'error': 'No price data available'}), 404
@@ -1535,21 +1566,16 @@ def ensure_analytics_view_exists():
             
             cursor = db_manager.conn.cursor()
             
-            # Check if view exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.views 
-                    WHERE table_name = 'ticker_daily_sentiment_view'
-                )
-            """)
-            view_exists = cursor.fetchone()[0]
+            # Always recreate the view to ensure it has the latest structure
+            # PostgreSQL doesn't allow changing column structure with CREATE OR REPLACE,
+            # so we need to drop it first
+            logger.info("Dropping existing ticker_daily_sentiment_view if it exists...")
+            cursor.execute("DROP VIEW IF EXISTS ticker_daily_sentiment_view CASCADE")
+            db_manager.conn.commit()
             
-            if not view_exists:
-                logger.info("Creating ticker_daily_sentiment_view...")
-                # Create the view
-                create_view_sql = """
-                CREATE OR REPLACE VIEW ticker_daily_sentiment_view AS
+            logger.info("Creating ticker_daily_sentiment_view with latest structure...")
+            create_view_sql = """
+                CREATE VIEW ticker_daily_sentiment_view AS
                 WITH ticker_data AS (
                     SELECT 
                         DATE(time_published) as date,
@@ -1574,30 +1600,75 @@ def ensure_analytics_view_exists():
                         AND ticker_info->>'relevance_score' IS NOT NULL
                         AND (ticker_info->>'ticker_sentiment_score')::numeric IS NOT NULL
                         AND (ticker_info->>'relevance_score')::numeric IS NOT NULL
+                ),
+                daily_aggregations AS (
+                    SELECT 
+                        ticker,
+                        date,
+                        AVG(sentiment_score) as avg_sentiment_score,
+                        AVG(relevance_score) as avg_relevance_score,
+                        AVG(sentiment_score * relevance_score) as weighted_sentiment,
+                        SUM(sentiment_score * relevance_score) as total_weighted_sentiment,
+                        COUNT(*) as article_count,
+                        COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bullish%') as bullish_count,
+                        COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bearish%') as bearish_count,
+                        COUNT(*) FILTER (WHERE sentiment_label = 'Neutral') as neutral_count,
+                        MAX(time_published) as last_article_time
+                    FROM ticker_scores
+                    WHERE sentiment_score IS NOT NULL 
+                        AND relevance_score IS NOT NULL
+                    GROUP BY ticker, date
+                ),
+                diffused_sentiment AS (
+                    SELECT 
+                        d1.ticker,
+                        d1.date,
+                        d1.avg_sentiment_score,
+                        d1.avg_relevance_score,
+                        d1.weighted_sentiment,
+                        d1.total_weighted_sentiment,
+                        d1.article_count,
+                        d1.bullish_count,
+                        d1.bearish_count,
+                        d1.neutral_count,
+                        d1.last_article_time,
+                        COALESCE(
+                            CASE 
+                                WHEN SUM(POWER(0.5, (d1.date - d2.date)::numeric / 7.0)) FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days') > 0
+                                THEN SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
+                                     FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days')
+                                     / SUM(POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
+                                     FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days')
+                                ELSE 0
+                            END,
+                            0
+                        ) as weighted_sentiment_diffused
+                    FROM daily_aggregations d1
+                    LEFT JOIN daily_aggregations d2 ON d1.ticker = d2.ticker
+                    GROUP BY 
+                        d1.ticker, d1.date, d1.avg_sentiment_score, d1.avg_relevance_score,
+                        d1.weighted_sentiment, d1.total_weighted_sentiment, d1.article_count,
+                        d1.bullish_count, d1.bearish_count, d1.neutral_count, d1.last_article_time
                 )
                 SELECT 
                     ticker,
                     date,
-                    AVG(sentiment_score) as avg_sentiment_score,
-                    AVG(relevance_score) as avg_relevance_score,
-                    AVG(sentiment_score * relevance_score) as weighted_sentiment,
-                    SUM(sentiment_score * relevance_score) as total_weighted_sentiment,
-                    COUNT(*) as article_count,
-                    COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bullish%') as bullish_count,
-                    COUNT(*) FILTER (WHERE sentiment_label LIKE '%Bearish%') as bearish_count,
-                    COUNT(*) FILTER (WHERE sentiment_label = 'Neutral') as neutral_count,
-                    MAX(time_published) as last_article_time
-                FROM ticker_scores
-                WHERE sentiment_score IS NOT NULL 
-                    AND relevance_score IS NOT NULL
-                GROUP BY ticker, date
+                    avg_sentiment_score,
+                    avg_relevance_score,
+                    weighted_sentiment,
+                    total_weighted_sentiment,
+                    weighted_sentiment_diffused,
+                    article_count,
+                    bullish_count,
+                    bearish_count,
+                    neutral_count,
+                    last_article_time
+                FROM diffused_sentiment
                 ORDER BY ticker, date DESC
                 """
-                cursor.execute(create_view_sql)
-                db_manager.conn.commit()
-                logger.info("Successfully created ticker_daily_sentiment_view")
-            else:
-                logger.debug("ticker_daily_sentiment_view already exists")
+            cursor.execute(create_view_sql)
+            db_manager.conn.commit()
+            logger.info("Successfully recreated ticker_daily_sentiment_view")
             
             cursor.close()
     except Exception as e:
