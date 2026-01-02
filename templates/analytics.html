@@ -93,7 +93,31 @@
                 <h5><i class="bi bi-bar-chart"></i> Weighted Sentiment Trend</h5>
             </div>
             <div class="card-body">
-                <canvas id="sentimentChart" height="100"></canvas>
+                <div style="height: 400px; position: relative;">
+                    <canvas id="sentimentChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4" id="comparisonChartRow" style="display: none;">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-graph-up-arrow"></i> Stock Price vs Normalized Weighted Sentiment</h5>
+                <small class="text-muted">Both series normalized to 0-1 range for comparison</small>
+            </div>
+            <div class="card-body">
+                <div id="comparisonLoading" class="text-center" style="display: none;">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <div id="comparisonErrorMessage" class="alert alert-danger" style="display: none;"></div>
+                <div style="height: 500px; position: relative;">
+                    <canvas id="comparisonChart"></canvas>
+                </div>
             </div>
         </div>
     </div>
@@ -103,6 +127,7 @@
 {% block extra_js %}
 <script>
     let sentimentChart = null;
+    let comparisonChart = null;
     
     // Load tickers list on page load
     function loadTickers() {
@@ -151,6 +176,14 @@
                 
                 renderTable(data.data);
                 renderChart(data.data);
+                
+                // Load comparison chart if ticker is selected
+                const ticker = document.getElementById('tickerFilter').value;
+                if (ticker) {
+                    loadComparisonChart(ticker, daysBack);
+                } else {
+                    document.getElementById('comparisonChartRow').style.display = 'none';
+                }
             })
             .catch(error => {
                 document.getElementById('loading').style.display = 'none';
@@ -158,6 +191,177 @@
                 document.getElementById('errorMessage').style.display = 'block';
                 console.error('Error:', error);
             });
+    }
+    
+    function loadComparisonChart(ticker, daysBack) {
+        document.getElementById('comparisonChartRow').style.display = 'block';
+        document.getElementById('comparisonLoading').style.display = 'block';
+        document.getElementById('comparisonErrorMessage').style.display = 'none';
+        
+        fetch(`/api/analytics/price-vs-sentiment/${ticker}?days_back=${daysBack}`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('comparisonLoading').style.display = 'none';
+                
+                if (data.error) {
+                    document.getElementById('comparisonErrorMessage').textContent = data.error;
+                    document.getElementById('comparisonErrorMessage').style.display = 'block';
+                    return;
+                }
+                
+                renderComparisonChart(data);
+            })
+            .catch(error => {
+                document.getElementById('comparisonLoading').style.display = 'none';
+                document.getElementById('comparisonErrorMessage').textContent = 'Error loading comparison data: ' + error.message;
+                document.getElementById('comparisonErrorMessage').style.display = 'block';
+                console.error('Error:', error);
+            });
+    }
+    
+    function renderComparisonChart(data) {
+        if (!data || !data.dates || data.dates.length === 0) {
+            return;
+        }
+        
+        const ctx = document.getElementById('comparisonChart').getContext('2d');
+        
+        if (comparisonChart) {
+            comparisonChart.destroy();
+        }
+        
+        // Filter out null values for sentiment
+        const validIndices = [];
+        const validDates = [];
+        const validNormalizedSentiment = [];
+        const validNormalizedPrices = [];
+        const validArticleCounts = [];
+        
+        for (let i = 0; i < data.dates.length; i++) {
+            if (data.normalized_sentiment[i] !== null && data.normalized_sentiment[i] !== undefined) {
+                validIndices.push(i);
+                validDates.push(data.dates[i]);
+                validNormalizedSentiment.push(data.normalized_sentiment[i]);
+                validNormalizedPrices.push(data.normalized_prices[i]);
+                validArticleCounts.push(data.article_counts[i] || 0);
+            }
+        }
+        
+        comparisonChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: validDates,
+                datasets: [
+                    {
+                        label: `${data.ticker} Close Price (Normalized)`,
+                        data: validNormalizedPrices,
+                        borderColor: 'rgb(54, 162, 235)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                        tension: 0.1,
+                        fill: false,
+                        yAxisID: 'y',
+                        pointRadius: 2
+                    },
+                    {
+                        label: `${data.ticker} Weighted Sentiment (Normalized)`,
+                        data: validNormalizedSentiment,
+                        borderColor: 'rgb(255, 99, 132)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                        tension: 0.1,
+                        fill: false,
+                        yAxisID: 'y',
+                        pointRadius: 2
+                    }
+                ]
+            },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                title: function(context) {
+                                    const index = context[0].dataIndex;
+                                    const actualIndex = validIndices[index];
+                                    const date = validDates[index];
+                                    const articleCount = validArticleCounts[index] || 0;
+                                    return `${date} - ${articleCount} article${articleCount !== 1 ? 's' : ''}`;
+                                },
+                                label: function(context) {
+                                    const datasetLabel = context.dataset.label;
+                                    const value = context.parsed.y;
+                                    let label = datasetLabel + ': ' + value.toFixed(4);
+                                    
+                                    // Add actual values in tooltip
+                                    const index = context.dataIndex;
+                                    const actualIndex = validIndices[index];
+                                    if (datasetLabel.includes('Price')) {
+                                        const actualPrice = data.prices[actualIndex];
+                                        label += ` (Actual: $${actualPrice.toFixed(2)})`;
+                                    } else if (datasetLabel.includes('Sentiment')) {
+                                        const actualSentiment = data.sentiment[actualIndex];
+                                        label += ` (Actual: ${actualSentiment.toFixed(4)})`;
+                                    }
+                                    
+                                    return label;
+                                }
+                            },
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            titleFont: { size: 14, weight: 'bold' },
+                            bodyFont: { size: 12 },
+                            padding: 12
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                font: { size: 14 },
+                                padding: 15,
+                                usePointStyle: true
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date',
+                                font: { size: 14, weight: 'bold' }
+                            },
+                            ticks: {
+                                font: { size: 12 },
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0, 0, 0, 0.1)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Normalized Value (0-1)',
+                                font: { size: 14, weight: 'bold' }
+                            },
+                            ticks: {
+                                font: { size: 12 },
+                                stepSize: 0.1
+                            },
+                            min: 0,
+                            max: 1,
+                            grid: {
+                                display: true,
+                                color: 'rgba(0, 0, 0, 0.1)'
+                            }
+                        }
+                    }
+                }
+        });
     }
     
     function renderTable(data) {
@@ -225,17 +429,43 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                font: { size: 14 },
+                                padding: 15
+                            }
+                        }
+                    },
                     scales: {
                         y: {
                             title: {
                                 display: true,
-                                text: 'Weighted Sentiment'
+                                text: 'Weighted Sentiment',
+                                font: { size: 14, weight: 'bold' }
+                            },
+                            ticks: {
+                                font: { size: 12 }
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0, 0, 0, 0.1)'
                             }
                         },
                         x: {
                             title: {
                                 display: true,
-                                text: 'Date'
+                                text: 'Date',
+                                font: { size: 14, weight: 'bold' }
+                            },
+                            ticks: {
+                                font: { size: 12 },
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0, 0, 0, 0.1)'
                             }
                         }
                     }
@@ -282,11 +512,36 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                font: { size: 14 },
+                                padding: 15
+                            }
+                        }
+                    },
                     scales: {
                         y: {
                             title: {
                                 display: true,
-                                text: 'Average Weighted Sentiment'
+                                text: 'Average Weighted Sentiment',
+                                font: { size: 14, weight: 'bold' }
+                            },
+                            ticks: {
+                                font: { size: 12 }
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0, 0, 0, 0.1)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                font: { size: 12 }
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0, 0, 0, 0.1)'
                             }
                         }
                     }

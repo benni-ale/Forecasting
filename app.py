@@ -1345,6 +1345,185 @@ def get_ticker_sentiment_analytics():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/analytics/price-vs-sentiment/<ticker>')
+def get_price_vs_sentiment(ticker):
+    """Get stock price history and normalized weighted sentiment for comparison."""
+    days_back = int(request.args.get('days_back', 30))
+    
+    try:
+        import requests
+        
+        # Get stock price history
+        api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+        if not api_key:
+            return jsonify({'error': 'API key not configured'}), 500
+        
+        # Fetch stock price history (daily for better granularity)
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": ticker.upper(),
+            "apikey": api_key,
+            "outputsize": "compact"  # Last 100 days
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        price_data = response.json()
+        
+        if "Error Message" in price_data:
+            logger.error(f"Alpha Vantage API Error: {price_data['Error Message']}")
+            return jsonify({'error': price_data['Error Message']}), 400
+        
+        if "Note" in price_data:
+            logger.warning(f"Alpha Vantage API Note: {price_data['Note']}")
+            return jsonify({'error': price_data['Note']}), 400
+        
+        # Get sentiment data from database
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Calculate cutoff date in Python to avoid SQL injection issues with INTERVAL
+            cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
+            
+            query = """
+                SELECT 
+                    date,
+                    weighted_sentiment,
+                    article_count
+                FROM ticker_daily_sentiment_view
+                WHERE ticker = %s
+                    AND date >= %s
+                ORDER BY date ASC
+            """
+            
+            cursor.execute(query, (ticker.upper(), cutoff_date))
+            
+            sentiment_data = {}
+            article_count_data = {}
+            for row in cursor.fetchall():
+                date_str = row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])
+                sentiment_data[date_str] = float(row[1]) if row[1] is not None else None
+                article_count_data[date_str] = int(row[2]) if row[2] is not None else 0
+            
+            cursor.close()
+        
+        # Process price data
+        if "Time Series (Daily)" in price_data:
+            time_series = price_data["Time Series (Daily)"]
+            
+            # Get dates within the range
+            cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
+            end_date = datetime.now().date()
+            
+            # Create a list of all dates in the range (including weekends and holidays)
+            all_dates = []
+            current_date = cutoff_date
+            while current_date <= end_date:
+                all_dates.append(current_date.strftime("%Y-%m-%d"))
+                current_date += timedelta(days=1)
+            
+            price_points = []
+            sentiment_points = []
+            article_counts = []
+            dates = []
+            
+            # Track last known price (forward fill for market closure days)
+            last_price = None
+            
+            # Process all dates in range (including weekends/holidays)
+            for date_str in all_dates:
+                try:
+                    date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    
+                    # Check if we have price data for this date (market was open)
+                    if date_str in time_series:
+                        # Market was open - get new price
+                        last_price = float(time_series[date_str]['4. close'])
+                    # If market was closed, use last known price (forward fill)
+                    
+                    # Only add to results if we have at least one price
+                    if last_price is not None:
+                        price_points.append(last_price)
+                        dates.append(date_str)
+                        
+                        # Get sentiment for this date (exact match or closest previous date)
+                        sentiment_value = sentiment_data.get(date_str)
+                        article_count = article_count_data.get(date_str, 0)
+                        
+                        if sentiment_value is None:
+                            # Try to find closest previous date (sentiment might be from previous day)
+                            closest_date = None
+                            closest_value = None
+                            closest_count = 0
+                            for sent_date, sent_val in sorted(sentiment_data.items()):
+                                if sent_date <= date_str:
+                                    closest_date = sent_date
+                                    closest_value = sent_val
+                                    closest_count = article_count_data.get(sent_date, 0)
+                                else:
+                                    break
+                            sentiment_value = closest_value
+                            article_count = closest_count
+                        
+                        sentiment_points.append(sentiment_value)
+                        article_counts.append(article_count)
+                except (ValueError, KeyError) as e:
+                    logger.warning(f"Error processing date {date_str}: {str(e)}")
+                    continue
+            
+            # Normalize sentiment (Min-Max normalization)
+            sentiment_values = [s for s in sentiment_points if s is not None]
+            if sentiment_values:
+                min_sentiment = min(sentiment_values)
+                max_sentiment = max(sentiment_values)
+                sentiment_range = max_sentiment - min_sentiment if max_sentiment != min_sentiment else 1
+                
+                normalized_sentiment = []
+                for i, sent in enumerate(sentiment_points):
+                    if sent is not None:
+                        normalized = (sent - min_sentiment) / sentiment_range
+                        normalized_sentiment.append(normalized)
+                    else:
+                        normalized_sentiment.append(None)
+            else:
+                normalized_sentiment = [None] * len(sentiment_points)
+            
+            # Normalize price (Min-Max normalization)
+            if price_points:
+                min_price = min(price_points)
+                max_price = max(price_points)
+                price_range = max_price - min_price if max_price != min_price else 1
+                
+                normalized_price = [(p - min_price) / price_range for p in price_points]
+            else:
+                normalized_price = []
+            
+            return jsonify({
+                'ticker': ticker.upper(),
+                'dates': dates,
+                'prices': price_points,
+                'normalized_prices': normalized_price,
+                'sentiment': sentiment_points,
+                'normalized_sentiment': normalized_sentiment,
+                'article_counts': article_counts,
+                'price_min': min_price if price_points else None,
+                'price_max': max_price if price_points else None,
+                'sentiment_min': min_sentiment if sentiment_values else None,
+                'sentiment_max': max_sentiment if sentiment_values else None
+            })
+        else:
+            return jsonify({'error': 'No price data available'}), 404
+            
+    except Exception as e:
+        logger.error(f"Error fetching price vs sentiment for {ticker}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 def ensure_analytics_view_exists():
     """Ensure the ticker_daily_sentiment_view exists in the database."""
     try:
