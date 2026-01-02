@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: news_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
+      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-newsuser} -d ${POSTGRES_DB:-newsdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  news-collector:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
+      - DB_HOST=db
+      - DB_PORT=${POSTGRES_PORT:-5432}
+      - DB_NAME=${POSTGRES_DB:-newsdb}
+      - DB_USER=${POSTGRES_USER:-newsuser}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-newspass}
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      db:
+        condition: service_healthy
+    # Save to database by default (idempotent)
+    command: ["--format", "summary", "--save-db"]
+    # Override command as needed:
+    # command: ["--format", "json", "--save", "--output-file", "output/news.json"]
+
+volumes:
+  postgres_data:
+
