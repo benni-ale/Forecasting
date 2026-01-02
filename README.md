@@ -8,8 +8,9 @@ A containerized Python application that collects financial news with sentiment s
 - 😊 Get sentiment scores for news articles
 - 📊 Filter by tickers, topics, and time ranges
 - 🐳 Fully containerized with Docker
-- 💾 Save results to JSON files
+- 💾 Save results to JSON files or PostgreSQL database
 - 📝 Multiple output formats (JSON, text, summary)
+- 🌐 **Web Dashboard** - GUI to collect news and visualize articles
 
 ## Prerequisites
 
@@ -45,9 +46,21 @@ docker-compose up --build
 This will:
 - Start PostgreSQL database
 - Build the Docker image
-- Run the container with your API key from `.env`
-- Display news in summary format
-- **Automatically save articles to the database** (idempotent - no duplicates)
+- Start the **Web Dashboard** on http://localhost:5000
+- Run the news collector (optional, can be triggered from dashboard)
+
+### 4. Access the Web Dashboard
+
+Open your browser and navigate to:
+```
+http://localhost:5000
+```
+
+The dashboard provides:
+- **Collection Form**: Set parameters (tickers, topics, dates, etc.) and collect news
+- **Statistics**: View total articles, sentiment distribution
+- **Articles Browser**: Browse, search, and filter collected articles
+- **Real-time Status**: Monitor collection progress
 
 The default command includes `--save-db`, so articles are automatically saved to PostgreSQL. Duplicate articles (based on URL) are automatically skipped.
 

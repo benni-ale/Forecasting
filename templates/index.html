@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <!-- Statistics Cards -->
+    <div class="col-md-12 mb-4">
+        <div class="row">
+            <div class="col-md-3">
+                <div class="card text-white bg-primary">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-file-text"></i> Total Articles</h5>
+                        <h2 class="card-text">{{ stats.total_articles or 0 }}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-success">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-arrow-up-circle"></i> Bullish</h5>
+                        <h2 class="card-text">{{ stats.by_sentiment.get('Bullish', 0) }}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-danger">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-arrow-down-circle"></i> Bearish</h5>
+                        <h2 class="card-text">{{ stats.by_sentiment.get('Bearish', 0) }}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-secondary">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-dash-circle"></i> Neutral</h5>
+                        <h2 class="card-text">{{ stats.by_sentiment.get('Neutral', 0) }}</h2>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Collection Form -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-cloud-download"></i> Collect News</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="/collect" id="collectForm">
+                    <div class="mb-3">
+                        <label for="api_key" class="form-label">Alpha Vantage API Key</label>
+                        <input type="text" class="form-control" id="api_key" name="api_key" 
+                               placeholder="Leave empty to use environment variable">
+                        <small class="form-text text-muted">Required if not set in environment</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="search_query" class="form-label">Search Query</label>
+                        <input type="text" class="form-control" id="search_query" name="search_query" 
+                               placeholder="Keywords to search in news (e.g., earnings, IPO, merger)">
+                        <small class="form-text text-muted">Optional: Filter news by keywords (searches in title and summary)</small>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="tickers" class="form-label">Tickers</label>
+                            <input type="text" class="form-control" id="tickers" name="tickers" 
+                                   placeholder="AAPL,MSFT,GOOGL">
+                            <small class="form-text text-muted">Optional: Comma-separated stock symbols</small>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="topics" class="form-label">Topics</label>
+                            <input type="text" class="form-control" id="topics" name="topics" 
+                                   placeholder="technology,earnings">
+                            <small class="form-text text-muted">Optional: Comma-separated topics</small>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="time_from" class="form-label">From Date/Time</label>
+                            <input type="text" class="form-control" id="time_from" name="time_from" 
+                                   placeholder="YYYYMMDDTHHMM (e.g., 20240101T0000)">
+                            <small class="form-text text-muted">Optional: Start time in YYYYMMDDTHHMM format</small>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="time_to" class="form-label">To Date/Time</label>
+                            <input type="text" class="form-control" id="time_to" name="time_to" 
+                                   placeholder="YYYYMMDDTHHMM (e.g., 20240131T2359)">
+                            <small class="form-text text-muted">Optional: End time in YYYYMMDDTHHMM format</small>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="limit" class="form-label">Max News Target</label>
+                            <input type="number" class="form-control" id="limit" name="limit" 
+                                   value="50" min="1" max="1000">
+                            <small class="form-text text-muted">Maximum number of news articles to collect (1-1000)</small>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="sort" class="form-label">Sort Order</label>
+                            <select class="form-select" id="sort" name="sort">
+                                <option value="LATEST" selected>Latest First</option>
+                                <option value="EARLIEST">Earliest First</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="save_to_db" name="save_to_db" checked>
+                        <label class="form-check-label" for="save_to_db">
+                            Save to Database
+                        </label>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" id="submitBtn">
+                        <i class="bi bi-play-circle"></i> Start Collection
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Collection Status -->
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5><i class="bi bi-info-circle"></i> Collection Status</h5>
+            </div>
+            <div class="card-body">
+                <div id="statusContainer">
+                    <p><span class="status-indicator status-idle"></span><span id="statusMessage">Idle</span></p>
+                    <small class="text-muted" id="statusDetails"></small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sentiment Distribution -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-pie-chart"></i> Sentiment Distribution</h5>
+            </div>
+            <div class="card-body">
+                {% if stats.by_sentiment %}
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Sentiment</th>
+                                <th>Count</th>
+                                <th>Percentage</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for sentiment, count in stats.by_sentiment.items() %}
+                            <tr>
+                                <td>
+                                    <span class="sentiment-{{ sentiment.lower().replace(' ', '-') }}">
+                                        {{ sentiment }}
+                                    </span>
+                                </td>
+                                <td>{{ count }}</td>
+                                <td>
+                                    <div class="progress" style="height: 20px;">
+                                        <div class="progress-bar" role="progressbar" 
+                                             style="width: {{ (count / stats.total_articles * 100) if stats.total_articles > 0 else 0 }}%">
+                                            {% if stats.total_articles > 0 %}
+                                                {{ "%.1f"|format((count / stats.total_articles * 100)) }}%
+                                            {% else %}
+                                                0%
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p class="text-muted">No data available</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5><i class="bi bi-calendar"></i> Recent Activity</h5>
+            </div>
+            <div class="card-body">
+                {% if stats.latest_article %}
+                    <p><strong>Latest Article:</strong> {{ stats.latest_article[:10] }}</p>
+                {% else %}
+                    <p class="text-muted">No articles yet</p>
+                {% endif %}
+                <a href="/articles" class="btn btn-outline-primary btn-sm">
+                    <i class="bi bi-eye"></i> View All Articles
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Auto-refresh status
+    function updateStatus() {
+        fetch('/api/status')
+            .then(response => response.json())
+            .then(data => {
+                const statusIndicator = document.querySelector('.status-indicator');
+                const statusMessage = document.getElementById('statusMessage');
+                const statusDetails = document.getElementById('statusDetails');
+                
+                if (data.running) {
+                    statusIndicator.className = 'status-indicator status-running';
+                    statusMessage.textContent = 'Running: ' + data.message;
+                } else {
+                    statusIndicator.className = 'status-indicator status-idle';
+                    statusMessage.textContent = data.message || 'Idle';
+                }
+                
+                if (data.last_run) {
+                    statusDetails.textContent = 'Last run: ' + new Date(data.last_run).toLocaleString();
+                }
+                
+                if (data.articles_collected > 0) {
+                    statusDetails.textContent += ' | Articles collected: ' + data.articles_collected;
+                }
+            })
+            .catch(error => console.error('Error fetching status:', error));
+    }
+
+    // Update status every 2 seconds
+    setInterval(updateStatus, 2000);
+    updateStatus();
+
+</script>
+{% endblock %}
+

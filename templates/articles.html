@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Articles - News Collector{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5><i class="bi bi-file-text"></i> Collected Articles</h5>
+                <a href="/" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
+            </div>
+            <div class="card-body">
+                <!-- Filters -->
+                <form method="GET" action="/articles" class="mb-4">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <input type="text" class="form-control" name="search" 
+                                   placeholder="Search..." value="{{ search_query }}">
+                        </div>
+                        <div class="col-md-2">
+                            <select class="form-select" name="sentiment">
+                                <option value="">All Sentiments</option>
+                                <option value="Bullish" {% if sentiment_filter == 'Bullish' %}selected{% endif %}>Bullish</option>
+                                <option value="Bearish" {% if sentiment_filter == 'Bearish' %}selected{% endif %}>Bearish</option>
+                                <option value="Neutral" {% if sentiment_filter == 'Neutral' %}selected{% endif %}>Neutral</option>
+                                <option value="Somewhat-Bullish" {% if sentiment_filter == 'Somewhat-Bullish' %}selected{% endif %}>Somewhat-Bullish</option>
+                                <option value="Somewhat-Bearish" {% if sentiment_filter == 'Somewhat-Bearish' %}selected{% endif %}>Somewhat-Bearish</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <input type="text" class="form-control" name="ticker" 
+                                   placeholder="Ticker (e.g., AAPL)" value="{{ ticker_filter }}">
+                        </div>
+                        <div class="col-md-2">
+                            <select class="form-select" name="per_page">
+                                <option value="10" {% if per_page == 10 %}selected{% endif %}>10 per page</option>
+                                <option value="20" {% if per_page == 20 %}selected{% endif %}>20 per page</option>
+                                <option value="50" {% if per_page == 50 %}selected{% endif %}>50 per page</option>
+                                <option value="100" {% if per_page == 100 %}selected{% endif %}>100 per page</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-funnel"></i> Filter
+                            </button>
+                            <a href="/articles" class="btn btn-outline-secondary">Reset</a>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- Articles List -->
+                <div class="mb-3">
+                    <strong>Total: {{ total }} articles</strong>
+                </div>
+
+                {% if articles %}
+                    {% for article in articles %}
+                    <div class="card article-card">
+                        <div class="card-body">
+                            <h6 class="card-title">
+                                <a href="{{ article.url }}" target="_blank" class="text-decoration-none">
+                                    {{ article.title }}
+                                </a>
+                            </h6>
+                            <p class="card-text text-muted small">
+                                <i class="bi bi-building"></i> {{ article.source }}
+                                {% if article.time_published %}
+                                    | <i class="bi bi-clock"></i> {{ article.time_published.strftime('%Y-%m-%d %H:%M') }}
+                                {% endif %}
+                            </p>
+                            
+                            {% if article.summary %}
+                            <p class="card-text">{{ article.summary[:200] }}{% if article.summary|length > 200 %}...{% endif %}</p>
+                            {% endif %}
+
+                            <div class="mt-2">
+                                {% if article.overall_sentiment_label %}
+                                <span class="badge bg-{{ 'success' if 'Bullish' in article.overall_sentiment_label else 'danger' if 'Bearish' in article.overall_sentiment_label else 'secondary' }}">
+                                    {{ article.overall_sentiment_label }}
+                                    {% if article.overall_sentiment_score %}
+                                        ({{ "%.3f"|format(article.overall_sentiment_score) }})
+                                    {% endif %}
+                                </span>
+                                {% endif %}
+
+                                {% if article.ticker_sentiment %}
+                                    {% for ticker_data in article.ticker_sentiment[:5] %}
+                                    <span class="badge bg-info ticker-badge">
+                                        {{ ticker_data.ticker }}: 
+                                        {{ ticker_data.ticker_sentiment_label or 'N/A' }}
+                                        ({{ "%.3f"|format(ticker_data.ticker_sentiment_score) if ticker_data.ticker_sentiment_score else 'N/A' }})
+                                    </span>
+                                    {% endfor %}
+                                    {% if article.ticker_sentiment|length > 5 %}
+                                    <span class="badge bg-secondary">+{{ article.ticker_sentiment|length - 5 }} more</span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+
+                            {% if article.topics %}
+                            <div class="mt-2">
+                                <small class="text-muted">
+                                    <i class="bi bi-tags"></i> Topics: 
+                                    {% for topic in article.topics[:3] %}
+                                        <span class="badge bg-light text-dark">{{ topic.topic }}</span>
+                                    {% endfor %}
+                                </small>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+
+                    <!-- Pagination -->
+                    {% if total_pages > 1 %}
+                    <nav aria-label="Page navigation">
+                        <ul class="pagination justify-content-center">
+                            <li class="page-item {% if page == 1 %}disabled{% endif %}">
+                                <a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}">Previous</a>
+                            </li>
+                            {% for p in range(1, total_pages + 1) %}
+                                {% if p == page or p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+                                <li class="page-item {% if p == page %}active{% endif %}">
+                                    <a class="page-link" href="?page={{ p }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}">{{ p }}</a>
+                                </li>
+                                {% elif p == page - 3 or p == page + 3 %}
+                                <li class="page-item disabled">
+                                    <span class="page-link">...</span>
+                                </li>
+                                {% endif %}
+                            {% endfor %}
+                            <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+                                <a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}">Next</a>
+                            </li>
+                        </ul>
+                    </nav>
+                    {% endif %}
+                {% else %}
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> No articles found. 
+                        <a href="/">Start collecting news</a> to see articles here.
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

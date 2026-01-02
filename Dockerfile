@@ -16,13 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY news_collector.py .
+COPY app.py .
+COPY templates/ ./templates/
+COPY static/ ./static/
 
-# Make the script executable
-RUN chmod +x news_collector.py
+# Make the scripts executable
+RUN chmod +x news_collector.py app.py
 
-# Set default command
-ENTRYPOINT ["python", "news_collector.py"]
-
-# Default arguments (can be overridden)
-CMD ["--format", "summary"]
+# Default command (can be overridden in docker-compose)
+CMD ["python", "news_collector.py", "--format", "summary"]
 
