@@ -91,7 +91,12 @@
                                     <span class="badge bg-info ticker-badge">
                                         {{ ticker_data.ticker }}: 
                                         {{ ticker_data.ticker_sentiment_label or 'N/A' }}
-                                        ({{ "%.3f"|format(ticker_data.ticker_sentiment_score) if ticker_data.ticker_sentiment_score else 'N/A' }})
+                                        {% if ticker_data.ticker_sentiment_score %}
+                                            {% set score = ticker_data.ticker_sentiment_score | float %}
+                                            ({{ "%.3f"|format(score) }})
+                                        {% else %}
+                                            (N/A)
+                                        {% endif %}
                                     </span>
                                     {% endfor %}
                                     {% if article.ticker_sentiment|length > 5 %}

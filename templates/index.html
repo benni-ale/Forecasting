@@ -66,29 +66,78 @@
                         <div class="col-md-6 mb-3">
                             <label for="tickers" class="form-label">Tickers</label>
                             <input type="text" class="form-control" id="tickers" name="tickers" 
-                                   placeholder="AAPL,MSFT,GOOGL">
-                            <small class="form-text text-muted">Optional: Comma-separated stock symbols</small>
+                                   list="tickers-list" placeholder="Select or type tickers (e.g., AAPL,MSFT,GOOGL)">
+                            <datalist id="tickers-list">
+                                <option value="AAPL">Apple Inc.</option>
+                                <option value="MSFT">Microsoft Corporation</option>
+                                <option value="GOOGL">Alphabet Inc.</option>
+                                <option value="AMZN">Amazon.com Inc.</option>
+                                <option value="TSLA">Tesla Inc.</option>
+                                <option value="META">Meta Platforms Inc.</option>
+                                <option value="NVDA">NVIDIA Corporation</option>
+                                <option value="JPM">JPMorgan Chase & Co.</option>
+                                <option value="V">Visa Inc.</option>
+                                <option value="JNJ">Johnson & Johnson</option>
+                                <option value="WMT">Walmart Inc.</option>
+                                <option value="PG">Procter & Gamble Co.</option>
+                                <option value="MA">Mastercard Inc.</option>
+                                <option value="UNH">UnitedHealth Group Inc.</option>
+                                <option value="HD">The Home Depot Inc.</option>
+                                <option value="DIS">The Walt Disney Company</option>
+                                <option value="BAC">Bank of America Corp.</option>
+                                <option value="ADBE">Adobe Inc.</option>
+                                <option value="NFLX">Netflix Inc.</option>
+                                <option value="CRM">Salesforce.com Inc.</option>
+                                <option value="PYPL">PayPal Holdings Inc.</option>
+                                <option value="INTC">Intel Corporation</option>
+                                <option value="CMCSA">Comcast Corporation</option>
+                                <option value="PFE">Pfizer Inc.</option>
+                                <option value="CSCO">Cisco Systems Inc.</option>
+                                <option value="TMO">Thermo Fisher Scientific Inc.</option>
+                                <option value="COST">Costco Wholesale Corporation</option>
+                                <option value="AVGO">Broadcom Inc.</option>
+                                <option value="ABBV">AbbVie Inc.</option>
+                                <option value="NKE">Nike Inc.</option>
+                            </datalist>
+                            <small class="form-text text-muted">Optional: Select from list or type custom tickers (comma-separated)</small>
                         </div>
                         <div class="col-md-6 mb-3">
                             <label for="topics" class="form-label">Topics</label>
                             <input type="text" class="form-control" id="topics" name="topics" 
-                                   placeholder="technology,earnings">
-                            <small class="form-text text-muted">Optional: Comma-separated topics</small>
+                                   list="topics-list" placeholder="Select or type topics (e.g., technology,earnings)">
+                            <datalist id="topics-list">
+                                <option value="blockchain">Blockchain</option>
+                                <option value="earnings">Earnings</option>
+                                <option value="ipo">IPO</option>
+                                <option value="mergers_and_acquisitions">Mergers & Acquisitions</option>
+                                <option value="financial_markets">Financial Markets</option>
+                                <option value="economy_fiscal">Economy Fiscal</option>
+                                <option value="economy_monetary">Economy Monetary</option>
+                                <option value="economy_macro">Economy Macro</option>
+                                <option value="energy_transportation">Energy & Transportation</option>
+                                <option value="finance">Finance</option>
+                                <option value="life_sciences">Life Sciences</option>
+                                <option value="manufacturing">Manufacturing</option>
+                                <option value="real_estate">Real Estate</option>
+                                <option value="retail_wholesale">Retail & Wholesale</option>
+                                <option value="technology">Technology</option>
+                            </datalist>
+                            <small class="form-text text-muted">Optional: Select from list or type custom topics (comma-separated)</small>
                         </div>
                     </div>
 
                     <div class="row">
                         <div class="col-md-6 mb-3">
-                            <label for="time_from" class="form-label">From Date/Time</label>
-                            <input type="text" class="form-control" id="time_from" name="time_from" 
-                                   placeholder="YYYYMMDDTHHMM (e.g., 20240101T0000)">
-                            <small class="form-text text-muted">Optional: Start time in YYYYMMDDTHHMM format</small>
+                            <label for="date_from" class="form-label">From Date</label>
+                            <input type="date" class="form-control" id="date_from" name="date_from">
+                            <input type="hidden" id="time_from" name="time_from">
+                            <small class="form-text text-muted">Optional: Select start date (time will be set to 00:00)</small>
                         </div>
                         <div class="col-md-6 mb-3">
-                            <label for="time_to" class="form-label">To Date/Time</label>
-                            <input type="text" class="form-control" id="time_to" name="time_to" 
-                                   placeholder="YYYYMMDDTHHMM (e.g., 20240131T2359)">
-                            <small class="form-text text-muted">Optional: End time in YYYYMMDDTHHMM format</small>
+                            <label for="date_to" class="form-label">To Date</label>
+                            <input type="date" class="form-control" id="date_to" name="date_to">
+                            <input type="hidden" id="time_to" name="time_to">
+                            <small class="form-text text-muted">Optional: Select end date (time will be set to 23:59)</small>
                         </div>
                     </div>
 
@@ -232,9 +281,51 @@
             .catch(error => console.error('Error fetching status:', error));
     }
 
-    // Update status every 2 seconds
-    setInterval(updateStatus, 2000);
+    // Update status every 5 seconds (reduced from 2 to minimize API calls)
+    setInterval(updateStatus, 5000);
     updateStatus();
+
+    // Convert date inputs to YYYYMMDDTHHMM format before form submission
+    function formatDateForAPI(dateInput) {
+        if (!dateInput.value) return '';
+        const date = new Date(dateInput.value + 'T00:00:00');
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return year + month + day + 'T' + (dateInput.id === 'date_from' ? '0000' : '2359');
+    }
+
+    // Update hidden time fields when dates change
+    const dateFromInput = document.getElementById('date_from');
+    const dateToInput = document.getElementById('date_to');
+    
+    if (dateFromInput) {
+        dateFromInput.addEventListener('change', function(e) {
+            document.getElementById('time_from').value = formatDateForAPI(e.target);
+        });
+    }
+
+    if (dateToInput) {
+        dateToInput.addEventListener('change', function(e) {
+            document.getElementById('time_to').value = formatDateForAPI(e.target);
+        });
+    }
+
+    // Also update on form submit to ensure latest values
+    const collectForm = document.getElementById('collectForm');
+    if (collectForm) {
+        collectForm.addEventListener('submit', function(e) {
+            const dateFrom = document.getElementById('date_from');
+            const dateTo = document.getElementById('date_to');
+            
+            if (dateFrom && dateFrom.value) {
+                document.getElementById('time_from').value = formatDateForAPI(dateFrom);
+            }
+            if (dateTo && dateTo.value) {
+                document.getElementById('time_to').value = formatDateForAPI(dateTo);
+            }
+        });
+    }
 
 </script>
 {% endblock %}

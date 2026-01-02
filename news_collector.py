@@ -6,6 +6,7 @@ Uses Alpha Vantage API to collect financial news with sentiment scores.
 
 import os
 import json
+import logging
 import requests
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -13,6 +14,14 @@ import argparse
 import psycopg2
 from psycopg2.extras import execute_values
 from psycopg2 import sql
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 class AlphaVantageNewsCollector:
@@ -71,19 +80,26 @@ class AlphaVantageNewsCollector:
             params["time_to"] = time_to
         
         try:
+            logger.info(f"Fetching news from Alpha Vantage: tickers={tickers}, topics={topics}, "
+                       f"limit={limit}, sort={sort}, time_from={time_from}, time_to={time_to}")
             response = requests.get(self.BASE_URL, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
             # Check for API errors
             if "Error Message" in data:
+                logger.error(f"Alpha Vantage API Error: {data['Error Message']}")
                 raise ValueError(f"API Error: {data['Error Message']}")
             if "Note" in data:
+                logger.warning(f"Alpha Vantage API Note: {data['Note']}")
                 raise ValueError(f"API Note: {data['Note']}")
             
+            feed_count = len(data.get('feed', []))
+            logger.info(f"Successfully retrieved {feed_count} articles from Alpha Vantage")
             return data
             
         except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to connect to Alpha Vantage API: {str(e)}", exc_info=True)
             raise ConnectionError(f"Failed to connect to Alpha Vantage API: {str(e)}")
     
     def format_news_output(self, data: Dict, output_format: str = "json") -> str:
@@ -269,11 +285,14 @@ class DatabaseManager:
             Dictionary with counts: {'inserted': X, 'skipped': Y, 'total': Z}
         """
         if not self.conn:
+            logger.error("Database connection not established")
             raise ConnectionError("Database connection not established")
         
         if not articles:
+            logger.warning("No articles to save")
             return {'inserted': 0, 'skipped': 0, 'total': 0}
         
+        logger.info(f"Saving {len(articles)} articles to database (idempotent)")
         inserted = 0
         skipped = 0
         
@@ -283,6 +302,7 @@ class DatabaseManager:
             for article in articles:
                 url = article.get('url')
                 if not url:
+                    logger.warning(f"Article missing URL, skipping: {article.get('title', 'Unknown')[:50]}")
                     skipped += 1
                     continue
                 
@@ -342,9 +362,11 @@ class DatabaseManager:
                 inserted += 1
             
             self.conn.commit()
+            logger.info(f"Database transaction committed: {inserted} inserted, {skipped} skipped")
             
         except psycopg2.Error as e:
             self.conn.rollback()
+            logger.error(f"Database error during article save: {str(e)}", exc_info=True)
             raise RuntimeError(f"Database error: {str(e)}")
         finally:
             cursor.close()
@@ -470,14 +492,20 @@ def main():
     
     # Validate API key
     if not args.api_key:
+        logger.error("API key is required. Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key")
         print("Error: API key is required. Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key")
         return 1
     
     try:
+        logger.info("Starting news collection")
+        logger.info(f"Parameters: tickers={args.tickers}, topics={args.topics}, limit={args.limit}, "
+                   f"sort={args.sort}, time_from={args.time_from}, time_to={args.time_to}")
+        
         # Initialize collector
         collector = AlphaVantageNewsCollector(args.api_key)
         
         # Fetch news
+        logger.info("Fetching financial news with sentiment scores...")
         print("Fetching financial news with sentiment scores...")
         data = collector.get_news_sentiment(
             tickers=args.tickers,
@@ -494,10 +522,12 @@ def main():
         
         # Save to file if requested
         if args.save:
+            logger.info(f"Saving to file: {args.output_file}")
             collector.save_to_file(data, args.output_file)
         
         # Save to database if requested
         if args.save_db:
+            logger.info("Saving articles to database...")
             print("\nSaving articles to database...")
             try:
                 db_manager = DatabaseManager(
@@ -513,19 +543,25 @@ def main():
                     if articles:
                         result = db_manager.save_articles(articles)
                         total_count = db_manager.get_article_count()
+                        logger.info(f"Database save complete: {result['inserted']} inserted, "
+                                  f"{result['skipped']} skipped, total in DB: {total_count}")
                         print(f"✓ Inserted: {result['inserted']} new articles")
                         print(f"✓ Skipped: {result['skipped']} duplicates")
                         print(f"✓ Total articles in database: {total_count}")
                     else:
+                        logger.warning("No articles to save")
                         print("No articles to save")
                         
             except Exception as e:
+                logger.error(f"Error saving to database: {str(e)}", exc_info=True)
                 print(f"Error saving to database: {str(e)}")
                 return 1
         
+        logger.info("News collection completed successfully")
         return 0
         
     except Exception as e:
+        logger.error(f"Error during news collection: {str(e)}", exc_info=True)
         print(f"Error: {str(e)}")
         return 1
 

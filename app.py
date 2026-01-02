@@ -6,11 +6,24 @@ Provides a GUI to collect news and visualize collected articles.
 
 import os
 import json
+import logging
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
 from news_collector import AlphaVantageNewsCollector, DatabaseManager
 import threading
 import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    force=True  # Force reconfiguration
+)
+logger = logging.getLogger(__name__)
+
+# Configure Flask logging
+logging.getLogger('werkzeug').setLevel(logging.WARNING)  # Reduce Flask request logs
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -38,8 +51,10 @@ def get_db_manager():
 @app.route('/')
 def index():
     """Main dashboard page."""
+    logger.info("Dashboard page accessed")
     # Get statistics
     stats = get_statistics()
+    logger.debug(f"Statistics retrieved: {stats.get('total_articles', 0)} articles")
     return render_template('index.html', stats=stats)
 
 
@@ -48,13 +63,17 @@ def collect_news():
     """Collect news based on form parameters."""
     global collection_status
     
+    logger.info("News collection requested")
+    
     if collection_status['running']:
+        logger.warning("Collection already in progress, request rejected")
         flash('Collection already in progress. Please wait.', 'warning')
         return redirect(url_for('index'))
     
     # Get form parameters
     api_key = request.form.get('api_key') or os.getenv('ALPHA_VANTAGE_API_KEY')
     if not api_key:
+        logger.error("API key not provided")
         flash('API key is required. Please provide it in the form or set ALPHA_VANTAGE_API_KEY environment variable.', 'error')
         return redirect(url_for('index'))
     
@@ -64,8 +83,9 @@ def collect_news():
     time_from = request.form.get('time_from', '').strip()
     time_to = request.form.get('time_to', '').strip()
     
-    # Convert datetime-local format to YYYYMMDDTHHMM if needed
-    if time_from and 'T' in time_from and len(time_from) > 10:
+    # Date inputs are already converted to YYYYMMDDTHHMM format by JavaScript
+    # But handle legacy format conversion if needed
+    if time_from and 'T' in time_from and len(time_from) > 10 and '-' in time_from:
         # Format: YYYY-MM-DDTHH:MM -> YYYYMMDDTHHMM
         try:
             dt = datetime.fromisoformat(time_from.replace('Z', '+00:00'))
@@ -73,7 +93,7 @@ def collect_news():
         except:
             pass  # Keep original if conversion fails
     
-    if time_to and 'T' in time_to and len(time_to) > 10:
+    if time_to and 'T' in time_to and len(time_to) > 10 and '-' in time_to:
         try:
             dt = datetime.fromisoformat(time_to.replace('Z', '+00:00'))
             time_to = dt.strftime('%Y%m%dT%H%M')
@@ -84,16 +104,21 @@ def collect_news():
     sort = request.form.get('sort', 'LATEST')
     save_to_db = request.form.get('save_to_db') == 'on'
     
+    logger.info(f"Collection parameters: tickers={tickers}, topics={topics}, limit={limit}, sort={sort}, "
+                f"time_from={time_from}, time_to={time_to}, search_query={search_query}, save_to_db={save_to_db}")
+    
     # Start collection in background thread
     def collect_thread():
         global collection_status
         collection_status['running'] = True
         collection_status['message'] = 'Starting collection...'
+        logger.info("Starting news collection in background thread")
         
         try:
             collector = AlphaVantageNewsCollector(api_key)
             
             collection_status['message'] = 'Fetching news from Alpha Vantage...'
+            logger.info("Fetching news from Alpha Vantage API")
             data = collector.get_news_sentiment(
                 tickers=tickers if tickers else None,
                 topics=topics if topics else None,
@@ -104,24 +129,29 @@ def collect_news():
             )
             
             articles = data.get('feed', [])
+            logger.info(f"Retrieved {len(articles)} articles from API")
             
             # Filter by search query if provided (searches in title and summary)
             if search_query:
                 search_lower = search_query.lower()
+                original_count = len(articles)
                 articles = [
                     article for article in articles
                     if search_lower in article.get('title', '').lower() or 
                        search_lower in article.get('summary', '').lower()
                 ]
+                logger.info(f"Filtered articles: {original_count} -> {len(articles)} (search: '{search_query}')")
                 collection_status['message'] = f'Filtered to {len(articles)} articles matching "{search_query}"'
             
             collection_status['articles_collected'] = len(articles)
             
             if save_to_db:
                 collection_status['message'] = f'Saving {len(articles)} articles to database...'
+                logger.info(f"Saving {len(articles)} articles to database")
                 db_manager = get_db_manager()
                 with db_manager:
                     result = db_manager.save_articles(articles)
+                    logger.info(f"Database save complete: {result['inserted']} inserted, {result['skipped']} skipped")
                     collection_status['message'] = (
                         f'✓ Collection complete! '
                         f'Inserted: {result["inserted"]} new articles, '
@@ -129,14 +159,18 @@ def collect_news():
                     )
                     collection_status['articles_collected'] = result['inserted']
             else:
+                logger.info(f"Collection complete: {len(articles)} articles retrieved (not saved to DB)")
                 collection_status['message'] = f'✓ Collection complete! Retrieved {len(articles)} articles.'
             
             collection_status['last_run'] = datetime.now().isoformat()
+            logger.info("Collection thread completed successfully")
             
         except Exception as e:
+            logger.error(f"Error in collection thread: {str(e)}", exc_info=True)
             collection_status['message'] = f'✗ Error: {str(e)}'
         finally:
             collection_status['running'] = False
+            logger.info("Collection thread finished")
     
     thread = threading.Thread(target=collect_thread)
     thread.daemon = True
@@ -149,6 +183,12 @@ def collect_news():
 @app.route('/api/status')
 def get_status():
     """Get collection status (AJAX endpoint)."""
+    # Log only occasionally to avoid spam (every 10th call)
+    if not hasattr(get_status, 'call_count'):
+        get_status.call_count = 0
+    get_status.call_count += 1
+    if get_status.call_count % 10 == 0:
+        logger.debug(f"Status check (call #{get_status.call_count})")
     return jsonify(collection_status)
 
 
@@ -161,12 +201,16 @@ def view_articles():
     ticker_filter = request.args.get('ticker', '')
     search_query = request.args.get('search', '')
     
+    logger.info(f"Articles page accessed: page={page}, per_page={per_page}, "
+                f"sentiment={sentiment_filter}, ticker={ticker_filter}, search={search_query}")
+    
     try:
         db_manager = get_db_manager()
         with db_manager:
             articles, total, stats = get_articles_paginated(
                 db_manager, page, per_page, sentiment_filter, ticker_filter, search_query
             )
+        logger.info(f"Loaded {len(articles)} articles (total: {total})")
         
         return render_template('articles.html', 
                              articles=articles,
@@ -179,6 +223,7 @@ def view_articles():
                              search_query=search_query,
                              stats=stats)
     except Exception as e:
+        logger.error(f"Error loading articles: {str(e)}", exc_info=True)
         flash(f'Error loading articles: {str(e)}', 'error')
         return redirect(url_for('index'))
 
@@ -232,11 +277,56 @@ def get_articles_paginated(db_manager, page, per_page, sentiment_filter='', tick
         articles = []
         for row in cursor.fetchall():
             article = dict(zip(columns, row))
-            # Parse JSONB fields
-            if article['ticker_sentiment']:
-                article['ticker_sentiment'] = json.loads(article['ticker_sentiment'])
-            if article['topics']:
-                article['topics'] = json.loads(article['topics'])
+            
+            # Convert overall_sentiment_score to float if it's a string
+            if article.get('overall_sentiment_score') is not None:
+                try:
+                    if isinstance(article['overall_sentiment_score'], str):
+                        article['overall_sentiment_score'] = float(article['overall_sentiment_score'])
+                    elif not isinstance(article['overall_sentiment_score'], (int, float)):
+                        article['overall_sentiment_score'] = None
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not convert overall_sentiment_score to float: {article.get('overall_sentiment_score')}")
+                    article['overall_sentiment_score'] = None
+            
+            # Parse JSONB fields (psycopg2 may already convert JSONB to dict/list)
+            if article.get('ticker_sentiment'):
+                if isinstance(article['ticker_sentiment'], str):
+                    try:
+                        article['ticker_sentiment'] = json.loads(article['ticker_sentiment'])
+                    except json.JSONDecodeError:
+                        logger.warning(f"Could not parse ticker_sentiment JSON: {article.get('ticker_sentiment')}")
+                        article['ticker_sentiment'] = []
+                
+                # Convert ticker_sentiment_score to float if it's a string
+                if isinstance(article['ticker_sentiment'], list):
+                    for ticker_data in article['ticker_sentiment']:
+                        if isinstance(ticker_data, dict) and 'ticker_sentiment_score' in ticker_data:
+                            try:
+                                if isinstance(ticker_data['ticker_sentiment_score'], str):
+                                    ticker_data['ticker_sentiment_score'] = float(ticker_data['ticker_sentiment_score'])
+                                elif ticker_data['ticker_sentiment_score'] is not None:
+                                    ticker_data['ticker_sentiment_score'] = float(ticker_data['ticker_sentiment_score'])
+                            except (ValueError, TypeError):
+                                logger.warning(f"Could not convert ticker_sentiment_score to float: {ticker_data.get('ticker_sentiment_score')}")
+                                ticker_data['ticker_sentiment_score'] = None
+                        if isinstance(ticker_data, dict) and 'relevance_score' in ticker_data:
+                            try:
+                                if isinstance(ticker_data['relevance_score'], str):
+                                    ticker_data['relevance_score'] = float(ticker_data['relevance_score'])
+                                elif ticker_data['relevance_score'] is not None:
+                                    ticker_data['relevance_score'] = float(ticker_data['relevance_score'])
+                            except (ValueError, TypeError):
+                                ticker_data['relevance_score'] = None
+                # If already dict/list, keep as is
+            if article.get('topics'):
+                if isinstance(article['topics'], str):
+                    try:
+                        article['topics'] = json.loads(article['topics'])
+                    except json.JSONDecodeError:
+                        logger.warning(f"Could not parse topics JSON: {article.get('topics')}")
+                        article['topics'] = []
+                # If already dict/list, keep as is
             articles.append(article)
         
         # Get statistics
@@ -256,10 +346,12 @@ def get_statistics():
             cursor = db_manager.conn.cursor()
             try:
                 stats = get_statistics_from_db(cursor)
+                logger.debug(f"Statistics retrieved: {stats.get('total_articles', 0)} articles")
                 return stats
             finally:
                 cursor.close()
     except Exception as e:
+        logger.error(f"Error getting statistics: {str(e)}", exc_info=True)
         return {
             'total_articles': 0,
             'by_sentiment': {},
