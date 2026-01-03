@@ -90,6 +90,35 @@ daily_aggregations AS (
         AND relevance_score IS NOT NULL
     GROUP BY ticker, date
 ),
+-- Generate all dates for each ticker (from first article date to today, max 1 year back)
+all_dates AS (
+    SELECT DISTINCT
+        ticker,
+        generate_series(
+            GREATEST(MIN(date), CURRENT_DATE - INTERVAL '1 year'),
+            CURRENT_DATE,
+            INTERVAL '1 day'
+        )::date as date
+    FROM daily_aggregations
+    GROUP BY ticker
+),
+-- Join all dates with daily aggregations (LEFT JOIN to include days without news)
+all_days_with_aggregations AS (
+    SELECT 
+        ad.ticker,
+        ad.date,
+        da.avg_sentiment_score,
+        da.avg_relevance_score,
+        da.weighted_sentiment,
+        da.total_weighted_sentiment,
+        COALESCE(da.article_count, 0) as article_count,
+        COALESCE(da.bullish_count, 0) as bullish_count,
+        COALESCE(da.bearish_count, 0) as bearish_count,
+        COALESCE(da.neutral_count, 0) as neutral_count,
+        da.last_article_time
+    FROM all_dates ad
+    LEFT JOIN daily_aggregations da ON ad.ticker = da.ticker AND ad.date = da.date
+),
 -- Calculate diffused sentiment: for each day, sum contributions from all previous days with decay
 diffused_sentiment AS (
     SELECT 
@@ -104,23 +133,20 @@ diffused_sentiment AS (
         d1.bearish_count,
         d1.neutral_count,
         d1.last_article_time,
-        -- Weighted average of sentiment from previous days, with exponential decay (half-life = 7 days)
-        -- decay_weight = 0.5^(days_ago / 7)
-        -- Formula: SUM(sentiment * weight) / SUM(weight) = weighted average
-        -- This ensures the result is in the same scale as weighted_sentiment (0-1 range typically)
+        -- Sum of decayed sentiment values (not weighted average)
+        -- Each day's sentiment decays exponentially: sentiment * 0.5^(days_ago / 7)
+        -- This ensures the value decreases over time even with a single article
+        -- Half-life = 7 days means after 7 days, the contribution is halved
         COALESCE(
-            CASE 
-                WHEN SUM(POWER(0.5, (d1.date - d2.date)::numeric / 7.0)) FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days') > 0
-                THEN SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
-                     FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days')
-                     / SUM(POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
-                     FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days')
-                ELSE 0
-            END,
+            SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
+                FILTER (WHERE d2.weighted_sentiment IS NOT NULL),
             0
         ) as weighted_sentiment_diffused
-    FROM daily_aggregations d1
-    LEFT JOIN daily_aggregations d2 ON d1.ticker = d2.ticker
+    FROM all_days_with_aggregations d1
+    LEFT JOIN all_days_with_aggregations d2 
+        ON d1.ticker = d2.ticker 
+        AND d2.date <= d1.date 
+        AND d2.date >= d1.date - INTERVAL '30 days'
     GROUP BY 
         d1.ticker, d1.date, d1.avg_sentiment_score, d1.avg_relevance_score,
         d1.weighted_sentiment, d1.total_weighted_sentiment, d1.article_count,

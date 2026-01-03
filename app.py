@@ -1263,22 +1263,51 @@ def api_articles():
 def analytics():
     """Analytics page showing aggregated sentiment data."""
     logger.info("Analytics page accessed")
-    return render_template('analytics.html')
+    try:
+        logger.info("Rendering analytics.html template")
+        return render_template('analytics.html')
+    except Exception as e:
+        logger.error(f"Error rendering analytics page: {str(e)}", exc_info=True)
+        return f"Error loading analytics page: {str(e)}", 500
 
 
 @app.route('/api/analytics/ticker-sentiment')
 def get_ticker_sentiment_analytics():
     """Get aggregated ticker sentiment data from view."""
+    logger.info("API /api/analytics/ticker-sentiment called")
     ticker = request.args.get('ticker', '').strip().upper()
     days_back = int(request.args.get('days_back', 30))
     limit = int(request.args.get('limit', 100))
     
+    logger.info(f"Parameters: ticker={ticker}, days_back={days_back}, limit={limit}")
+    
     try:
+        logger.info("Getting database manager")
         db_manager = get_db_manager()
+        logger.info("Database manager obtained, entering context")
         with db_manager:
             if not db_manager.conn:
+                logger.error("Database connection not established")
                 raise ConnectionError("Database connection not established")
             
+            # Check if view exists
+            logger.info("Checking if ticker_daily_sentiment_view exists")
+            check_cursor = db_manager.conn.cursor()
+            check_cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.views 
+                    WHERE table_name = 'ticker_daily_sentiment_view'
+                )
+            """)
+            view_exists = check_cursor.fetchone()[0]
+            check_cursor.close()
+            logger.info(f"View exists: {view_exists}")
+            
+            if not view_exists:
+                logger.warning("View does not exist, attempting to create it...")
+                ensure_analytics_view_exists()
+            
+            logger.info("Creating cursor for main query")
             cursor = db_manager.conn.cursor()
             
             # Build query with proper parameterization
@@ -1312,10 +1341,18 @@ def get_ticker_sentiment_analytics():
                 LIMIT %s
             """
             
+            logger.info(f"Executing main query with params: {params + [limit]}")
+            logger.debug(f"Query: {query}")
+            import time
+            start_time = time.time()
             cursor.execute(query, params + [limit])
+            query_time = time.time() - start_time
+            logger.info(f"Query executed in {query_time:.2f} seconds")
             
+            logger.info("Fetching results")
             columns = [desc[0] for desc in cursor.description]
             results = []
+            fetch_start = time.time()
             for row in cursor.fetchall():
                 result = dict(zip(columns, row))
                 # Convert numeric types
@@ -1326,15 +1363,22 @@ def get_ticker_sentiment_analytics():
                 if result.get('date'):
                     result['date'] = result['date'].isoformat()
                 results.append(result)
+            fetch_time = time.time() - fetch_start
+            logger.info(f"Fetched {len(results)} results in {fetch_time:.2f} seconds")
             
             cursor.close()
             
             # Get unique tickers for filter
+            logger.info("Getting unique tickers")
             cursor = db_manager.conn.cursor()
+            ticker_start = time.time()
             cursor.execute("SELECT DISTINCT ticker FROM ticker_daily_sentiment_view ORDER BY ticker")
             tickers = [row[0] for row in cursor.fetchall()]
+            ticker_time = time.time() - ticker_start
+            logger.info(f"Got {len(tickers)} unique tickers in {ticker_time:.2f} seconds")
             cursor.close()
             
+            logger.info(f"Returning response with {len(results)} results")
             return jsonify({
                 'data': results,
                 'tickers': tickers,
@@ -1349,17 +1393,22 @@ def get_ticker_sentiment_analytics():
 @app.route('/api/analytics/price-vs-sentiment/<ticker>')
 def get_price_vs_sentiment(ticker):
     """Get stock price history and normalized weighted sentiment for comparison."""
+    logger.info(f"API /api/analytics/price-vs-sentiment/{ticker} called")
     days_back = int(request.args.get('days_back', 30))
+    logger.info(f"Parameters: days_back={days_back}")
     
     try:
         import requests
+        import time
         
         # Get stock price history
         api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
         if not api_key:
+            logger.error("Alpha Vantage API key not configured")
             return jsonify({'error': 'API key not configured'}), 500
         
         # Fetch stock price history (daily for better granularity)
+        logger.info(f"Fetching stock price data for {ticker}")
         url = "https://www.alphavantage.co/query"
         params = {
             "function": "TIME_SERIES_DAILY",
@@ -1368,9 +1417,12 @@ def get_price_vs_sentiment(ticker):
             "outputsize": "compact"  # Last 100 days
         }
         
+        price_start = time.time()
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         price_data = response.json()
+        price_time = time.time() - price_start
+        logger.info(f"Stock price data fetched in {price_time:.2f} seconds")
         
         if "Error Message" in price_data:
             logger.error(f"Alpha Vantage API Error: {price_data['Error Message']}")
@@ -1381,15 +1433,18 @@ def get_price_vs_sentiment(ticker):
             return jsonify({'error': price_data['Note']}), 400
         
         # Get sentiment data from database
+        logger.info("Getting sentiment data from database")
         db_manager = get_db_manager()
         with db_manager:
             if not db_manager.conn:
+                logger.error("Database connection not established")
                 raise ConnectionError("Database connection not established")
             
             cursor = db_manager.conn.cursor()
             
             # Calculate cutoff date in Python to avoid SQL injection issues with INTERVAL
             cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
+            logger.info(f"Cutoff date: {cutoff_date}")
             
             query = """
                 SELECT 
@@ -1403,20 +1458,31 @@ def get_price_vs_sentiment(ticker):
                 ORDER BY date ASC
             """
             
+            logger.info(f"Executing sentiment query for ticker {ticker.upper()}")
+            sentiment_start = time.time()
             cursor.execute(query, (ticker.upper(), cutoff_date))
+            sentiment_time = time.time() - sentiment_start
+            logger.info(f"Sentiment query executed in {sentiment_time:.2f} seconds")
             
+            logger.info("Fetching sentiment data rows")
             sentiment_data = {}
             sentiment_diffused_data = {}
             article_count_data = {}
+            fetch_start = time.time()
+            row_count = 0
             for row in cursor.fetchall():
                 date_str = row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])
                 sentiment_data[date_str] = float(row[1]) if row[1] is not None else None
                 sentiment_diffused_data[date_str] = float(row[2]) if row[2] is not None else None
                 article_count_data[date_str] = int(row[3]) if row[3] is not None else 0
+                row_count += 1
+            fetch_time = time.time() - fetch_start
+            logger.info(f"Fetched {row_count} sentiment rows in {fetch_time:.2f} seconds")
             
             cursor.close()
         
         # Process price data
+        logger.info("Processing price data")
         if "Time Series (Daily)" in price_data:
             time_series = price_data["Time Series (Daily)"]
             
@@ -1441,6 +1507,8 @@ def get_price_vs_sentiment(ticker):
             last_price = None
             
             # Process all dates in range (including weekends/holidays)
+            processed_count = 0
+            process_start = time.time()
             for date_str in all_dates:
                 try:
                     date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -1456,37 +1524,27 @@ def get_price_vs_sentiment(ticker):
                         price_points.append(last_price)
                         dates.append(date_str)
                         
-                        # Get sentiment for this date (exact match or closest previous date)
-                        sentiment_value = sentiment_data.get(date_str)
-                        sentiment_diffused_value = sentiment_diffused_data.get(date_str)
-                        article_count = article_count_data.get(date_str, 0)
+                        # Get sentiment for this date
+                        # NO FORWARD FILL: Use exact values for the date, or None/0 if no news
+                        sentiment_value = sentiment_data.get(date_str)  # None if no news that day
+                        sentiment_diffused_value = sentiment_diffused_data.get(date_str)  # Should exist if there were news in previous 30 days
+                        article_count = article_count_data.get(date_str, 0)  # 0 if no news that day
                         
-                        if sentiment_value is None:
-                            # Try to find closest previous date (sentiment might be from previous day)
-                            closest_date = None
-                            closest_value = None
-                            closest_diffused_value = None
-                            closest_count = 0
-                            for sent_date, sent_val in sorted(sentiment_data.items()):
-                                if sent_date <= date_str:
-                                    closest_date = sent_date
-                                    closest_value = sent_val
-                                    closest_diffused_value = sentiment_diffused_data.get(sent_date)
-                                    closest_count = article_count_data.get(sent_date, 0)
-                                else:
-                                    break
-                            sentiment_value = closest_value
-                            sentiment_diffused_value = closest_diffused_value
-                            article_count = closest_count
-                        
+                        # Add to results - sentiment can be None, article_count can be 0
+                        # This is correct: we don't want to forward fill sentiment or article counts
                         sentiment_points.append(sentiment_value)
                         sentiment_diffused_points.append(sentiment_diffused_value)
                         article_counts.append(article_count)
+                        processed_count += 1
                 except (ValueError, KeyError) as e:
                     logger.warning(f"Error processing date {date_str}: {str(e)}")
                     continue
             
+            process_time = time.time() - process_start
+            logger.info(f"Processed {processed_count} dates in {process_time:.2f} seconds")
+            
             # Normalize sentiment (Min-Max normalization)
+            logger.info("Normalizing sentiment data")
             sentiment_values = [s for s in sentiment_points if s is not None]
             if sentiment_values:
                 min_sentiment = min(sentiment_values)
@@ -1521,6 +1579,7 @@ def get_price_vs_sentiment(ticker):
                 normalized_sentiment_diffused = [None] * len(sentiment_diffused_points)
             
             # Normalize price (Min-Max normalization)
+            logger.info("Normalizing price data")
             if price_points:
                 min_price = min(price_points)
                 max_price = max(price_points)
@@ -1530,6 +1589,7 @@ def get_price_vs_sentiment(ticker):
             else:
                 normalized_price = []
             
+            logger.info(f"Returning response with {len(dates)} data points")
             return jsonify({
                 'ticker': ticker.upper(),
                 'dates': dates,
@@ -1574,6 +1634,8 @@ def ensure_analytics_view_exists():
             db_manager.conn.commit()
             
             logger.info("Creating ticker_daily_sentiment_view with latest structure...")
+            import time
+            view_start = time.time()
             create_view_sql = """
                 CREATE VIEW ticker_daily_sentiment_view AS
                 WITH ticker_data AS (
@@ -1619,6 +1681,33 @@ def ensure_analytics_view_exists():
                         AND relevance_score IS NOT NULL
                     GROUP BY ticker, date
                 ),
+                all_dates AS (
+                    SELECT DISTINCT
+                        ticker,
+                        generate_series(
+                            GREATEST(MIN(date), CURRENT_DATE - INTERVAL '1 year'),
+                            CURRENT_DATE,
+                            INTERVAL '1 day'
+                        )::date as date
+                    FROM daily_aggregations
+                    GROUP BY ticker
+                ),
+                all_days_with_aggregations AS (
+                    SELECT 
+                        ad.ticker,
+                        ad.date,
+                        da.avg_sentiment_score,
+                        da.avg_relevance_score,
+                        da.weighted_sentiment,
+                        da.total_weighted_sentiment,
+                        COALESCE(da.article_count, 0) as article_count,
+                        COALESCE(da.bullish_count, 0) as bullish_count,
+                        COALESCE(da.bearish_count, 0) as bearish_count,
+                        COALESCE(da.neutral_count, 0) as neutral_count,
+                        da.last_article_time
+                    FROM all_dates ad
+                    LEFT JOIN daily_aggregations da ON ad.ticker = da.ticker AND ad.date = da.date
+                ),
                 diffused_sentiment AS (
                     SELECT 
                         d1.ticker,
@@ -1632,19 +1721,20 @@ def ensure_analytics_view_exists():
                         d1.bearish_count,
                         d1.neutral_count,
                         d1.last_article_time,
+                        -- Sum of decayed sentiment values (not weighted average)
+                        -- Each day's sentiment decays exponentially: sentiment * 0.5^(days_ago / 7)
+                        -- This ensures the value decreases over time even with a single article
+                        -- Half-life = 7 days means after 7 days, the contribution is halved
                         COALESCE(
-                            CASE 
-                                WHEN SUM(POWER(0.5, (d1.date - d2.date)::numeric / 7.0)) FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days') > 0
-                                THEN SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
-                                     FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days')
-                                     / SUM(POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
-                                     FILTER (WHERE d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days')
-                                ELSE 0
-                            END,
+                            SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
+                                FILTER (WHERE d2.weighted_sentiment IS NOT NULL),
                             0
                         ) as weighted_sentiment_diffused
-                    FROM daily_aggregations d1
-                    LEFT JOIN daily_aggregations d2 ON d1.ticker = d2.ticker
+                    FROM all_days_with_aggregations d1
+                    LEFT JOIN all_days_with_aggregations d2 
+                        ON d1.ticker = d2.ticker 
+                        AND d2.date <= d1.date 
+                        AND d2.date >= d1.date - INTERVAL '30 days'
                     GROUP BY 
                         d1.ticker, d1.date, d1.avg_sentiment_score, d1.avg_relevance_score,
                         d1.weighted_sentiment, d1.total_weighted_sentiment, d1.article_count,
@@ -1666,9 +1756,11 @@ def ensure_analytics_view_exists():
                 FROM diffused_sentiment
                 ORDER BY ticker, date DESC
                 """
+            logger.info("Executing CREATE VIEW statement...")
             cursor.execute(create_view_sql)
             db_manager.conn.commit()
-            logger.info("Successfully recreated ticker_daily_sentiment_view")
+            view_time = time.time() - view_start
+            logger.info(f"Successfully recreated ticker_daily_sentiment_view in {view_time:.2f} seconds")
             
             cursor.close()
     except Exception as e:
