@@ -168,3 +168,22 @@ SELECT
 FROM diffused_sentiment
 ORDER BY ticker, date DESC;
 
+-- Create table for ticker similarity matrix (co-citation based)
+CREATE TABLE IF NOT EXISTS ticker_similarity_matrix (
+    ticker_a TEXT NOT NULL,
+    ticker_b TEXT NOT NULL,
+    similarity_score NUMERIC(5, 4) NOT NULL,  -- 0.0 - 1.0
+    co_occurrence_count INTEGER NOT NULL,  -- Number of articles where both tickers appear
+    ticker_a_article_count INTEGER NOT NULL,  -- Total articles for ticker_a
+    ticker_b_article_count INTEGER NOT NULL,  -- Total articles for ticker_b
+    similarity_type TEXT DEFAULT 'co_citation',
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ticker_a, ticker_b),
+    CHECK (ticker_a < ticker_b)  -- Ensure only upper triangle (avoid duplicates)
+);
+
+-- Create index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_similarity_ticker_a ON ticker_similarity_matrix(ticker_a);
+CREATE INDEX IF NOT EXISTS idx_similarity_ticker_b ON ticker_similarity_matrix(ticker_b);
+CREATE INDEX IF NOT EXISTS idx_similarity_score ON ticker_similarity_matrix(similarity_score DESC);
+

@@ -1774,6 +1774,254 @@ def docs():
     return render_template('docs.html')
 
 
+def calculate_ticker_similarity_matrix():
+    """
+    Calculate co-citation similarity matrix for all ticker pairs.
+    Formula: W_ij = max(0, (|D_i ∩ D_j| / sqrt(|D_i| * |D_j|)))^gamma
+    Where:
+    - D_i = set of articles mentioning ticker i
+    - |D_i ∩ D_j| = number of articles mentioning both tickers
+    - gamma = 2 (as per DollarPunk)
+    """
+    logger.info("Calculating ticker similarity matrix (co-citation)")
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Ensure table exists (should already exist from startup, but check anyway)
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'ticker_similarity_matrix'
+                )
+            """)
+            if not cursor.fetchone()[0]:
+                logger.error("ticker_similarity_matrix table does not exist. Please restart the application.")
+                raise RuntimeError("Similarity matrix table does not exist")
+            
+            # Get all unique tickers and their article counts
+            logger.info("Fetching ticker article counts...")
+            cursor.execute("""
+                WITH ticker_articles AS (
+                    SELECT 
+                        jsonb_array_elements(ticker_sentiment)->>'ticker' as ticker,
+                        id as article_id
+                    FROM articles
+                    WHERE ticker_sentiment IS NOT NULL
+                        AND jsonb_array_length(ticker_sentiment) > 0
+                )
+                SELECT 
+                    ticker,
+                    COUNT(DISTINCT article_id) as article_count
+                FROM ticker_articles
+                WHERE ticker IS NOT NULL
+                GROUP BY ticker
+                HAVING COUNT(DISTINCT article_id) > 0
+                ORDER BY ticker
+            """)
+            
+            ticker_counts = {row[0]: row[1] for row in cursor.fetchall()}
+            tickers = sorted(ticker_counts.keys())
+            logger.info(f"Found {len(tickers)} unique tickers")
+            
+            # Clear existing matrix
+            cursor.execute("DELETE FROM ticker_similarity_matrix")
+            logger.info("Cleared existing similarity matrix")
+            
+            # Calculate co-occurrence for each pair
+            gamma = 2  # As per DollarPunk
+            total_pairs = len(tickers) * (len(tickers) - 1) // 2
+            processed = 0
+            inserted = 0
+            
+            logger.info(f"Calculating similarity for {total_pairs} ticker pairs...")
+            
+            for i, ticker_a in enumerate(tickers):
+                for ticker_b in tickers[i+1:]:
+                    processed += 1
+                    
+                    # Get co-occurrence count (articles mentioning both tickers)
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT id) as co_occurrence
+                        FROM articles
+                        WHERE ticker_sentiment IS NOT NULL
+                            AND jsonb_array_length(ticker_sentiment) > 0
+                            AND EXISTS (
+                                SELECT 1 
+                                FROM jsonb_array_elements(ticker_sentiment) as elem1
+                                WHERE elem1->>'ticker' = %s
+                            )
+                            AND EXISTS (
+                                SELECT 1 
+                                FROM jsonb_array_elements(ticker_sentiment) as elem2
+                                WHERE elem2->>'ticker' = %s
+                            )
+                    """, (ticker_a, ticker_b))
+                    
+                    co_occurrence = cursor.fetchone()[0]
+                    count_a = ticker_counts[ticker_a]
+                    count_b = ticker_counts[ticker_b]
+                    
+                    # Calculate similarity: W_ij = max(0, (co_occurrence / sqrt(count_a * count_b)))^gamma
+                    if count_a > 0 and count_b > 0 and co_occurrence > 0:
+                        denominator = (count_a * count_b) ** 0.5
+                        similarity = max(0, (co_occurrence / denominator)) ** gamma
+                        
+                        # Only insert if similarity > 0
+                        if similarity > 0:
+                            cursor.execute("""
+                                INSERT INTO ticker_similarity_matrix 
+                                (ticker_a, ticker_b, similarity_score, co_occurrence_count, 
+                                 ticker_a_article_count, ticker_b_article_count, similarity_type)
+                                VALUES (%s, %s, %s, %s, %s, %s, 'co_citation')
+                            """, (ticker_a, ticker_b, similarity, co_occurrence, count_a, count_b))
+                            inserted += 1
+                    
+                    if processed % 100 == 0:
+                        logger.info(f"Processed {processed}/{total_pairs} pairs, inserted {inserted} similarities")
+            
+            db_manager.conn.commit()
+            logger.info(f"Similarity matrix calculation complete: {inserted} pairs inserted")
+            
+            cursor.close()
+            return inserted
+            
+    except Exception as e:
+        logger.error(f"Error calculating similarity matrix: {str(e)}", exc_info=True)
+        if db_manager.conn:
+            db_manager.conn.rollback()
+        raise
+
+
+@app.route('/similarity-matrix')
+def similarity_matrix():
+    """Similarity matrix page showing ticker co-citation heatmap."""
+    logger.info("Similarity matrix page accessed")
+    return render_template('similarity_matrix.html')
+
+
+@app.route('/api/similarity-matrix')
+def get_similarity_matrix():
+    """API endpoint to fetch similarity matrix data."""
+    logger.info("API /api/similarity-matrix called")
+    
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'ticker_similarity_matrix'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("Similarity matrix table does not exist, returning empty data")
+                cursor.close()
+                return jsonify({
+                    'data': [],
+                    'tickers': [],
+                    'matrix': [],
+                    'needs_calculation': True
+                })
+            
+            # Get all unique tickers
+            cursor.execute("""
+                SELECT DISTINCT ticker_a as ticker FROM ticker_similarity_matrix
+                UNION
+                SELECT DISTINCT ticker_b as ticker FROM ticker_similarity_matrix
+                ORDER BY ticker
+            """)
+            all_tickers = [row[0] for row in cursor.fetchall()]
+            
+            # Get all similarity pairs
+            cursor.execute("""
+                SELECT 
+                    ticker_a,
+                    ticker_b,
+                    similarity_score,
+                    co_occurrence_count,
+                    ticker_a_article_count,
+                    ticker_b_article_count
+                FROM ticker_similarity_matrix
+                ORDER BY ticker_a, ticker_b
+            """)
+            
+            pairs = cursor.fetchall()
+            cursor.close()
+            
+            # Build matrix (symmetric)
+            matrix = {}
+            for ticker_a, ticker_b, score, co_occ, count_a, count_b in pairs:
+                if ticker_a not in matrix:
+                    matrix[ticker_a] = {}
+                if ticker_b not in matrix:
+                    matrix[ticker_b] = {}
+                matrix[ticker_a][ticker_b] = float(score)
+                matrix[ticker_b][ticker_a] = float(score)  # Symmetric
+            
+            # Fill diagonal with 1.0 (self-similarity)
+            for ticker in all_tickers:
+                if ticker not in matrix:
+                    matrix[ticker] = {}
+                matrix[ticker][ticker] = 1.0
+            
+            # Convert to 2D array for heatmap
+            matrix_array = []
+            for ticker_a in all_tickers:
+                row = []
+                for ticker_b in all_tickers:
+                    row.append(matrix.get(ticker_a, {}).get(ticker_b, 0.0))
+                matrix_array.append(row)
+            
+            return jsonify({
+                'data': [{
+                    'ticker_a': ticker_a,
+                    'ticker_b': ticker_b,
+                    'similarity': float(score),
+                    'co_occurrence': co_occ,
+                    'count_a': count_a,
+                    'count_b': count_b
+                } for ticker_a, ticker_b, score, co_occ, count_a, count_b in pairs],
+                'tickers': all_tickers,
+                'matrix': matrix_array,
+                'needs_calculation': False
+            })
+            
+    except Exception as e:
+        logger.error(f"Error fetching similarity matrix: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/similarity-matrix/calculate', methods=['POST'])
+def calculate_similarity_matrix():
+    """API endpoint to trigger similarity matrix calculation."""
+    logger.info("API /api/similarity-matrix/calculate called")
+    
+    try:
+        inserted = calculate_ticker_similarity_matrix()
+        return jsonify({
+            'success': True,
+            'pairs_inserted': inserted,
+            'message': f'Similarity matrix calculated successfully. {inserted} pairs inserted.'
+        })
+    except Exception as e:
+        logger.error(f"Error calculating similarity matrix: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/sql-query', methods=['GET', 'POST'])
 def sql_query():
     """SQL query interface for direct database queries."""
@@ -1902,9 +2150,76 @@ def sql_query():
         return render_template('sql_query.html', query=query, error=error_msg, tables=tables, views=views)
 
 
+def ensure_similarity_table_exists():
+    """Ensure the ticker_similarity_matrix table exists in the database."""
+    logger.info("Ensuring ticker_similarity_matrix table exists")
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error("Database connection not established")
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'ticker_similarity_matrix'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("Creating ticker_similarity_matrix table...")
+                cursor.execute("""
+                    CREATE TABLE ticker_similarity_matrix (
+                        ticker_a TEXT NOT NULL,
+                        ticker_b TEXT NOT NULL,
+                        similarity_score NUMERIC(5, 4) NOT NULL,
+                        co_occurrence_count INTEGER NOT NULL,
+                        ticker_a_article_count INTEGER NOT NULL,
+                        ticker_b_article_count INTEGER NOT NULL,
+                        similarity_type TEXT DEFAULT 'co_citation',
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (ticker_a, ticker_b),
+                        CHECK (ticker_a < ticker_b)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE INDEX idx_similarity_ticker_a 
+                    ON ticker_similarity_matrix(ticker_a)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_similarity_ticker_b 
+                    ON ticker_similarity_matrix(ticker_b)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_similarity_score 
+                    ON ticker_similarity_matrix(similarity_score DESC)
+                """)
+                
+                db_manager.conn.commit()
+                logger.info("ticker_similarity_matrix table created successfully")
+            else:
+                logger.info("ticker_similarity_matrix table already exists")
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Error ensuring similarity table exists: {str(e)}", exc_info=True)
+        if db_manager.conn:
+            db_manager.conn.rollback()
+
+
 if __name__ == '__main__':
     # Ensure analytics view exists before starting the app
     ensure_analytics_view_exists()
+    # Ensure similarity matrix table exists
+    ensure_similarity_table_exists()
     
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
