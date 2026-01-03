@@ -23,18 +23,13 @@
             <div class="card-body">
                 <form id="analyticsForm" class="row g-3">
                     <div class="col-md-4">
-                        <label for="tickerSearch" class="form-label">Ticker (Search)</label>
-                        <input type="text" class="form-control" id="tickerSearch" name="ticker" 
-                               placeholder="Enter ticker (e.g., AAPL, MSFT) or leave empty for all"
-                               autocomplete="off">
-                        <small class="form-text text-muted">Type ticker symbol to filter</small>
-                    </div>
-                    <div class="col-md-2">
-                        <label for="tickerFilter" class="form-label">Or Select from List</label>
-                        <select class="form-select" id="tickerFilter" name="ticker_select">
+                        <label for="tickerSearch" class="form-label">Ticker</label>
+                        <input type="text" class="form-control mb-2" id="tickerSearch" 
+                               placeholder="Search ticker..." autocomplete="off">
+                        <select class="form-select" id="tickerFilter" name="ticker">
                             <option value="">All Tickers</option>
                         </select>
-                        <small class="form-text text-muted">Quick select</small>
+                        <small class="form-text text-muted">Type to filter the list</small>
                     </div>
                     <div class="col-md-3">
                         <label for="daysBack" class="form-label">Days Back</label>
@@ -138,42 +133,58 @@
     let sentimentChart = null;
     let comparisonChart = null;
     
+    // Store all tickers for filtering
+    let allTickers = [];
+    
     // Load tickers list on page load
     function loadTickers() {
         fetch('/api/analytics/ticker-sentiment?limit=1')
             .then(response => response.json())
             .then(data => {
-                const select = document.getElementById('tickerFilter');
-                data.tickers.forEach(ticker => {
-                    const option = document.createElement('option');
-                    option.value = ticker;
-                    option.textContent = ticker;
-                    select.appendChild(option);
-                });
+                allTickers = data.tickers || [];
+                filterTickers();
                 
-                // Add event listener to sync dropdown with search field
-                select.addEventListener('change', function() {
-                    if (this.value) {
-                        document.getElementById('tickerSearch').value = this.value;
-                    }
-                });
-                
-                // Add event listener to clear dropdown when typing in search
+                // Add event listener to filter dropdown when typing in search
                 document.getElementById('tickerSearch').addEventListener('input', function() {
-                    if (this.value.trim()) {
-                        document.getElementById('tickerFilter').value = '';
-                    }
+                    filterTickers();
                 });
             })
             .catch(error => console.error('Error loading tickers:', error));
     }
     
+    // Filter tickers based on search input
+    function filterTickers() {
+        const searchText = document.getElementById('tickerSearch').value.trim().toUpperCase();
+        const select = document.getElementById('tickerFilter');
+        const currentValue = select.value;
+        
+        // Clear existing options except "All Tickers"
+        select.innerHTML = '<option value="">All Tickers</option>';
+        
+        // Filter and add matching tickers
+        const filteredTickers = allTickers.filter(ticker => {
+            return ticker.toUpperCase().includes(searchText);
+        });
+        
+        filteredTickers.forEach(ticker => {
+            const option = document.createElement('option');
+            option.value = ticker;
+            option.textContent = ticker;
+            select.appendChild(option);
+        });
+        
+        // Restore previous selection if it still exists
+        if (currentValue && filteredTickers.includes(currentValue)) {
+            select.value = currentValue;
+        } else if (currentValue && !filteredTickers.includes(currentValue)) {
+            // If current selection is filtered out, clear it
+            select.value = '';
+        }
+    }
+    
     // Load analytics data
     function loadAnalytics() {
-        // Get ticker from search field (preferred) or dropdown
-        const tickerSearch = document.getElementById('tickerSearch').value.trim().toUpperCase();
-        const tickerDropdown = document.getElementById('tickerFilter').value;
-        const ticker = tickerSearch || tickerDropdown;
+        const ticker = document.getElementById('tickerFilter').value;
         
         const daysBack = document.getElementById('daysBack').value;
         const limit = document.getElementById('limit').value;
@@ -205,9 +216,8 @@
                 renderChart(data.data);
                 
                 // Load comparison chart if ticker is selected
-                const tickerForChart = tickerSearch || tickerDropdown;
-                if (tickerForChart) {
-                    loadComparisonChart(tickerForChart, daysBack);
+                if (ticker) {
+                    loadComparisonChart(ticker, daysBack);
                 } else {
                     document.getElementById('comparisonChartRow').style.display = 'none';
                 }
@@ -447,9 +457,7 @@
         }
         
         // Group by ticker if multiple tickers, or show single ticker over time
-        const tickerSearch = document.getElementById('tickerSearch').value.trim().toUpperCase();
-        const tickerDropdown = document.getElementById('tickerFilter').value;
-        const ticker = tickerSearch || tickerDropdown;
+        const ticker = document.getElementById('tickerFilter').value;
         
         if (ticker) {
             // Single ticker: show trend over time

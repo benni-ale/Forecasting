@@ -1768,6 +1768,12 @@ def ensure_analytics_view_exists():
         # Don't raise - allow app to start even if view creation fails
 
 
+@app.route('/docs')
+def docs():
+    """Documentation page explaining the weighted sentiment diffused calculation."""
+    return render_template('docs.html')
+
+
 @app.route('/sql-query', methods=['GET', 'POST'])
 def sql_query():
     """SQL query interface for direct database queries."""

@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+
+{% block title %}Documentation - News Collector{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>
+    .math-formula {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 4px;
+        margin: 1rem 0;
+        overflow-x: auto;
+    }
+    .code-block {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 4px;
+        border-left: 4px solid #0d6efd;
+        margin: 1rem 0;
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        overflow-x: auto;
+    }
+    .section {
+        margin-bottom: 3rem;
+    }
+    .subsection {
+        margin-top: 2rem;
+        margin-bottom: 1.5rem;
+    }
+    .highlight {
+        background-color: #fff3cd;
+        padding: 0.2rem 0.4rem;
+        border-radius: 3px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2><i class="bi bi-book"></i> Documentation</h2>
+            <a href="/" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-body">
+                <div class="section">
+                    <h3>Weighted Sentiment with Diffusion</h3>
+                    <p>
+                        Il <strong>Weighted Sentiment with Diffusion</strong> è una metrica che calcola il sentiment 
+                        ponderato per rilevanza, considerando anche l'effetto di diffusione temporale delle notizie. 
+                        Ogni notizia contribuisce al sentiment per più giorni, con un decadimento esponenziale nel tempo.
+                    </p>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">1. Struttura della Vista SQL</h4>
+                    <p>
+                        La vista <code>ticker_daily_sentiment_view</code> è costruita usando diverse <strong>Common Table Expressions (CTE)</strong> 
+                        che processano i dati in fasi successive:
+                    </p>
+
+                    <h5>1.1. ticker_data</h5>
+                    <p>
+                        La prima CTE estrae i dati dei ticker dall'array JSONB <code>ticker_sentiment</code> presente in ogni articolo.
+                    </p>
+                    <div class="code-block">
+WITH ticker_data AS (
+    SELECT 
+        DATE(time_published) as date,
+        jsonb_array_elements(ticker_sentiment) as ticker_info,
+        time_published
+    FROM articles
+    WHERE time_published IS NOT NULL
+        AND ticker_sentiment IS NOT NULL
+        AND jsonb_array_length(ticker_sentiment) > 0
+)
+                    </div>
+                    <p>
+                        <strong>Perché questa struttura?</strong> Ogni articolo può contenere più ticker nel campo JSONB. 
+                        <code>jsonb_array_elements()</code> "esplode" l'array creando una riga per ogni ticker, permettendo 
+                        di processare ogni ticker individualmente.
+                    </p>
+
+                    <h5>1.2. ticker_scores</h5>
+                    <p>
+                        Estrae i valori numerici dal JSONB e li converte in tipi appropriati.
+                    </p>
+                    <div class="code-block">
+ticker_scores AS (
+    SELECT 
+        date,
+        ticker_info->>'ticker' as ticker,
+        (ticker_info->>'ticker_sentiment_score')::numeric as sentiment_score,
+        (ticker_info->>'relevance_score')::numeric as relevance_score,
+        ticker_info->>'ticker_sentiment_label' as sentiment_label,
+        time_published
+    FROM ticker_data
+    WHERE ticker_info->>'ticker' IS NOT NULL
+        AND ticker_info->>'ticker_sentiment_score' IS NOT NULL
+        AND ticker_info->>'relevance_score' IS NOT NULL
+)
+                    </div>
+
+                    <h5>1.3. daily_aggregations</h5>
+                    <p>
+                        Aggrega i dati per ticker e giorno, calcolando le medie e i conteggi.
+                    </p>
+                    <div class="code-block">
+daily_aggregations AS (
+    SELECT 
+        ticker,
+        date,
+        AVG(sentiment_score) as avg_sentiment_score,
+        AVG(relevance_score) as avg_relevance_score,
+        AVG(sentiment_score * relevance_score) as weighted_sentiment,
+        SUM(sentiment_score * relevance_score) as total_weighted_sentiment,
+        COUNT(*) as article_count,
+        ...
+    FROM ticker_scores
+    GROUP BY ticker, date
+)
+                    </div>
+                    <p>
+                        <strong>Nota importante:</strong> <code>weighted_sentiment</code> è calcolato come 
+                        <code>AVG(sentiment_score * relevance_score)</code>, che rappresenta la media del prodotto 
+                        sentiment × relevance per ogni articolo. Questo è diverso dal prodotto delle medie.
+                    </p>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">2. Generazione di Tutte le Date</h4>
+                    <p>
+                        Per calcolare correttamente il sentiment diffused, abbiamo bisogno di una riga per ogni giorno 
+                        nel range, anche se non ci sono state notizie quel giorno. Questo permette al sentiment diffused 
+                        di essere calcolato anche per i giorni senza nuove notizie.
+                    </p>
+
+                    <h5>2.1. all_dates</h5>
+                    <div class="code-block">
+all_dates AS (
+    SELECT DISTINCT
+        ticker,
+        generate_series(
+            GREATEST(MIN(date), CURRENT_DATE - INTERVAL '1 year'),
+            CURRENT_DATE,
+            INTERVAL '1 day'
+        )::date as date
+    FROM daily_aggregations
+    GROUP BY ticker
+)
+                    </div>
+                    <p>
+                        <strong>Perché <code>generate_series</code>?</strong> Crea una serie di date consecutive per ogni ticker, 
+                        dal primo articolo (o massimo 1 anno fa) fino ad oggi. Questo garantisce che ogni giorno abbia una riga, 
+                        anche senza notizie.
+                    </p>
+
+                    <h5>2.2. all_days_with_aggregations</h5>
+                    <div class="code-block">
+all_days_with_aggregations AS (
+    SELECT 
+        ad.ticker,
+        ad.date,
+        da.avg_sentiment_score,
+        da.avg_relevance_score,
+        da.weighted_sentiment,
+        ...
+    FROM all_dates ad
+    LEFT JOIN daily_aggregations da 
+        ON ad.ticker = da.ticker AND ad.date = da.date
+)
+                    </div>
+                    <p>
+                        <strong>Perché LEFT JOIN?</strong> Il LEFT JOIN mantiene tutte le date da <code>all_dates</code>, 
+                        anche quando non c'è corrispondenza in <code>daily_aggregations</code>. I giorni senza notizie avranno 
+                        valori NULL per i campi aggregati, ma avranno comunque una riga nella vista.
+                    </p>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">3. Calcolo del Weighted Sentiment Diffused</h4>
+                    <p>
+                        Il sentiment diffused calcola la somma dei sentimenti ponderati dei giorni precedenti, 
+                        applicando un decadimento esponenziale basato sul tempo trascorso.
+                    </p>
+
+                    <h5>3.1. Formula del Decadimento</h5>
+                    <p>
+                        Il peso di ogni giorno precedente decresce esponenzialmente secondo la formula:
+                    </p>
+                    <div class="math-formula">
+                        <div id="decay-formula"></div>
+                    </div>
+                    <p>
+                        Dove:
+                    </p>
+                    <ul>
+                        <li><span class="highlight">t</span> = giorni trascorsi dal giorno di riferimento</li>
+                        <li><span class="highlight">T<sub>1/2</sub></span> = half-life (7 giorni nel nostro caso)</li>
+                    </ul>
+                    <p>
+                        Dopo 7 giorni, il peso è esattamente la metà (0.5). Dopo 14 giorni, è un quarto (0.25), e così via.
+                    </p>
+
+                    <h5>3.2. Formula del Weighted Sentiment Diffused</h5>
+                    <p>
+                        Il sentiment diffused per un giorno <span class="highlight">d</span> è calcolato come:
+                    </p>
+                    <div class="math-formula">
+                        <div id="diffused-formula"></div>
+                    </div>
+                    <p>
+                        Dove:
+                    </p>
+                    <ul>
+                        <li><span class="highlight">WS<sub>i</sub></span> = Weighted Sentiment del giorno <span class="highlight">i</span></li>
+                        <li><span class="highlight">w<sub>i</sub></span> = peso di decadimento per il giorno <span class="highlight">i</span></li>
+                        <li><span class="highlight">n</span> = numero di giorni considerati (30 giorni nel nostro caso)</li>
+                    </ul>
+
+                    <h5>3.3. Implementazione SQL</h5>
+                    <div class="code-block">
+diffused_sentiment AS (
+    SELECT 
+        d1.ticker,
+        d1.date,
+        ...
+        COALESCE(
+            SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
+                FILTER (WHERE d2.weighted_sentiment IS NOT NULL),
+            0
+        ) as weighted_sentiment_diffused
+    FROM all_days_with_aggregations d1
+    LEFT JOIN all_days_with_aggregations d2 
+        ON d1.ticker = d2.ticker 
+        AND d2.date <= d1.date 
+        AND d2.date >= d1.date - INTERVAL '30 days'
+    GROUP BY ...
+)
+                    </div>
+
+                    <h5>3.4. Perché questo LEFT JOIN?</h5>
+                    <p>
+                        Il LEFT JOIN con condizioni di data nel <code>ON</code> è cruciale per le performance:
+                    </p>
+                    <ul>
+                        <li><strong>Condizione nel JOIN:</strong> <code>d2.date <= d1.date AND d2.date >= d1.date - INTERVAL '30 days'</code></li>
+                        <li>Questo limita il prodotto cartesiano fin dall'inizio, invece di generare tutte le combinazioni e poi filtrare</li>
+                        <li>PostgreSQL può usare indici e ottimizzazioni per questo tipo di JOIN</li>
+                        <li>Riduce drasticamente il numero di righe da processare</li>
+                    </ul>
+                    <p>
+                        <strong>Nota:</strong> Se avessimo messo le condizioni nel <code>WHERE</code> invece che nel <code>ON</code>, 
+                        PostgreSQL avrebbe generato un prodotto cartesiano completo prima di filtrare, causando performance disastrose.
+                    </p>
+
+                    <h5>3.5. Perché Somma e non Media Ponderata?</h5>
+                    <p>
+                        Usiamo la <strong>somma</strong> dei sentimenti con decay, non la media ponderata, perché:
+                    </p>
+                    <ul>
+                        <li>La somma riflette l'<strong>intensità cumulativa</strong> del sentiment nel tempo</li>
+                        <li>Con un solo articolo, la media ponderata darebbe sempre lo stesso valore (problema che avevamo prima)</li>
+                        <li>La somma con decay mostra chiaramente come il sentiment diminuisce nel tempo anche con un solo articolo</li>
+                        <li>È più intuitivo: più notizie = sentiment più alto, che decresce nel tempo</li>
+                    </ul>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">4. Normalizzazione</h4>
+                    <p>
+                        Nella pagina Analytics, quando confrontiamo il sentiment con il prezzo delle azioni, normalizziamo 
+                        entrambe le serie usando la <strong>normalizzazione Min-Max</strong>:
+                    </p>
+                    <div class="math-formula">
+                        <div id="normalization-formula"></div>
+                    </div>
+                    <p>
+                        Questo porta entrambe le serie nel range [0, 1], permettendo un confronto visivo diretto anche se 
+                        hanno scale completamente diverse (prezzo in dollari vs sentiment in range 0-1).
+                    </p>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">5. Esempio Pratico</h4>
+                    <p>
+                        Supponiamo di avere un articolo il 2025-12-19 con <code>weighted_sentiment = 0.0054</code>:
+                    </p>
+                    <ul>
+                        <li><strong>2025-12-19:</strong> <code>0.0054 × 0.5<sup>0/7</sup> = 0.0054 × 1.0 = 0.0054</code></li>
+                        <li><strong>2025-12-20:</strong> <code>0.0054 × 0.5<sup>1/7</sup> ≈ 0.0054 × 0.906 ≈ 0.0049</code></li>
+                        <li><strong>2025-12-21:</strong> <code>0.0054 × 0.5<sup>2/7</sup> ≈ 0.0054 × 0.821 ≈ 0.0044</code></li>
+                        <li><strong>2025-12-26:</strong> <code>0.0054 × 0.5<sup>7/7</sup> = 0.0054 × 0.5 = 0.0027</code> (metà dopo 7 giorni)</li>
+                        <li><strong>2026-01-02:</strong> <code>0.0054 × 0.5<sup>14/7</sup> = 0.0054 × 0.25 = 0.00135</code> (un quarto dopo 14 giorni)</li>
+                    </ul>
+                    <p>
+                        Se ci sono più articoli, i loro contributi vengono sommati. Ad esempio, se il 2025-12-20 c'è un 
+                        nuovo articolo con <code>weighted_sentiment = 0.003</code>, il sentiment diffused per quel giorno sarà:
+                    </p>
+                    <ul>
+                        <li>Contributo del 2025-12-19: <code>0.0054 × 0.5<sup>1/7</sup> ≈ 0.0049</code></li>
+                        <li>Contributo del 2025-12-20: <code>0.003 × 0.5<sup>0/7</sup> = 0.003</code></li>
+                        <li><strong>Totale:</strong> <code>0.0049 + 0.003 = 0.0079</code></li>
+                    </ul>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">6. Query Utilizzate nell'Applicazione</h4>
+                    
+                    <h5>6.1. Query per ottenere i dati aggregati</h5>
+                    <div class="code-block">
+SELECT 
+    ticker,
+    date,
+    weighted_sentiment,
+    weighted_sentiment_diffused,
+    article_count
+FROM ticker_daily_sentiment_view
+WHERE ticker = 'AAPL'
+    AND date >= CURRENT_DATE - INTERVAL '30 days'
+ORDER BY date ASC
+                    </div>
+                    <p>
+                        Questa query viene eseguita quando l'utente seleziona un ticker nella pagina Analytics. 
+                        La vista è già pre-calcolata, quindi la query è veloce anche con molti dati.
+                    </p>
+
+                    <h5>6.2. Query per il confronto con il prezzo</h5>
+                    <p>
+                        Per confrontare il sentiment con il prezzo delle azioni, l'applicazione:
+                    </p>
+                    <ol>
+                        <li>Recupera i prezzi storici dall'API Alpha Vantage</li>
+                        <li>Recupera i sentiment dalla vista SQL</li>
+                        <li>Applica forward fill ai prezzi (mantiene l'ultimo prezzo per i giorni di chiusura del mercato)</li>
+                        <li>Normalizza entrambe le serie usando Min-Max</li>
+                        <li>Allinea i dati per data</li>
+                    </ol>
+                    <p>
+                        <strong>Perché forward fill per i prezzi ma non per il sentiment?</strong> I prezzi delle azioni 
+                        hanno senso anche nei giorni di chiusura (ultimo prezzo noto), mentre il sentiment deve riflettere 
+                        solo i giorni con effettive notizie. Un giorno senza notizie deve avere sentiment NULL o 0, 
+                        non il valore del giorno precedente.
+                    </p>
+                </div>
+
+                <div class="section">
+                    <h4 class="subsection">7. Considerazioni sulle Performance</h4>
+                    <ul>
+                        <li><strong>Vista materializzata?</strong> No, è una vista normale. Potrebbe essere materializzata 
+                            se le performance diventano un problema, ma richiederebbe refresh periodici.</li>
+                        <li><strong>Indici:</strong> Gli indici su <code>time_published</code> e il GIN index su 
+                            <code>ticker_sentiment</code> aiutano le performance delle query base.</li>
+                        <li><strong>Ottimizzazione del JOIN:</strong> Le condizioni di data nel <code>ON</code> del JOIN 
+                            sono cruciali per evitare prodotti cartesiani enormi.</li>
+                        <li><strong>Limite di 30 giorni:</strong> Il calcolo considera solo gli ultimi 30 giorni per bilanciare 
+                            accuratezza e performance. Dopo 30 giorni, il contributo è trascurabile (< 0.5<sup>30/7</sup> ≈ 0.06).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script>
+    // Render LaTeX formulas
+    document.addEventListener('DOMContentLoaded', function() {
+        // Decay formula
+        katex.render(
+            "w(t) = 0.5^{\\frac{t}{T_{1/2}}}",
+            document.getElementById('decay-formula'),
+            { displayMode: true }
+        );
+        
+        // Diffused sentiment formula
+        katex.render(
+            "WS_{diffused}(d) = \\sum_{i=d-n}^{d} WS_i \\cdot w_i",
+            document.getElementById('diffused-formula'),
+            { displayMode: true }
+        );
+        
+        // Normalization formula
+        katex.render(
+            "x_{normalized} = \\frac{x - x_{min}}{x_{max} - x_{min}}",
+            document.getElementById('normalization-formula'),
+            { displayMode: true }
+        );
+    });
+</script>
+{% endblock %}
+
