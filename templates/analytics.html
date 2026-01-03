@@ -23,10 +23,18 @@
             <div class="card-body">
                 <form id="analyticsForm" class="row g-3">
                     <div class="col-md-4">
-                        <label for="tickerFilter" class="form-label">Ticker</label>
-                        <select class="form-select" id="tickerFilter" name="ticker">
+                        <label for="tickerSearch" class="form-label">Ticker (Search)</label>
+                        <input type="text" class="form-control" id="tickerSearch" name="ticker" 
+                               placeholder="Enter ticker (e.g., AAPL, MSFT) or leave empty for all"
+                               autocomplete="off">
+                        <small class="form-text text-muted">Type ticker symbol to filter</small>
+                    </div>
+                    <div class="col-md-2">
+                        <label for="tickerFilter" class="form-label">Or Select from List</label>
+                        <select class="form-select" id="tickerFilter" name="ticker_select">
                             <option value="">All Tickers</option>
                         </select>
+                        <small class="form-text text-muted">Quick select</small>
                     </div>
                     <div class="col-md-3">
                         <label for="daysBack" class="form-label">Days Back</label>
@@ -142,13 +150,31 @@
                     option.textContent = ticker;
                     select.appendChild(option);
                 });
+                
+                // Add event listener to sync dropdown with search field
+                select.addEventListener('change', function() {
+                    if (this.value) {
+                        document.getElementById('tickerSearch').value = this.value;
+                    }
+                });
+                
+                // Add event listener to clear dropdown when typing in search
+                document.getElementById('tickerSearch').addEventListener('input', function() {
+                    if (this.value.trim()) {
+                        document.getElementById('tickerFilter').value = '';
+                    }
+                });
             })
             .catch(error => console.error('Error loading tickers:', error));
     }
     
     // Load analytics data
     function loadAnalytics() {
-        const ticker = document.getElementById('tickerFilter').value;
+        // Get ticker from search field (preferred) or dropdown
+        const tickerSearch = document.getElementById('tickerSearch').value.trim().toUpperCase();
+        const tickerDropdown = document.getElementById('tickerFilter').value;
+        const ticker = tickerSearch || tickerDropdown;
+        
         const daysBack = document.getElementById('daysBack').value;
         const limit = document.getElementById('limit').value;
         
@@ -179,9 +205,9 @@
                 renderChart(data.data);
                 
                 // Load comparison chart if ticker is selected
-                const ticker = document.getElementById('tickerFilter').value;
-                if (ticker) {
-                    loadComparisonChart(ticker, daysBack);
+                const tickerForChart = tickerSearch || tickerDropdown;
+                if (tickerForChart) {
+                    loadComparisonChart(tickerForChart, daysBack);
                 } else {
                     document.getElementById('comparisonChartRow').style.display = 'none';
                 }
@@ -421,7 +447,9 @@
         }
         
         // Group by ticker if multiple tickers, or show single ticker over time
-        const ticker = document.getElementById('tickerFilter').value;
+        const tickerSearch = document.getElementById('tickerSearch').value.trim().toUpperCase();
+        const tickerDropdown = document.getElementById('tickerFilter').value;
+        const ticker = tickerSearch || tickerDropdown;
         
         if (ticker) {
             // Single ticker: show trend over time

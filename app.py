@@ -1768,6 +1768,134 @@ def ensure_analytics_view_exists():
         # Don't raise - allow app to start even if view creation fails
 
 
+@app.route('/sql-query', methods=['GET', 'POST'])
+def sql_query():
+    """SQL query interface for direct database queries."""
+    # Get database catalog (tables and views)
+    db_manager = get_db_manager()
+    tables = []
+    views = []
+    
+    try:
+        with db_manager:
+            if db_manager.conn:
+                cursor = db_manager.conn.cursor()
+                
+                # Get all tables
+                cursor.execute("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                        AND table_type = 'BASE TABLE'
+                    ORDER BY table_name
+                """)
+                tables = [row[0] for row in cursor.fetchall()]
+                
+                # Get all views
+                cursor.execute("""
+                    SELECT table_name 
+                    FROM information_schema.views 
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name
+                """)
+                views = [row[0] for row in cursor.fetchall()]
+                
+                cursor.close()
+    except Exception as e:
+        logger.error(f"Error fetching database catalog: {str(e)}", exc_info=True)
+    
+    if request.method == 'GET':
+        return render_template('sql_query.html', tables=tables, views=views)
+    
+    # POST: Execute query
+    query = request.form.get('sql_query', '').strip()
+    
+    if not query:
+        flash('Please enter a SQL query', 'error')
+        return render_template('sql_query.html', query=query, tables=tables, views=views)
+    
+    # Security: Allow SELECT, CREATE, DROP, ALTER, INSERT, UPDATE, DELETE
+    # Block potentially dangerous operations like DROP DATABASE, etc.
+    query_upper = query.upper().strip()
+    blocked_keywords = ['DROP DATABASE', 'DROP SCHEMA', 'TRUNCATE', 'TRUNCATE TABLE']
+    
+    for blocked in blocked_keywords:
+        if blocked in query_upper:
+            error_msg = f"Operation '{blocked}' is not allowed for security reasons."
+            logger.warning(f"Blocked dangerous query: {query[:100]}")
+            return render_template('sql_query.html', query=query, error=error_msg, tables=tables, views=views)
+    
+    try:
+        import time
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Execute query with timeout protection
+            start_time = time.time()
+            cursor.execute(query)
+            execution_time = time.time() - start_time
+            
+            # Check if query returns results (SELECT) or is DDL/DML
+            results = None
+            columns = None
+            
+            if cursor.description:
+                # SELECT query - fetch results
+                columns = [desc[0] for desc in cursor.description]
+                results = cursor.fetchmany(1000)  # Limit to 1000 rows
+                
+                if cursor.fetchone() is not None:
+                    flash(f'Results limited to 1000 rows. Query may have more results.', 'warning')
+            else:
+                # DDL/DML query (CREATE, INSERT, UPDATE, DELETE, etc.)
+                db_manager.conn.commit()
+                rows_affected = cursor.rowcount if cursor.rowcount >= 0 else 0
+                flash(f'Query executed successfully. Rows affected: {rows_affected}', 'success')
+            
+            cursor.close()
+            
+            logger.info(f"SQL query executed successfully in {execution_time:.3f}s")
+            
+            # Refresh catalog after DDL operations
+            if query_upper.startswith(('CREATE', 'DROP', 'ALTER')):
+                with db_manager:
+                    if db_manager.conn:
+                        cursor = db_manager.conn.cursor()
+                        cursor.execute("""
+                            SELECT table_name 
+                            FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                                AND table_type = 'BASE TABLE'
+                            ORDER BY table_name
+                        """)
+                        tables = [row[0] for row in cursor.fetchall()]
+                        cursor.execute("""
+                            SELECT table_name 
+                            FROM information_schema.views 
+                            WHERE table_schema = 'public'
+                            ORDER BY table_name
+                        """)
+                        views = [row[0] for row in cursor.fetchall()]
+                        cursor.close()
+            
+            return render_template('sql_query.html', 
+                                 query=query, 
+                                 results=results, 
+                                 columns=columns,
+                                 execution_time=execution_time,
+                                 tables=tables,
+                                 views=views)
+            
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"SQL query error: {error_msg}", exc_info=True)
+        return render_template('sql_query.html', query=query, error=error_msg, tables=tables, views=views)
+
+
 if __name__ == '__main__':
     # Ensure analytics view exists before starting the app
     ensure_analytics_view_exists()
