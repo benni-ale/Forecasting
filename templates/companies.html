@@ -84,6 +84,10 @@
                     <label class="btn btn-outline-primary" for="viewVectorized">
                         <i class="bi bi-diagram-3"></i> Vectorized Companies
                     </label>
+                    <input type="radio" class="btn-check" name="viewMode" id="viewCorrelation" value="correlation">
+                    <label class="btn btn-outline-primary" for="viewCorrelation">
+                        <i class="bi bi-grid-3x3-gap"></i> Correlation Matrix
+                    </label>
                 </div>
                 <button class="btn btn-info ms-3" id="vectorizeBtn">
                     <i class="bi bi-cpu"></i> Vectorize Companies
@@ -205,6 +209,18 @@
         </div>
         <div id="companiesList">
             <!-- Companies will be loaded here -->
+        </div>
+        <div id="correlationMatrixContainer" style="display: none;">
+            <div class="mb-3">
+                <label for="correlationModelSelect" class="form-label">Select Model:</label>
+                <select class="form-select" id="correlationModelSelect" style="max-width: 300px;">
+                    <option value="text-embedding-3-small">text-embedding-3-small</option>
+                </select>
+                <button class="btn btn-primary mt-2" id="loadCorrelationBtn">
+                    <i class="bi bi-arrow-clockwise"></i> Load Correlation Matrix
+                </button>
+            </div>
+            <div id="correlationMatrixChart" style="width: 100%; height: 800px;"></div>
         </div>
     </div>
 </div>
@@ -810,19 +826,147 @@ async function pollVectorizationStatus() {
 function handleViewModeChange() {
     const companiesRadio = document.getElementById('viewCompanies');
     const vectorizedRadio = document.getElementById('viewVectorized');
+    const correlationRadio = document.getElementById('viewCorrelation');
     const modelFilter = document.getElementById('modelFilter');
+    const companiesList = document.getElementById('companiesList');
+    const correlationContainer = document.getElementById('correlationMatrixContainer');
     
     if (companiesRadio.checked) {
         currentViewMode = 'companies';
         modelFilter.style.display = 'none';
-    } else {
+        companiesList.style.display = 'block';
+        correlationContainer.style.display = 'none';
+        loadCompanies();
+    } else if (vectorizedRadio.checked) {
         currentViewMode = 'vectorized';
         modelFilter.style.display = 'block';
+        companiesList.style.display = 'block';
+        correlationContainer.style.display = 'none';
+        loadCompanies();
+    } else if (correlationRadio.checked) {
+        currentViewMode = 'correlation';
+        modelFilter.style.display = 'none';
+        companiesList.style.display = 'none';
+        correlationContainer.style.display = 'block';
+        loadCorrelationMatrix();
     }
     
     // Reset filters
     currentFilters.offset = 0;
-    loadCompanies();
+}
+
+// Load correlation matrix
+async function loadCorrelationMatrix() {
+    const chartDiv = document.getElementById('correlationMatrixChart');
+    const modelSelect = document.getElementById('correlationModelSelect');
+    const loadBtn = document.getElementById('loadCorrelationBtn');
+    
+    const modelName = modelSelect.value;
+    const originalText = loadBtn.innerHTML;
+    loadBtn.disabled = true;
+    loadBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
+    chartDiv.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div><p>Calculating correlation matrix...</p></div>';
+    
+    try {
+        const response = await fetch(`/api/companies/correlation-matrix?model_name=${modelName}&limit=500`);
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        const { tickers, names, sectors, matrix, size, available_models } = data;
+        
+        // Update model selector with available models
+        if (available_models && available_models.length > 0) {
+            const currentValue = modelSelect.value;
+            modelSelect.innerHTML = '';
+            available_models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                if (model === currentValue || (model === data.model_name)) {
+                    option.selected = true;
+                }
+                modelSelect.appendChild(option);
+            });
+        }
+        
+        // Prepare data for Plotly heatmap
+        const hoverText = [];
+        for (let i = 0; i < size; i++) {
+            const row = [];
+            for (let j = 0; j < size; j++) {
+                const similarity = matrix[i][j];
+                const ticker1 = tickers[i];
+                const ticker2 = tickers[j];
+                const name1 = names[i] || ticker1;
+                const name2 = names[j] || ticker2;
+                row.push(`${name1} (${ticker1})<br>${name2} (${ticker2})<br>Similarity: ${similarity.toFixed(4)}`);
+            }
+            hoverText.push(row);
+        }
+        
+        // Create ticker labels with names (truncate long names)
+        const labels = tickers.map((t, i) => {
+            const name = names[i] || '';
+            const shortName = name.length > 20 ? name.substring(0, 20) + '...' : name;
+            return `${t}<br>${shortName}`;
+        });
+        
+        const trace = {
+            z: matrix,
+            x: labels,
+            y: labels,
+            type: 'heatmap',
+            colorscale: [
+                [0, 'rgb(0,0,255)'],      // Blue for low similarity
+                [0.5, 'rgb(255,255,255)'], // White for medium
+                [1, 'rgb(255,0,0)']        // Red for high similarity
+            ],
+            text: hoverText,
+            hovertemplate: '%{text}<extra></extra>',
+            colorbar: {
+                title: 'Cosine Similarity',
+                titleside: 'right'
+            }
+        };
+        
+        const layout = {
+            title: {
+                text: `Company Embedding Correlation Matrix (${modelName})<br><sub>Cosine Similarity between ${size} companies</sub>`,
+                font: { size: 16 }
+            },
+            xaxis: {
+                title: 'Company',
+                tickangle: -45,
+                tickfont: { size: 9 }
+            },
+            yaxis: {
+                title: 'Company',
+                tickfont: { size: 9 }
+            },
+            width: Math.max(1000, size * 12),
+            height: Math.max(800, size * 12),
+            margin: { l: 150, r: 50, t: 100, b: 150 }
+        };
+        
+        Plotly.newPlot('correlationMatrixChart', [trace], layout, {responsive: true});
+        
+        console.log(`Correlation matrix loaded: ${size}x${size} companies`);
+        
+    } catch (error) {
+        console.error('Error loading correlation matrix:', error);
+        chartDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <h5>Error loading correlation matrix</h5>
+                <p>${error.message}</p>
+            </div>
+        `;
+    } finally {
+        loadBtn.disabled = false;
+        loadBtn.innerHTML = originalText;
+    }
 }
 
 // Event listeners
@@ -836,6 +980,8 @@ document.getElementById('fetchFromArticlesBtn').addEventListener('click', fetchA
 document.getElementById('vectorizeBtn').addEventListener('click', startVectorization);
 document.getElementById('viewCompanies').addEventListener('change', handleViewModeChange);
 document.getElementById('viewVectorized').addEventListener('change', handleViewModeChange);
+document.getElementById('viewCorrelation').addEventListener('change', handleViewModeChange);
+document.getElementById('loadCorrelationBtn').addEventListener('click', loadCorrelationMatrix);
 document.getElementById('searchBtn').addEventListener('click', () => {
     currentFilters.search = document.getElementById('searchInput').value;
     currentFilters.offset = 0;
@@ -858,6 +1004,9 @@ document.getElementById('modelFilter').addEventListener('change', (e) => {
     currentFilters.offset = 0;
     loadCompanies();
 });
+
+// Load correlation matrix
+let correlationChart = null;
 
 // Load on page load
 document.addEventListener('DOMContentLoaded', () => {

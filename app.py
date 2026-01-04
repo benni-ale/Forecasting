@@ -2843,11 +2843,14 @@ def get_tickers_from_articles():
             start_time = time.time()
             
             # Get which ones already have descriptions (with actual non-empty descriptions)
+            # Exclude placeholder values like "No description", "None", etc.
             cursor.execute("""
                 SELECT ticker 
                 FROM companies 
                 WHERE business_description IS NOT NULL 
                 AND TRIM(business_description) != ''
+                AND UPPER(TRIM(business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-')
+                AND LENGTH(TRIM(business_description)) > 5
             """)
             existing_tickers = {row[0] for row in cursor.fetchall()}
             existing_time = time.time() - start_time
@@ -3165,6 +3168,62 @@ def ensure_company_embeddings_table_exists():
             
     except Exception as e:
         logger.error(f"Error ensuring company_embeddings table exists: {str(e)}", exc_info=True)
+        if db_manager.conn:
+            db_manager.conn.rollback()
+
+
+def ensure_correlation_matrix_table_exists():
+    """Ensure the company_correlation_matrix table exists in the database."""
+    logger.info("Ensuring company_correlation_matrix table exists")
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error("Database connection not established")
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'company_correlation_matrix'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("Creating company_correlation_matrix table...")
+                cursor.execute("""
+                    CREATE TABLE company_correlation_matrix (
+                        id SERIAL PRIMARY KEY,
+                        model_name TEXT NOT NULL,
+                        tickers TEXT[] NOT NULL,
+                        matrix_data JSONB NOT NULL,
+                        calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        companies_count INTEGER NOT NULL,
+                        UNIQUE(model_name)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE INDEX idx_company_correlation_matrix_model ON company_correlation_matrix(model_name)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_company_correlation_matrix_calculated_at ON company_correlation_matrix(calculated_at)
+                """)
+                
+                db_manager.conn.commit()
+                logger.info("company_correlation_matrix table created successfully")
+            else:
+                logger.info("company_correlation_matrix table already exists")
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Error ensuring company_correlation_matrix table exists: {str(e)}", exc_info=True)
         if db_manager.conn:
             db_manager.conn.rollback()
 
@@ -3570,6 +3629,8 @@ def vectorize_companies_openai(model_name="text-embedding-3-small"):
                 FROM companies 
                 WHERE business_description IS NOT NULL 
                 AND TRIM(business_description) != ''
+                AND UPPER(TRIM(business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-')
+                AND LENGTH(TRIM(business_description)) > 5
             """)
             total_with_descriptions = cursor.fetchone()[0]
             logger.info(f"Total companies with descriptions: {total_with_descriptions}")
@@ -3592,6 +3653,8 @@ def vectorize_companies_openai(model_name="text-embedding-3-small"):
                 FROM companies 
                 WHERE business_description IS NOT NULL 
                 AND TRIM(business_description) != ''
+                AND UPPER(TRIM(business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-')
+                AND LENGTH(TRIM(business_description)) > 5
                 AND (
                     -- No embedding exists for this model (skip already vectorized companies)
                     NOT EXISTS (
@@ -3729,6 +3792,8 @@ def vectorize_companies():
                     FROM companies 
                     WHERE business_description IS NOT NULL 
                     AND TRIM(business_description) != ''
+                    AND UPPER(TRIM(business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-')
+                    AND LENGTH(TRIM(business_description)) > 5
                 """)
                 total_with_desc = cursor.fetchone()[0]
                 logger.info(f"Pre-check: Total companies with descriptions: {total_with_desc}")
@@ -3748,6 +3813,8 @@ def vectorize_companies():
                     FROM companies 
                     WHERE business_description IS NOT NULL 
                     AND TRIM(business_description) != ''
+                    AND UPPER(TRIM(business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-')
+                    AND LENGTH(TRIM(business_description)) > 5
                     AND (
                         NOT EXISTS (
                             SELECT 1 FROM company_embeddings 
@@ -3818,6 +3885,274 @@ def get_vectorization_status():
     return jsonify(vectorization_status)
 
 
+def cosine_similarity(vec1, vec2):
+    """
+    Calculate cosine similarity between two vectors.
+    
+    Args:
+        vec1: First vector (list of floats)
+        vec2: Second vector (list of floats)
+    
+    Returns:
+        Cosine similarity value between -1 and 1
+    """
+    import numpy as np
+    
+    vec1 = np.array(vec1)
+    vec2 = np.array(vec2)
+    
+    dot_product = np.dot(vec1, vec2)
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    
+    return float(dot_product / (norm1 * norm2))
+
+
+@app.route('/api/companies/correlation-matrix', methods=['GET'])
+def get_correlation_matrix():
+    """
+    API endpoint to get correlation matrix (cosine similarity) for vectorized companies.
+    
+    Returns a matrix where each cell [i][j] represents the cosine similarity
+    between company i and company j embeddings.
+    
+    The matrix is cached in the database and recalculated only when embeddings change.
+    Use ?force_recalculate=true to force recalculation.
+    """
+    logger.info("API /api/companies/correlation-matrix called")
+    
+    try:
+        import numpy as np
+        import json
+        
+        model_name = request.args.get('model_name', 'text-embedding-3-small').strip()
+        force_recalculate = request.args.get('force_recalculate', 'false').lower() == 'true'
+        limit = int(request.args.get('limit', 500))  # Limit to avoid memory issues
+        
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Get all vectorized companies with their embeddings
+            # Exclude companies with placeholder descriptions
+            cursor.execute("""
+                SELECT 
+                    c.ticker,
+                    c.name,
+                    c.sector,
+                    ce.embedding_vector
+                FROM companies c
+                INNER JOIN company_embeddings ce ON c.ticker = ce.ticker
+                WHERE ce.model_name = %s
+                AND ce.embedding_vector IS NOT NULL
+                AND (
+                    c.business_description IS NULL
+                    OR (
+                        c.business_description IS NOT NULL
+                        AND TRIM(c.business_description) != ''
+                        AND UPPER(TRIM(c.business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-')
+                        AND LENGTH(TRIM(c.business_description)) > 5
+                    )
+                )
+                ORDER BY c.ticker
+                LIMIT %s
+            """, (model_name, limit))
+            
+            companies_data = cursor.fetchall()
+            
+            # Get available model names for the selector
+            cursor.execute("""
+                SELECT DISTINCT model_name 
+                FROM company_embeddings 
+                ORDER BY model_name
+            """)
+            available_models = [row[0] for row in cursor.fetchall()]
+            
+            if len(companies_data) == 0:
+                cursor.close()
+                return jsonify({
+                    'error': f'No vectorized companies found for model {model_name}',
+                    'available_models': available_models
+                }), 404
+            
+            # Extract tickers, names, and embeddings
+            tickers = [row[0] for row in companies_data]
+            names = [row[1] for row in companies_data]
+            sectors = [row[2] for row in companies_data]
+            embeddings = [row[3] for row in companies_data]
+            n = len(embeddings)
+            
+            # Check if cached matrix exists and is up-to-date
+            if not force_recalculate:
+                cursor.execute("""
+                    SELECT 
+                        matrix_data,
+                        tickers,
+                        calculated_at,
+                        companies_count
+                    FROM company_correlation_matrix
+                    WHERE model_name = %s
+                """, (model_name,))
+                
+                cached_result = cursor.fetchone()
+                
+                if cached_result:
+                    cached_matrix_data, cached_tickers, calculated_at, cached_count = cached_result
+                    
+                    # Check if cached matrix matches current companies
+                    if (cached_count == n and 
+                        list(cached_tickers) == tickers and
+                        cached_matrix_data is not None):
+                        
+                        # Check if any embeddings were updated after matrix calculation
+                        cursor.execute("""
+                            SELECT COUNT(*) 
+                            FROM company_embeddings 
+                            WHERE model_name = %s 
+                            AND updated_at > %s
+                        """, (model_name, calculated_at))
+                        
+                        updated_count = cursor.fetchone()[0]
+                        
+                        if updated_count == 0:
+                            # Cache is valid, return it
+                            logger.info(f"Returning cached correlation matrix for {model_name} (calculated at {calculated_at})")
+                            matrix = json.loads(cached_matrix_data) if isinstance(cached_matrix_data, str) else cached_matrix_data
+                            
+                            cursor.close()
+                            
+                            return jsonify({
+                                'tickers': tickers,
+                                'names': names,
+                                'sectors': sectors,
+                                'matrix': matrix,
+                                'model_name': model_name,
+                                'size': n,
+                                'available_models': available_models,
+                                'cached': True,
+                                'calculated_at': calculated_at.isoformat() if calculated_at else None
+                            })
+                        else:
+                            logger.info(f"Cache invalid: {updated_count} embeddings updated since matrix calculation")
+                    else:
+                        logger.info(f"Cache invalid: company count or tickers changed (cached: {cached_count}, current: {n})")
+            
+            # Need to calculate matrix
+            logger.info(f"Calculating correlation matrix for {n} companies using 20 worker threads")
+            
+            # Calculate cosine similarity matrix using parallel threads
+            similarity_matrix = [None] * n  # Pre-allocate matrix
+            
+            def calculate_row_chunk(worker_id, row_indices, embeddings_list, result_dict):
+                """Calculate similarity for a chunk of rows."""
+                logger.info(f"Correlation worker {worker_id}: processing {len(row_indices)} rows")
+                chunk_results = {}
+                
+                for i in row_indices:
+                    row = []
+                    for j in range(n):
+                        if i == j:
+                            # Same company = perfect similarity
+                            similarity = 1.0
+                        else:
+                            similarity = cosine_similarity(embeddings_list[i], embeddings_list[j])
+                        row.append(round(similarity, 4))
+                    chunk_results[i] = row
+                
+                result_dict[worker_id] = chunk_results
+                logger.info(f"Correlation worker {worker_id}: completed {len(row_indices)} rows")
+            
+            # Split rows across 20 worker threads
+            num_workers = 20
+            rows_per_worker = n // num_workers
+            remainder = n % num_workers
+            
+            worker_tasks = []
+            start_idx = 0
+            
+            for worker_num in range(1, num_workers + 1):
+                # Distribute remainder across first workers
+                size = rows_per_worker + (1 if worker_num <= remainder else 0)
+                row_indices = list(range(start_idx, start_idx + size))
+                start_idx += size
+                
+                if row_indices:
+                    worker_tasks.append((worker_num, row_indices))
+            
+            logger.info(f"Distributing {n} rows across {len(worker_tasks)} worker threads for correlation calculation")
+            
+            # Shared results dictionary
+            results_dict = {}
+            
+            # Start worker threads
+            threads = []
+            for worker_num, row_indices in worker_tasks:
+                thread = threading.Thread(
+                    target=calculate_row_chunk,
+                    args=(worker_num, row_indices, embeddings, results_dict),
+                    daemon=True
+                )
+                thread.start()
+                threads.append((worker_num, thread))
+            
+            # Wait for all threads to complete
+            for worker_num, thread in threads:
+                thread.join()
+            
+            # Aggregate results into similarity_matrix
+            for worker_num, _ in threads:
+                if worker_num in results_dict:
+                    chunk_results = results_dict[worker_num]
+                    for row_idx, row_data in chunk_results.items():
+                        similarity_matrix[row_idx] = row_data
+            
+            # Save matrix to database cache
+            try:
+                matrix_json = json.dumps(similarity_matrix)
+                cursor.execute("""
+                    INSERT INTO company_correlation_matrix 
+                        (model_name, tickers, matrix_data, companies_count, calculated_at)
+                    VALUES (%s, %s, %s::jsonb, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (model_name) 
+                    DO UPDATE SET
+                        tickers = EXCLUDED.tickers,
+                        matrix_data = EXCLUDED.matrix_data,
+                        companies_count = EXCLUDED.companies_count,
+                        calculated_at = CURRENT_TIMESTAMP
+                """, (model_name, tickers, matrix_json, n))
+                db_manager.conn.commit()
+                logger.info(f"Correlation matrix saved to database cache for {model_name}")
+            except Exception as e:
+                logger.warning(f"Could not save correlation matrix to cache: {str(e)}")
+                db_manager.conn.rollback()
+            
+            cursor.close()
+            
+            logger.info(f"Correlation matrix calculated: {n}x{n} using {len(worker_tasks)} worker threads")
+            
+            return jsonify({
+                'tickers': tickers,
+                'names': names,
+                'sectors': sectors,
+                'matrix': similarity_matrix,
+                'model_name': model_name,
+                'size': n,
+                'available_models': available_models,
+                'cached': False,
+                'calculated_at': datetime.now().isoformat()
+            })
+            
+    except Exception as e:
+        logger.error(f"Error calculating correlation matrix: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/companies/vectorized', methods=['GET'])
 def get_vectorized_companies():
     """API endpoint to fetch vectorized companies with filters."""
@@ -3841,7 +4176,11 @@ def get_vectorized_companies():
             logger.debug(f"Vectorized companies query params: search='{search}', sector='{sector}', model='{model_name}', limit={limit}, offset={offset}")
             
             # Build query - join companies with company_embeddings
-            where_clauses = ["ce.embedding_vector IS NOT NULL"]
+            # Exclude companies with placeholder descriptions
+            where_clauses = [
+                "ce.embedding_vector IS NOT NULL",
+                "(c.business_description IS NULL OR (c.business_description IS NOT NULL AND TRIM(c.business_description) != '' AND UPPER(TRIM(c.business_description)) NOT IN ('NO DESCRIPTION', 'NONE', 'N/A', 'NA', '-') AND LENGTH(TRIM(c.business_description)) > 5))"
+            ]
             params = []
             
             # Filter by model_name
@@ -3954,6 +4293,8 @@ if __name__ == '__main__':
     ensure_companies_table_exists()
     # Ensure company embeddings table exists
     ensure_company_embeddings_table_exists()
+    # Ensure correlation matrix table exists
+    ensure_correlation_matrix_table_exists()
     
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'

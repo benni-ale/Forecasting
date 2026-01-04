@@ -216,3 +216,18 @@ CREATE TABLE IF NOT EXISTS company_embeddings (
 CREATE INDEX IF NOT EXISTS idx_company_embeddings_ticker ON company_embeddings(ticker);
 CREATE INDEX IF NOT EXISTS idx_company_embeddings_model ON company_embeddings(model_name);
 
+-- Create table for correlation matrix cache
+CREATE TABLE IF NOT EXISTS company_correlation_matrix (
+    id SERIAL PRIMARY KEY,
+    model_name TEXT NOT NULL,
+    tickers TEXT[] NOT NULL,  -- Ordered list of tickers (defines matrix order)
+    matrix_data JSONB NOT NULL,  -- The correlation matrix as JSON array of arrays
+    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    companies_count INTEGER NOT NULL,
+    UNIQUE(model_name)
+);
+
+-- Create indexes for correlation matrix table
+CREATE INDEX IF NOT EXISTS idx_company_correlation_matrix_model ON company_correlation_matrix(model_name);
+CREATE INDEX IF NOT EXISTS idx_company_correlation_matrix_calculated_at ON company_correlation_matrix(calculated_at);
+
