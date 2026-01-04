@@ -168,22 +168,35 @@ SELECT
 FROM diffused_sentiment
 ORDER BY ticker, date DESC;
 
--- Create table for ticker similarity matrix (co-citation based)
-CREATE TABLE IF NOT EXISTS ticker_similarity_matrix (
-    ticker_a TEXT NOT NULL,
-    ticker_b TEXT NOT NULL,
-    similarity_score NUMERIC(5, 4) NOT NULL,  -- 0.0 - 1.0
-    co_occurrence_count INTEGER NOT NULL,  -- Number of articles where both tickers appear
-    ticker_a_article_count INTEGER NOT NULL,  -- Total articles for ticker_a
-    ticker_b_article_count INTEGER NOT NULL,  -- Total articles for ticker_b
-    similarity_type TEXT DEFAULT 'co_citation',
+-- Create table for company descriptions (for semantic similarity)
+CREATE TABLE IF NOT EXISTS companies (
+    ticker TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    business_description TEXT,  -- Main business description
+    pipeline_description TEXT,   -- Product/service pipeline description
+    sector TEXT,
+    industry TEXT,
+    exchange TEXT,
+    market_cap NUMERIC,
+    website TEXT,
+    ceo TEXT,
+    employees INTEGER,
+    address TEXT,
+    city TEXT,
+    state TEXT,
+    country TEXT,
+    phone TEXT,
+    embedding_vector FLOAT[],    -- Cached embedding vector (optional)
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (ticker_a, ticker_b),
-    CHECK (ticker_a < ticker_b)  -- Ensure only upper triangle (avoid duplicates)
+    last_error_date DATE,         -- Date of last error (to avoid reprocessing today)
+    last_error_message TEXT,      -- Last error message
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create index for faster lookups
-CREATE INDEX IF NOT EXISTS idx_similarity_ticker_a ON ticker_similarity_matrix(ticker_a);
-CREATE INDEX IF NOT EXISTS idx_similarity_ticker_b ON ticker_similarity_matrix(ticker_b);
-CREATE INDEX IF NOT EXISTS idx_similarity_score ON ticker_similarity_matrix(similarity_score DESC);
+-- Create indexes for faster lookups
+CREATE INDEX IF NOT EXISTS idx_companies_ticker ON companies(ticker);
+CREATE INDEX IF NOT EXISTS idx_companies_sector ON companies(sector);
+CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
+CREATE INDEX IF NOT EXISTS idx_companies_name ON companies(name);
+CREATE INDEX IF NOT EXISTS idx_companies_last_error_date ON companies(last_error_date);
 

@@ -17,11 +17,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY news_collector.py .
 COPY app.py .
+COPY company_worker.py .
 COPY templates/ ./templates/
 COPY static/ ./static/
 
 # Make the scripts executable
-RUN chmod +x news_collector.py app.py
+RUN chmod +x news_collector.py app.py company_worker.py
 
 # Default command (can be overridden in docker-compose)
 CMD ["python", "news_collector.py", "--format", "summary"]

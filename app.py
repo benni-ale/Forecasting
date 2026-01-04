@@ -7,6 +7,8 @@ Provides a GUI to collect news and visualize collected articles.
 import os
 import json
 import logging
+import requests
+import subprocess
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
 from news_collector import AlphaVantageNewsCollector, DatabaseManager
@@ -48,6 +50,19 @@ collection_status = {
     'message': '',
     'last_run': None,
     'articles_collected': 0
+}
+
+# Global state for batch company fetch
+batch_fetch_status = {
+    'running': False,
+    'message': '',
+    'started_at': None,
+    'total': 0,
+    'processed': 0,
+    'success': 0,
+    'failed': 0,
+    'current_ticker': None,
+    'last_updated': None
 }
 
 deep_ingestion_status = {
@@ -1774,141 +1789,388 @@ def docs():
     return render_template('docs.html')
 
 
-def calculate_ticker_similarity_matrix():
+def get_alpha_vantage_company_overview(ticker, api_key):
     """
-    Calculate co-citation similarity matrix for all ticker pairs.
-    Formula: W_ij = max(0, (|D_i ∩ D_j| / sqrt(|D_i| * |D_j|)))^gamma
-    Where:
-    - D_i = set of articles mentioning ticker i
-    - |D_i ∩ D_j| = number of articles mentioning both tickers
-    - gamma = 2 (as per DollarPunk)
+    Fetch company overview from Alpha Vantage API.
+    
+    Args:
+        ticker: Stock ticker symbol (e.g., 'AAPL')
+        api_key: Alpha Vantage API key
+    
+    Returns:
+        dict with company data or None if error
     """
-    logger.info("Calculating ticker similarity matrix (co-citation)")
+    logger.info(f"Fetching Alpha Vantage OVERVIEW for ticker: {ticker}")
+    
+    if not api_key:
+        logger.error(f"No Alpha Vantage API key provided for ticker {ticker}")
+        return None
+    
+    try:
+        url = "https://www.alphavantage.co/query"
+        params = {
+            'function': 'OVERVIEW',
+            'symbol': ticker,
+            'apikey': api_key
+        }
+        
+        logger.debug(f"Alpha Vantage API Request - URL: {url}, Function: OVERVIEW, Symbol: {ticker}")
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        logger.debug(f"Alpha Vantage API Response - Status: {response.status_code}")
+        
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Check for API errors
+        if 'Error Message' in data:
+            logger.error(f"Alpha Vantage API Error for {ticker}: {data['Error Message']}")
+            return None
+        
+        if 'Note' in data:
+            logger.warning(f"Alpha Vantage API Note for {ticker}: {data['Note']}")
+            return None
+        
+        # Check if we got valid data
+        if not data or 'Symbol' not in data:
+            logger.warning(f"Alpha Vantage returned empty or invalid data for {ticker}")
+            return None
+        
+        logger.info(f"Alpha Vantage returned data for {ticker}")
+        logger.debug(f"Alpha Vantage data keys: {list(data.keys())}")
+        
+        # Map Alpha Vantage fields to our database schema
+        # Alpha Vantage uses different field names than FMP
+        mapped_data = {
+            'companyName': data.get('Name', ticker),
+            'description': data.get('Description', ''),
+            'sector': data.get('Sector', ''),
+            'industry': data.get('Industry', ''),
+            'exchangeShortName': data.get('Exchange', ''),
+            'mktCap': None,  # Alpha Vantage doesn't provide market cap directly
+            'website': '',  # Alpha Vantage doesn't provide website
+            'ceo': '',  # Alpha Vantage doesn't provide CEO
+            'fullTimeEmployees': None,  # Alpha Vantage doesn't provide employees
+            'address': '',  # Alpha Vantage doesn't provide address
+            'city': '',  # Alpha Vantage doesn't provide city
+            'state': '',  # Alpha Vantage doesn't provide state
+            'country': data.get('Country', ''),
+            'phone': '',  # Alpha Vantage doesn't provide phone
+            # Additional Alpha Vantage fields we can use
+            'symbol': data.get('Symbol', ticker),
+            'assetType': data.get('AssetType', ''),
+            'currency': data.get('Currency', ''),
+            'fiscalYearEnd': data.get('FiscalYearEnd', ''),
+            'latestQuarter': data.get('LatestQuarter', ''),
+        }
+        
+        # Try to calculate market cap from shares outstanding and price
+        shares_outstanding = data.get('SharesOutstanding')
+        price = data.get('52WeekHigh') or data.get('52WeekLow')
+        if shares_outstanding and price:
+            try:
+                # Shares outstanding might be in millions or actual number
+                shares = float(shares_outstanding)
+                price_val = float(price)
+                # If shares < 1000, assume it's in millions
+                if shares < 1000:
+                    shares = shares * 1000000
+                mapped_data['mktCap'] = shares * price_val
+            except (ValueError, TypeError):
+                pass
+        
+        return mapped_data
+        
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Timeout fetching Alpha Vantage OVERVIEW for {ticker}: {str(e)}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching Alpha Vantage OVERVIEW for {ticker}: Status {response.status_code}, Response: {response.text[:500]}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request exception fetching Alpha Vantage OVERVIEW for {ticker}: {str(e)}", exc_info=True)
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error for {ticker}: {str(e)}, Response text: {response.text[:500]}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching Alpha Vantage OVERVIEW for {ticker}: {str(e)}", exc_info=True)
+        return None
+
+
+def get_fmp_company_profile(ticker, api_key):
+    """
+    Fetch company profile from Financial Modeling Prep API.
+    
+    Args:
+        ticker: Stock ticker symbol (e.g., 'AAPL')
+        api_key: Financial Modeling Prep API key
+    
+    Returns:
+        dict with company data or None if error
+    """
+    logger.info(f"Fetching FMP profile for ticker: {ticker}")
+    
+    if not api_key:
+        logger.error(f"No FMP API key provided for ticker {ticker}")
+        return None
+    
+    try:
+        # Try multiple endpoint formats - FMP has deprecated v3 and may use different formats
+        endpoints_to_try = [
+            f"https://financialmodelingprep.com/stable/profile/{ticker}",  # Stable endpoint (recommended)
+            f"https://financialmodelingprep.com/api/v4/company/profile/{ticker}",
+            f"https://financialmodelingprep.com/api/v4/profile/{ticker}",
+            f"https://financialmodelingprep.com/api/v3/profile/{ticker}",  # Legacy (may not work)
+        ]
+        
+        for url in endpoints_to_try:
+            params = {'apikey': api_key}
+            
+            logger.debug(f"FMP API Request - URL: {url}, Params: apikey={'*' * (len(api_key) - 4) + api_key[-4:]}")
+            
+            try:
+                response = requests.get(url, params=params, timeout=10)
+                
+                logger.debug(f"FMP API Response - Status: {response.status_code}, Headers: {dict(response.headers)}")
+                
+                # If 403, try next endpoint
+                if response.status_code == 403:
+                    error_data = response.json() if response.text else {}
+                    error_msg = error_data.get('Error Message', '')
+                    if 'Legacy Endpoint' in error_msg or 'no longer supported' in error_msg:
+                        logger.warning(f"Endpoint {url} is deprecated (403), trying next endpoint...")
+                        continue
+                
+                response.raise_for_status()
+                
+                data = response.json()
+                logger.debug(f"FMP API Response data type: {type(data)}, length: {len(data) if isinstance(data, (list, dict)) else 'N/A'}")
+                
+                if isinstance(data, list):
+                    if len(data) > 0:
+                        logger.info(f"FMP API returned list with {len(data)} items for {ticker}, using first item")
+                        logger.debug(f"First item keys: {list(data[0].keys()) if isinstance(data[0], dict) else 'N/A'}")
+                        return data[0]  # API returns array, get first element
+                    else:
+                        logger.warning(f"FMP API returned empty list for {ticker}")
+                        return None
+                elif isinstance(data, dict):
+                    logger.info(f"FMP API returned dict for {ticker}")
+                    logger.debug(f"Dict keys: {list(data.keys())}")
+                    return data
+                else:
+                    logger.warning(f"Unexpected response format for {ticker}: type={type(data)}, value={str(data)[:200]}")
+                    return None
+                    
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 403:
+                    # Continue to next endpoint
+                    continue
+                else:
+                    # For other HTTP errors, raise to be caught by outer handler
+                    raise
+        
+        # If all endpoints failed with 403
+        logger.error(f"All FMP endpoints returned 403 (deprecated/legacy) for {ticker}. "
+                    f"FMP API v3 endpoints are no longer available for new subscriptions. "
+                    f"Please check FMP documentation for the correct v4 endpoint or upgrade your subscription.")
+        return None
+            
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Timeout fetching FMP profile for {ticker}: {str(e)}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching FMP profile for {ticker}: Status {response.status_code}, Response: {response.text[:500]}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request exception fetching FMP profile for {ticker}: {str(e)}", exc_info=True)
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error for {ticker}: {str(e)}, Response text: {response.text[:500]}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching FMP profile for {ticker}: {str(e)}", exc_info=True)
+        return None
+
+
+def company_exists_in_db(ticker):
+    """
+    Check if a company already exists in the database and was updated today,
+    OR if it had an error today (should skip in both cases).
+    Returns True if company exists AND was updated today OR had error today.
+    Returns False if company doesn't exist OR was last updated before today AND no error today.
+    """
+    db_manager = get_db_manager()
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                return False
+            cursor = db_manager.conn.cursor()
+            # Check if exists and (last_updated is today OR had error today)
+            cursor.execute("""
+                SELECT 1 FROM companies 
+                WHERE ticker = %s 
+                AND (
+                    DATE(last_updated) = CURRENT_DATE
+                    OR DATE(last_error_date) = CURRENT_DATE
+                )
+                LIMIT 1
+            """, (ticker,))
+            exists_today = cursor.fetchone() is not None
+            cursor.close()
+            return exists_today
+    except Exception as e:
+        logger.error(f"Error checking if company {ticker} exists: {str(e)}")
+        return False
+
+
+def save_company_error(ticker, error_message):
+    """
+    Save error information for a ticker.
+    Creates a record if ticker doesn't exist, or updates error info if it does.
+    """
+    db_manager = get_db_manager()
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error(f"Database connection not established for error logging {ticker}")
+                return False
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if ticker exists
+            cursor.execute("SELECT 1 FROM companies WHERE ticker = %s", (ticker,))
+            exists = cursor.fetchone() is not None
+            
+            if exists:
+                # Update existing record with error info
+                cursor.execute("""
+                    UPDATE companies 
+                    SET last_error_date = CURRENT_DATE,
+                        last_error_message = %s
+                    WHERE ticker = %s
+                """, (error_message[:500], ticker))  # Limit error message length
+            else:
+                # Insert new record with just error info (no company data)
+                cursor.execute("""
+                    INSERT INTO companies (ticker, name, last_error_date, last_error_message)
+                    VALUES (%s, %s, CURRENT_DATE, %s)
+                    ON CONFLICT (ticker) DO UPDATE SET
+                        last_error_date = CURRENT_DATE,
+                        last_error_message = EXCLUDED.last_error_message
+                """, (ticker, ticker, error_message[:500]))
+            
+            db_manager.conn.commit()
+            logger.info(f"Saved error for ticker {ticker}: {error_message[:100]}")
+            cursor.close()
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error saving error info for {ticker}: {str(e)}", exc_info=True)
+        return False
+
+
+def save_company_to_db(ticker, company_data):
+    """
+    Save or update company data to database.
+    
+    Args:
+        ticker: Stock ticker symbol
+        company_data: dict with company information from FMP API
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info(f"Saving company {ticker} to database")
+    logger.debug(f"Company data keys: {list(company_data.keys()) if isinstance(company_data, dict) else 'N/A'}")
+    
     db_manager = get_db_manager()
     
     try:
         with db_manager:
             if not db_manager.conn:
-                raise ConnectionError("Database connection not established")
+                logger.error(f"Database connection not established for {ticker}")
+                return False
             
             cursor = db_manager.conn.cursor()
             
-            # Ensure table exists (should already exist from startup, but check anyway)
+            # Extract fields - handle both Alpha Vantage and FMP formats
+            # Alpha Vantage uses: name, business_description, etc.
+            # FMP uses: companyName, description, etc.
+            name = company_data.get('name') or company_data.get('companyName', ticker)
+            description = company_data.get('business_description') or company_data.get('description', '')
+            sector = company_data.get('sector', '')
+            industry = company_data.get('industry', '')
+            exchange = company_data.get('exchange') or company_data.get('exchangeShortName', '')
+            market_cap = company_data.get('market_cap') or company_data.get('mktCap')
+            website = company_data.get('website', '')
+            ceo = company_data.get('ceo', '')
+            employees = company_data.get('employees') or company_data.get('fullTimeEmployees')
+            address = company_data.get('address', '')
+            city = company_data.get('city', '')
+            state = company_data.get('state', '')
+            country = company_data.get('country', '')
+            phone = company_data.get('phone', '')
+            
+            logger.debug(f"Extracted data for {ticker}: name={name}, sector={sector}, industry={industry}, "
+                        f"description_length={len(description) if description else 0}")
+            
+            # Insert or update
             cursor.execute("""
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.tables 
-                    WHERE table_name = 'ticker_similarity_matrix'
+                INSERT INTO companies (
+                    ticker, name, business_description, sector, industry,
+                    exchange, market_cap, website, ceo, employees,
+                    address, city, state, country, phone
                 )
-            """)
-            if not cursor.fetchone()[0]:
-                logger.error("ticker_similarity_matrix table does not exist. Please restart the application.")
-                raise RuntimeError("Similarity matrix table does not exist")
-            
-            # Get all unique tickers and their article counts
-            logger.info("Fetching ticker article counts...")
-            cursor.execute("""
-                WITH ticker_articles AS (
-                    SELECT 
-                        jsonb_array_elements(ticker_sentiment)->>'ticker' as ticker,
-                        id as article_id
-                    FROM articles
-                    WHERE ticker_sentiment IS NOT NULL
-                        AND jsonb_array_length(ticker_sentiment) > 0
-                )
-                SELECT 
-                    ticker,
-                    COUNT(DISTINCT article_id) as article_count
-                FROM ticker_articles
-                WHERE ticker IS NOT NULL
-                GROUP BY ticker
-                HAVING COUNT(DISTINCT article_id) > 0
-                ORDER BY ticker
-            """)
-            
-            ticker_counts = {row[0]: row[1] for row in cursor.fetchall()}
-            tickers = sorted(ticker_counts.keys())
-            logger.info(f"Found {len(tickers)} unique tickers")
-            
-            # Clear existing matrix
-            cursor.execute("DELETE FROM ticker_similarity_matrix")
-            logger.info("Cleared existing similarity matrix")
-            
-            # Calculate co-occurrence for each pair
-            gamma = 2  # As per DollarPunk
-            total_pairs = len(tickers) * (len(tickers) - 1) // 2
-            processed = 0
-            inserted = 0
-            
-            logger.info(f"Calculating similarity for {total_pairs} ticker pairs...")
-            
-            for i, ticker_a in enumerate(tickers):
-                for ticker_b in tickers[i+1:]:
-                    processed += 1
-                    
-                    # Get co-occurrence count (articles mentioning both tickers)
-                    cursor.execute("""
-                        SELECT COUNT(DISTINCT id) as co_occurrence
-                        FROM articles
-                        WHERE ticker_sentiment IS NOT NULL
-                            AND jsonb_array_length(ticker_sentiment) > 0
-                            AND EXISTS (
-                                SELECT 1 
-                                FROM jsonb_array_elements(ticker_sentiment) as elem1
-                                WHERE elem1->>'ticker' = %s
-                            )
-                            AND EXISTS (
-                                SELECT 1 
-                                FROM jsonb_array_elements(ticker_sentiment) as elem2
-                                WHERE elem2->>'ticker' = %s
-                            )
-                    """, (ticker_a, ticker_b))
-                    
-                    co_occurrence = cursor.fetchone()[0]
-                    count_a = ticker_counts[ticker_a]
-                    count_b = ticker_counts[ticker_b]
-                    
-                    # Calculate similarity: W_ij = max(0, (co_occurrence / sqrt(count_a * count_b)))^gamma
-                    if count_a > 0 and count_b > 0 and co_occurrence > 0:
-                        denominator = (count_a * count_b) ** 0.5
-                        similarity = max(0, (co_occurrence / denominator)) ** gamma
-                        
-                        # Only insert if similarity > 0
-                        if similarity > 0:
-                            cursor.execute("""
-                                INSERT INTO ticker_similarity_matrix 
-                                (ticker_a, ticker_b, similarity_score, co_occurrence_count, 
-                                 ticker_a_article_count, ticker_b_article_count, similarity_type)
-                                VALUES (%s, %s, %s, %s, %s, %s, 'co_citation')
-                            """, (ticker_a, ticker_b, similarity, co_occurrence, count_a, count_b))
-                            inserted += 1
-                    
-                    if processed % 100 == 0:
-                        logger.info(f"Processed {processed}/{total_pairs} pairs, inserted {inserted} similarities")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (ticker) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    business_description = EXCLUDED.business_description,
+                    sector = EXCLUDED.sector,
+                    industry = EXCLUDED.industry,
+                    exchange = EXCLUDED.exchange,
+                    market_cap = EXCLUDED.market_cap,
+                    website = EXCLUDED.website,
+                    ceo = EXCLUDED.ceo,
+                    employees = EXCLUDED.employees,
+                    address = EXCLUDED.address,
+                    city = EXCLUDED.city,
+                    state = EXCLUDED.state,
+                    country = EXCLUDED.country,
+                    phone = EXCLUDED.phone,
+                    last_updated = CURRENT_TIMESTAMP
+            """, (
+                ticker, name, description, sector, industry,
+                exchange, market_cap, website, ceo, employees,
+                address, city, state, country, phone
+            ))
             
             db_manager.conn.commit()
-            logger.info(f"Similarity matrix calculation complete: {inserted} pairs inserted")
-            
+            logger.info(f"Successfully saved company {ticker} to database")
             cursor.close()
-            return inserted
+            return True
             
     except Exception as e:
-        logger.error(f"Error calculating similarity matrix: {str(e)}", exc_info=True)
+        logger.error(f"Error saving company {ticker} to database: {str(e)}", exc_info=True)
         if db_manager.conn:
             db_manager.conn.rollback()
-        raise
+        return False
 
 
-@app.route('/similarity-matrix')
-def similarity_matrix():
-    """Similarity matrix page showing ticker co-citation heatmap."""
-    logger.info("Similarity matrix page accessed")
-    return render_template('similarity_matrix.html')
+@app.route('/companies')
+def companies():
+    """Companies management page for viewing and populating company descriptions."""
+    logger.info("Companies page accessed")
+    return render_template('companies.html')
 
 
-@app.route('/api/similarity-matrix')
-def get_similarity_matrix():
-    """API endpoint to fetch similarity matrix data."""
-    logger.info("API /api/similarity-matrix called")
+@app.route('/api/companies')
+def get_companies():
+    """API endpoint to fetch companies from database."""
+    logger.info("API /api/companies called")
     
     try:
         db_manager = get_db_manager()
@@ -1918,107 +2180,671 @@ def get_similarity_matrix():
             
             cursor = db_manager.conn.cursor()
             
-            # Check if table exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.tables 
-                    WHERE table_name = 'ticker_similarity_matrix'
-                )
-            """)
-            table_exists = cursor.fetchone()[0]
+            # Get query parameters
+            search = request.args.get('search', '').strip()
+            sector = request.args.get('sector', '').strip()
+            limit = int(request.args.get('limit', 100))
+            offset = int(request.args.get('offset', 0))
             
-            if not table_exists:
-                logger.info("Similarity matrix table does not exist, returning empty data")
-                cursor.close()
-                return jsonify({
-                    'data': [],
-                    'tickers': [],
-                    'matrix': [],
-                    'needs_calculation': True
+            logger.debug(f"Companies query params: search='{search}', sector='{sector}', limit={limit}, offset={offset}")
+            
+            # Build query
+            where_clauses = []
+            params = []
+            
+            if search:
+                where_clauses.append("(ticker ILIKE %s OR name ILIKE %s)")
+                search_pattern = f"%{search}%"
+                params.extend([search_pattern, search_pattern])
+                logger.debug(f"Added search filter: {search_pattern}")
+            
+            if sector:
+                where_clauses.append("sector = %s")
+                params.append(sector)
+                logger.debug(f"Added sector filter: {sector}")
+            
+            where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+            logger.debug(f"Final WHERE clause: {where_clause}, params: {params}")
+            
+            # Get total count
+            start_time = time.time()
+            cursor.execute(f"SELECT COUNT(*) FROM companies WHERE {where_clause}", params)
+            total_count = cursor.fetchone()[0]
+            count_time = time.time() - start_time
+            logger.info(f"Companies count query: {total_count} companies found (took {count_time:.3f}s)")
+            
+            # Get companies
+            query = f"""
+                SELECT 
+                    ticker, name, business_description, sector, industry,
+                    exchange, market_cap, website, ceo, employees,
+                    address, city, state, country, phone,
+                    last_updated, created_at
+                FROM companies
+                WHERE {where_clause}
+                ORDER BY ticker
+                LIMIT %s OFFSET %s
+            """
+            params.extend([limit, offset])
+            
+            logger.debug(f"Executing companies query with limit={limit}, offset={offset}")
+            start_time = time.time()
+            cursor.execute(query, params)
+            companies = []
+            
+            for row in cursor.fetchall():
+                companies.append({
+                    'ticker': row[0],
+                    'name': row[1],
+                    'business_description': row[2],
+                    'sector': row[3],
+                    'industry': row[4],
+                    'exchange': row[5],
+                    'market_cap': float(row[6]) if row[6] else None,
+                    'website': row[7],
+                    'ceo': row[8],
+                    'employees': row[9],
+                    'address': row[10],
+                    'city': row[11],
+                    'state': row[12],
+                    'country': row[13],
+                    'phone': row[14],
+                    'last_updated': row[15].isoformat() if row[15] else None,
+                    'created_at': row[16].isoformat() if row[16] else None
                 })
             
-            # Get all unique tickers
-            cursor.execute("""
-                SELECT DISTINCT ticker_a as ticker FROM ticker_similarity_matrix
-                UNION
-                SELECT DISTINCT ticker_b as ticker FROM ticker_similarity_matrix
-                ORDER BY ticker
-            """)
-            all_tickers = [row[0] for row in cursor.fetchall()]
+            query_time = time.time() - start_time
+            logger.info(f"Companies query returned {len(companies)} companies (took {query_time:.3f}s)")
             
-            # Get all similarity pairs
-            cursor.execute("""
-                SELECT 
-                    ticker_a,
-                    ticker_b,
-                    similarity_score,
-                    co_occurrence_count,
-                    ticker_a_article_count,
-                    ticker_b_article_count
-                FROM ticker_similarity_matrix
-                ORDER BY ticker_a, ticker_b
-            """)
+            # Get unique sectors for filter
+            start_time = time.time()
+            cursor.execute("SELECT DISTINCT sector FROM companies WHERE sector IS NOT NULL ORDER BY sector")
+            sectors = [row[0] for row in cursor.fetchall()]
+            sectors_time = time.time() - start_time
+            logger.debug(f"Found {len(sectors)} unique sectors (query took {sectors_time:.3f}s)")
             
-            pairs = cursor.fetchall()
             cursor.close()
             
-            # Build matrix (symmetric)
-            matrix = {}
-            for ticker_a, ticker_b, score, co_occ, count_a, count_b in pairs:
-                if ticker_a not in matrix:
-                    matrix[ticker_a] = {}
-                if ticker_b not in matrix:
-                    matrix[ticker_b] = {}
-                matrix[ticker_a][ticker_b] = float(score)
-                matrix[ticker_b][ticker_a] = float(score)  # Symmetric
-            
-            # Fill diagonal with 1.0 (self-similarity)
-            for ticker in all_tickers:
-                if ticker not in matrix:
-                    matrix[ticker] = {}
-                matrix[ticker][ticker] = 1.0
-            
-            # Convert to 2D array for heatmap
-            matrix_array = []
-            for ticker_a in all_tickers:
-                row = []
-                for ticker_b in all_tickers:
-                    row.append(matrix.get(ticker_a, {}).get(ticker_b, 0.0))
-                matrix_array.append(row)
+            logger.info(f"API /api/companies returning {len(companies)} companies (total: {total_count})")
             
             return jsonify({
-                'data': [{
-                    'ticker_a': ticker_a,
-                    'ticker_b': ticker_b,
-                    'similarity': float(score),
-                    'co_occurrence': co_occ,
-                    'count_a': count_a,
-                    'count_b': count_b
-                } for ticker_a, ticker_b, score, co_occ, count_a, count_b in pairs],
-                'tickers': all_tickers,
-                'matrix': matrix_array,
-                'needs_calculation': False
+                'companies': companies,
+                'total': total_count,
+                'limit': limit,
+                'offset': offset,
+                'sectors': sectors
             })
             
     except Exception as e:
-        logger.error(f"Error fetching similarity matrix: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching companies: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/similarity-matrix/calculate', methods=['POST'])
-def calculate_similarity_matrix():
-    """API endpoint to trigger similarity matrix calculation."""
-    logger.info("API /api/similarity-matrix/calculate called")
+@app.route('/api/companies/fetch', methods=['POST'])
+def fetch_company_from_fmp():
+    """API endpoint to fetch company data from Alpha Vantage (first) or Financial Modeling Prep (fallback) and save to database."""
+    logger.info("API /api/companies/fetch called")
+    
+    data = request.json if request.is_json else {}
+    ticker = data.get('ticker', '').strip().upper()
+    
+    logger.debug(f"Fetch request - ticker: '{ticker}', request data: {data}")
+    
+    if not ticker:
+        logger.warning("Fetch request rejected: ticker is empty")
+        return jsonify({'error': 'Ticker is required'}), 400
+    
+    # Try Alpha Vantage first (already have API key)
+    av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    fmp_api_key = os.getenv('FMP_API_KEY', '')
+    
+    company_data = None
+    source = None
     
     try:
-        inserted = calculate_ticker_similarity_matrix()
-        return jsonify({
-            'success': True,
-            'pairs_inserted': inserted,
-            'message': f'Similarity matrix calculated successfully. {inserted} pairs inserted.'
-        })
+        # Try Alpha Vantage first
+        if av_api_key:
+            logger.info(f"Fetching company profile for {ticker} from Alpha Vantage...")
+            start_time = time.time()
+            company_data = get_alpha_vantage_company_overview(ticker, av_api_key)
+            fetch_time = time.time() - start_time
+            logger.info(f"Alpha Vantage API fetch for {ticker} took {fetch_time:.2f}s")
+            
+            if company_data:
+                source = 'Alpha Vantage'
+        
+        # Fallback to FMP if Alpha Vantage didn't work
+        if not company_data and fmp_api_key:
+            logger.info(f"Alpha Vantage failed, trying Financial Modeling Prep for {ticker}...")
+            start_time = time.time()
+            company_data = get_fmp_company_profile(ticker, fmp_api_key)
+            fetch_time = time.time() - start_time
+            logger.info(f"FMP API fetch for {ticker} took {fetch_time:.2f}s")
+            
+            if company_data:
+                source = 'Financial Modeling Prep'
+        
+        if not company_data:
+            error_msg = f'Company profile not found for {ticker}'
+            if not av_api_key and not fmp_api_key:
+                error_msg += '. Please add ALPHA_VANTAGE_API_KEY or FMP_API_KEY to your .env file.'
+            logger.warning(error_msg)
+            return jsonify({'error': error_msg}), 404
+        
+        logger.debug(f"Company data received for {ticker}, saving to database...")
+        
+        # Save to database
+        save_start = time.time()
+        success = save_company_to_db(ticker, company_data)
+        save_time = time.time() - save_start
+        logger.info(f"Database save for {ticker} took {save_time:.2f}s")
+        
+        if success:
+            logger.info(f"Successfully fetched and saved company {ticker} from {source}")
+            return jsonify({
+                'success': True,
+                'message': f'Company {ticker} saved successfully (source: {source})',
+                'source': source,
+                'data': company_data
+            })
+        else:
+            logger.error(f"Failed to save company {ticker} to database")
+            return jsonify({'error': 'Failed to save company to database'}), 500
+            
     except Exception as e:
-        logger.error(f"Error calculating similarity matrix: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching company {ticker}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+def process_batch_fetch_thread(tickers, av_api_key, fmp_api_key):
+    """Process batch fetch in background thread."""
+    global batch_fetch_status
+    
+    # Initialize status
+    batch_fetch_status['running'] = True
+    batch_fetch_status['started_at'] = datetime.now().isoformat()
+    batch_fetch_status['total'] = len(tickers)
+    batch_fetch_status['processed'] = 0
+    batch_fetch_status['success'] = 0
+    batch_fetch_status['failed'] = 0
+    batch_fetch_status['current_ticker'] = None
+    batch_fetch_status['message'] = f'Starting batch fetch for {len(tickers)} tickers...'
+    
+    logger.info(f"Starting batch fetch for {len(tickers)} tickers (Alpha Vantage: {'Yes' if av_api_key else 'No'}, FMP: {'Yes' if fmp_api_key else 'No'})")
+    
+    start_time = time.time()
+    
+    try:
+        for idx, ticker in enumerate(tickers, 1):
+            ticker = ticker.strip().upper()
+            if not ticker:
+                logger.debug(f"Skipping empty ticker at index {idx}")
+                continue
+            
+            # Update status
+            batch_fetch_status['current_ticker'] = ticker
+            batch_fetch_status['processed'] = idx
+            batch_fetch_status['message'] = f'Processing {idx}/{len(tickers)}: {ticker}'
+            batch_fetch_status['last_updated'] = datetime.now().isoformat()
+            
+            logger.info(f"Processing ticker {idx}/{len(tickers)}: {ticker}")
+            
+            try:
+                # Check if already exists in database and was updated today (skip API calls if present and fresh)
+                if company_exists_in_db(ticker):
+                    logger.info(f"Ticker {ticker} already exists in database and was updated today or had error today, skipping")
+                    batch_fetch_status['success'] += 1  # Count as success since it's already there and fresh
+                    batch_fetch_status['processed'] = idx
+                    continue
+                else:
+                    # Check if exists but needs update (last_updated before today)
+                    db_manager_check = get_db_manager()
+                    try:
+                        with db_manager_check:
+                            if db_manager_check.conn:
+                                cursor_check = db_manager_check.conn.cursor()
+                                cursor_check.execute("SELECT last_updated, last_error_date FROM companies WHERE ticker = %s", (ticker,))
+                                result = cursor_check.fetchone()
+                                cursor_check.close()
+                                if result:
+                                    last_updated, last_error_date = result
+                                    if last_error_date and last_error_date.date() == datetime.now().date():
+                                        logger.info(f"Ticker {ticker} had error today, skipping")
+                                        batch_fetch_status['success'] += 1
+                                        continue
+                                    elif last_updated:
+                                        logger.info(f"Ticker {ticker} exists but last updated on {last_updated}, will reprocess")
+                    except Exception:
+                        pass  # Ignore errors in check, just proceed with processing
+                
+                ticker_start = time.time()
+                company_data = None
+                source = None
+                error_message = None
+                
+                # Try Alpha Vantage first
+                if av_api_key:
+                    try:
+                        company_data = get_alpha_vantage_company_overview(ticker, av_api_key)
+                        if company_data:
+                            source = 'Alpha Vantage'
+                    except Exception as e:
+                        error_message = f"Alpha Vantage error: {str(e)}"
+                        logger.warning(f"{error_message}")
+                
+                # Fallback to FMP
+                if not company_data and fmp_api_key:
+                    try:
+                        company_data = get_fmp_company_profile(ticker, fmp_api_key)
+                        if company_data:
+                            source = 'Financial Modeling Prep'
+                    except Exception as e:
+                        if not error_message:
+                            error_message = f"FMP error: {str(e)}"
+                        else:
+                            error_message += f"; FMP error: {str(e)}"
+                        logger.warning(f"FMP error for {ticker}: {str(e)}")
+                
+                fetch_time = time.time() - ticker_start
+                
+                if company_data:
+                    logger.debug(f"API returned data for {ticker} in {fetch_time:.2f}s")
+                    save_start = time.time()
+                    success = save_company_to_db(ticker, company_data)
+                    save_time = time.time() - save_start
+                    
+                    if success:
+                        logger.info(f"Successfully processed {ticker} from {source} (fetch: {fetch_time:.2f}s, save: {save_time:.2f}s)")
+                        batch_fetch_status['success'] += 1
+                    else:
+                        error_msg = f"Database save failed for {ticker}"
+                        logger.error(error_msg)
+                        save_company_error(ticker, error_msg)
+                        batch_fetch_status['failed'] += 1
+                else:
+                    # No data from either API - save error
+                    if not error_message:
+                        error_message = f"No data returned from Alpha Vantage or FMP for {ticker}"
+                    logger.warning(error_message)
+                    save_company_error(ticker, error_message)
+                    batch_fetch_status['failed'] += 1
+                    
+                # Rate limiting - wait a bit between requests
+                if idx < len(tickers):  # Don't wait after last ticker
+                    time.sleep(0.3)  # ~3 requests per second
+                    logger.debug(f"Rate limit delay: 0.3s")
+                
+            except Exception as e:
+                error_msg = f"Unexpected error processing {ticker}: {str(e)}"
+                logger.error(f"{error_msg}", exc_info=True)
+                save_company_error(ticker, error_msg)
+                batch_fetch_status['failed'] += 1
+        
+        total_time = time.time() - start_time
+        batch_fetch_status['message'] = f'Completed: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+        batch_fetch_status['current_ticker'] = None
+        logger.info(f"Batch fetch completed: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed, "
+                   f"total time: {total_time:.2f}s, avg: {total_time/len(tickers):.2f}s per ticker")
+    
+    finally:
+        batch_fetch_status['running'] = False
+        batch_fetch_status['last_updated'] = datetime.now().isoformat()
+
+
+def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, results_dict):
+    """Worker thread to process a batch of tickers."""
+    logger.info(f"Worker {worker_id} starting: processing {len(tickers)} tickers")
+    
+    success_count = 0
+    fail_count = 0
+    
+    for idx, ticker in enumerate(tickers, 1):
+        ticker = ticker.strip().upper()
+        if not ticker:
+            continue
+        
+        # Update global status with current ticker
+        batch_fetch_status['current_ticker'] = ticker
+        batch_fetch_status['last_updated'] = datetime.now().isoformat()
+        
+        logger.info(f"Worker {worker_id}: Processing ticker {idx}/{len(tickers)}: {ticker}")
+        
+        try:
+            # Check if already exists in database and was updated today (skip API calls if present and fresh)
+            if company_exists_in_db(ticker):
+                logger.info(f"Worker {worker_id}: Ticker {ticker} already exists in database and was updated today or had error today, skipping")
+                success_count += 1  # Count as success since it's already there and fresh
+                continue
+            else:
+                # Check if exists but needs update (last_updated before today)
+                db_manager_check = get_db_manager()
+                try:
+                    with db_manager_check:
+                        if db_manager_check.conn:
+                            cursor_check = db_manager_check.conn.cursor()
+                            cursor_check.execute("SELECT last_updated, last_error_date FROM companies WHERE ticker = %s", (ticker,))
+                            result = cursor_check.fetchone()
+                            cursor_check.close()
+                            if result:
+                                last_updated, last_error_date = result
+                                if last_error_date and last_error_date.date() == datetime.now().date():
+                                    logger.info(f"Worker {worker_id}: Ticker {ticker} had error today, skipping")
+                                    success_count += 1
+                                    continue
+                                elif last_updated:
+                                    logger.info(f"Worker {worker_id}: Ticker {ticker} exists but last updated on {last_updated}, will reprocess")
+                except Exception:
+                    pass  # Ignore errors in check, just proceed with processing
+            
+            ticker_start = time.time()
+            company_data = None
+            source = None
+            error_message = None
+            
+            # Try Alpha Vantage first
+            if av_api_key:
+                try:
+                    company_data = get_alpha_vantage_company_overview(ticker, av_api_key)
+                    if company_data:
+                        source = 'Alpha Vantage'
+                except Exception as e:
+                    error_message = f"Alpha Vantage error: {str(e)}"
+                    logger.warning(f"Worker {worker_id}: {error_message}")
+            
+            # Fallback to FMP
+            if not company_data and fmp_api_key:
+                try:
+                    company_data = get_fmp_company_profile(ticker, fmp_api_key)
+                    if company_data:
+                        source = 'Financial Modeling Prep'
+                except Exception as e:
+                    if not error_message:
+                        error_message = f"FMP error: {str(e)}"
+                    else:
+                        error_message += f"; FMP error: {str(e)}"
+                    logger.warning(f"Worker {worker_id}: FMP error for {ticker}: {str(e)}")
+            
+            fetch_time = time.time() - ticker_start
+            
+            if company_data:
+                save_start = time.time()
+                success = save_company_to_db(ticker, company_data)
+                save_time = time.time() - save_start
+                
+                if success:
+                    logger.info(f"Worker {worker_id}: Successfully processed {ticker} from {source} (fetch: {fetch_time:.2f}s, save: {save_time:.2f}s)")
+                    success_count += 1
+                else:
+                    error_msg = f"Database save failed for {ticker}"
+                    logger.error(f"Worker {worker_id}: {error_msg}")
+                    save_company_error(ticker, error_msg)
+                    fail_count += 1
+            else:
+                # No data from either API - save error
+                if not error_message:
+                    error_message = f"No data returned from Alpha Vantage or FMP for {ticker}"
+                logger.warning(f"Worker {worker_id}: {error_message}")
+                save_company_error(ticker, error_message)
+                fail_count += 1
+            
+            # Rate limiting
+            if idx < len(tickers):
+                time.sleep(0.3)  # ~3 requests per second
+        
+        except Exception as e:
+            error_msg = f"Unexpected error processing {ticker}: {str(e)}"
+            logger.error(f"Worker {worker_id}: {error_msg}", exc_info=True)
+            save_company_error(ticker, error_msg)
+            fail_count += 1
+    
+    # Store results
+    results_dict[worker_id] = {'success': success_count, 'failed': fail_count}
+    logger.info(f"Worker {worker_id} completed: {success_count} success, {fail_count} failed")
+
+
+def start_distributed_company_fetch(tickers):
+    """Start distributed company fetch across multiple Python threads."""
+    global batch_fetch_status
+    
+    # Initialize status
+    batch_fetch_status['running'] = True
+    batch_fetch_status['started_at'] = datetime.now().isoformat()
+    batch_fetch_status['total'] = len(tickers)
+    batch_fetch_status['processed'] = 0
+    batch_fetch_status['success'] = 0
+    batch_fetch_status['failed'] = 0
+    batch_fetch_status['current_ticker'] = None
+    batch_fetch_status['message'] = f'Starting distributed fetch for {len(tickers)} tickers...'
+    
+    # Get API keys
+    av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    fmp_api_key = os.getenv('FMP_API_KEY', '')
+    
+    # Split tickers across 20 worker threads
+    num_workers = 20
+    tickers_per_worker = len(tickers) // num_workers
+    remainder = len(tickers) % num_workers
+    
+    worker_tasks = []
+    start_idx = 0
+    
+    for worker_num in range(1, num_workers + 1):
+        # Distribute remainder across first workers
+        size = tickers_per_worker + (1 if worker_num <= remainder else 0)
+        worker_tickers = tickers[start_idx:start_idx + size]
+        start_idx += size
+        
+        if worker_tickers:
+            worker_tasks.append((worker_num, worker_tickers))
+    
+    logger.info(f"Distributing {len(tickers)} tickers across {len(worker_tasks)} worker threads")
+    
+    # Shared results dictionary
+    results_dict = {}
+    
+    # Start worker threads
+    threads = []
+    for worker_num, worker_tickers in worker_tasks:
+        logger.info(f"Starting worker thread {worker_num} with {len(worker_tickers)} tickers")
+        thread = threading.Thread(
+            target=worker_thread_process_tickers,
+            args=(worker_num, worker_tickers, av_api_key, fmp_api_key, results_dict),
+            daemon=True
+        )
+        thread.start()
+        threads.append((worker_num, thread, len(worker_tickers)))
+    
+    # Monitor workers and update status
+    def monitor_workers():
+        global batch_fetch_status
+        
+        total_processed = 0
+        processed_per_worker = {wn: 0 for wn, _, _ in threads}
+        
+        while True:
+            all_done = True
+            current_tickers = []
+            
+            for worker_num, thread, worker_total in threads:
+                if thread.is_alive():
+                    # Still running
+                    all_done = False
+                    # Estimate progress (rough)
+                    if processed_per_worker[worker_num] < worker_total:
+                        processed_per_worker[worker_num] = min(
+                            processed_per_worker[worker_num] + 1,
+                            worker_total
+                        )
+                else:
+                    # Worker finished
+                    if worker_num in results_dict:
+                        result = results_dict[worker_num]
+                        batch_fetch_status['success'] += result.get('success', 0)
+                        batch_fetch_status['failed'] += result.get('failed', 0)
+                        logger.info(f"Worker {worker_num} completed: {result.get('success', 0)} success, {result.get('failed', 0)} failed")
+                        processed_per_worker[worker_num] = worker_total
+            
+            # Update status
+            total_processed = sum(processed_per_worker.values())
+            batch_fetch_status['processed'] = min(total_processed, batch_fetch_status['total'])
+            batch_fetch_status['last_updated'] = datetime.now().isoformat()
+            batch_fetch_status['message'] = f'Processing: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+            
+            if all_done:
+                break
+            
+            time.sleep(2)  # Check every 2 seconds
+        
+        # Final status
+        batch_fetch_status['running'] = False
+        batch_fetch_status['message'] = f'Completed: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+        batch_fetch_status['current_ticker'] = None
+        batch_fetch_status['last_updated'] = datetime.now().isoformat()
+        
+        logger.info(f"Distributed fetch completed: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed")
+    
+    # Start monitoring in background
+    monitor_thread = threading.Thread(target=monitor_workers, daemon=True)
+    monitor_thread.start()
+
+
+@app.route('/api/companies/fetch-batch', methods=['POST'])
+def fetch_companies_batch():
+    """API endpoint to fetch multiple companies from Alpha Vantage (first) or Financial Modeling Prep (fallback)."""
+    global batch_fetch_status
+    
+    logger.info("API /api/companies/fetch-batch called")
+    
+    data = request.json if request.is_json else {}
+    tickers = data.get('tickers', [])
+    use_distributed = data.get('distributed', True)  # Default to distributed
+    
+    logger.debug(f"Batch fetch request - tickers count: {len(tickers) if isinstance(tickers, list) else 0}, distributed: {use_distributed}")
+    
+    if not tickers or not isinstance(tickers, list):
+        logger.warning(f"Batch fetch rejected: invalid tickers parameter - {type(tickers)}")
+        return jsonify({'error': 'tickers must be a non-empty list'}), 400
+    
+    # Check if already running
+    if batch_fetch_status['running']:
+        return jsonify({'error': 'Batch fetch is already running'}), 409
+    
+    # Try Alpha Vantage first, then FMP
+    av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    fmp_api_key = os.getenv('FMP_API_KEY', '')
+    
+    if not av_api_key and not fmp_api_key:
+        error_msg = 'Neither ALPHA_VANTAGE_API_KEY nor FMP_API_KEY found in environment variables. Please add at least one to your .env file.'
+        logger.error(error_msg)
+        return jsonify({
+            'error': error_msg,
+            'hint': 'Add ALPHA_VANTAGE_API_KEY=your_api_key_here (or FMP_API_KEY) to your .env file and restart the application'
+        }), 500
+    
+    # Use distributed threads if requested and available
+    if use_distributed and len(tickers) > 10:
+        try:
+            start_distributed_company_fetch(tickers)
+            return jsonify({
+                'success': True,
+                'message': f'Distributed batch fetch started for {len(tickers)} tickers across 20 worker threads. Use /api/companies/batch-status to check progress.',
+                'total': len(tickers),
+                'distributed': True
+            })
+        except Exception as e:
+            logger.warning(f"Distributed fetch failed, falling back to local: {str(e)}", exc_info=True)
+            # Fall through to local processing
+    
+    # Fallback to local processing
+    thread = threading.Thread(
+        target=process_batch_fetch_thread,
+        args=(tickers, av_api_key, fmp_api_key),
+        daemon=True
+    )
+    thread.start()
+    
+    return jsonify({
+        'success': True,
+        'message': f'Batch fetch started for {len(tickers)} tickers. Use /api/companies/batch-status to check progress.',
+        'total': len(tickers),
+        'distributed': False
+    })
+
+
+@app.route('/api/companies/batch-status')
+def get_batch_fetch_status():
+    """API endpoint to get current batch fetch status."""
+    global batch_fetch_status
+    
+    # Also get current count of companies in database
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if db_manager.conn:
+                cursor = db_manager.conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM companies")
+                total_companies = cursor.fetchone()[0]
+                cursor.close()
+                batch_fetch_status['total_companies_in_db'] = total_companies
+    except Exception as e:
+        logger.error(f"Error getting company count: {str(e)}")
+        batch_fetch_status['total_companies_in_db'] = None
+    
+    return jsonify(batch_fetch_status)
+
+
+@app.route('/api/companies/get-tickers-from-articles')
+def get_tickers_from_articles():
+    """API endpoint to get list of unique tickers from articles table."""
+    logger.info("API /api/companies/get-tickers-from-articles called")
+    
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            logger.debug("Fetching unique tickers from articles table...")
+            start_time = time.time()
+            
+            # Get all unique tickers from articles
+            cursor.execute("""
+                SELECT DISTINCT jsonb_array_elements(ticker_sentiment)->>'ticker' as ticker
+                FROM articles
+                WHERE ticker_sentiment IS NOT NULL
+                    AND jsonb_array_length(ticker_sentiment) > 0
+                ORDER BY ticker
+            """)
+            
+            all_tickers = [row[0] for row in cursor.fetchall() if row[0]]
+            query_time = time.time() - start_time
+            logger.info(f"Found {len(all_tickers)} unique tickers from articles (query took {query_time:.2f}s)")
+            
+            logger.debug("Fetching existing companies from database...")
+            start_time = time.time()
+            
+            # Get which ones already have descriptions
+            cursor.execute("SELECT ticker FROM companies")
+            existing_tickers = {row[0] for row in cursor.fetchall()}
+            existing_time = time.time() - start_time
+            logger.info(f"Found {len(existing_tickers)} companies with descriptions (query took {existing_time:.2f}s)")
+            
+            missing_tickers = [t for t in all_tickers if t not in existing_tickers]
+            logger.info(f"Missing descriptions: {len(missing_tickers)} tickers")
+            
+            cursor.close()
+            
+            return jsonify({
+                'tickers': all_tickers,
+                'total': len(all_tickers),
+                'with_descriptions': len(existing_tickers),
+                'missing_descriptions': missing_tickers
+            })
+            
+    except Exception as e:
+        logger.error(f"Error getting tickers from articles: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -2150,9 +2976,9 @@ def sql_query():
         return render_template('sql_query.html', query=query, error=error_msg, tables=tables, views=views)
 
 
-def ensure_similarity_table_exists():
-    """Ensure the ticker_similarity_matrix table exists in the database."""
-    logger.info("Ensuring ticker_similarity_matrix table exists")
+def ensure_companies_table_exists():
+    """Ensure the companies table exists in the database."""
+    logger.info("Ensuring companies table exists")
     db_manager = get_db_manager()
     
     try:
@@ -2167,50 +2993,82 @@ def ensure_similarity_table_exists():
             cursor.execute("""
                 SELECT EXISTS (
                     SELECT 1 FROM information_schema.tables 
-                    WHERE table_name = 'ticker_similarity_matrix'
+                    WHERE table_name = 'companies'
                 )
             """)
             table_exists = cursor.fetchone()[0]
             
             if not table_exists:
-                logger.info("Creating ticker_similarity_matrix table...")
+                logger.info("Creating companies table...")
                 cursor.execute("""
-                    CREATE TABLE ticker_similarity_matrix (
-                        ticker_a TEXT NOT NULL,
-                        ticker_b TEXT NOT NULL,
-                        similarity_score NUMERIC(5, 4) NOT NULL,
-                        co_occurrence_count INTEGER NOT NULL,
-                        ticker_a_article_count INTEGER NOT NULL,
-                        ticker_b_article_count INTEGER NOT NULL,
-                        similarity_type TEXT DEFAULT 'co_citation',
+                    CREATE TABLE companies (
+                        ticker TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        business_description TEXT,
+                        pipeline_description TEXT,
+                        sector TEXT,
+                        industry TEXT,
+                        exchange TEXT,
+                        market_cap NUMERIC,
+                        website TEXT,
+                        ceo TEXT,
+                        employees INTEGER,
+                        address TEXT,
+                        city TEXT,
+                        state TEXT,
+                        country TEXT,
+                        phone TEXT,
+                        embedding_vector FLOAT[],
                         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (ticker_a, ticker_b),
-                        CHECK (ticker_a < ticker_b)
+                        last_error_date DATE,
+                        last_error_message TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
                 cursor.execute("""
-                    CREATE INDEX idx_similarity_ticker_a 
-                    ON ticker_similarity_matrix(ticker_a)
+                    CREATE INDEX idx_companies_ticker ON companies(ticker)
                 """)
                 cursor.execute("""
-                    CREATE INDEX idx_similarity_ticker_b 
-                    ON ticker_similarity_matrix(ticker_b)
+                    CREATE INDEX idx_companies_sector ON companies(sector)
                 """)
                 cursor.execute("""
-                    CREATE INDEX idx_similarity_score 
-                    ON ticker_similarity_matrix(similarity_score DESC)
+                    CREATE INDEX idx_companies_industry ON companies(industry)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_companies_name ON companies(name)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_companies_last_error_date ON companies(last_error_date)
                 """)
                 
                 db_manager.conn.commit()
-                logger.info("ticker_similarity_matrix table created successfully")
+                logger.info("companies table created successfully")
             else:
-                logger.info("ticker_similarity_matrix table already exists")
+                logger.info("companies table already exists, checking for error columns...")
+                # Add error columns if they don't exist (for existing databases)
+                try:
+                    cursor.execute("""
+                        SELECT column_name FROM information_schema.columns 
+                        WHERE table_name = 'companies' AND column_name = 'last_error_date'
+                    """)
+                    if not cursor.fetchone():
+                        logger.info("Adding last_error_date and last_error_message columns...")
+                        cursor.execute("ALTER TABLE companies ADD COLUMN last_error_date DATE")
+                        cursor.execute("ALTER TABLE companies ADD COLUMN last_error_message TEXT")
+                        cursor.execute("CREATE INDEX IF NOT EXISTS idx_companies_last_error_date ON companies(last_error_date)")
+                        db_manager.conn.commit()
+                        logger.info("Error columns added successfully")
+                    else:
+                        logger.info("Error columns already exist")
+                except Exception as e:
+                    logger.warning(f"Could not add error columns (may already exist): {str(e)}")
+                    db_manager.conn.rollback()
             
             cursor.close()
             
     except Exception as e:
-        logger.error(f"Error ensuring similarity table exists: {str(e)}", exc_info=True)
+        logger.error(f"Error ensuring companies table exists: {str(e)}", exc_info=True)
         if db_manager.conn:
             db_manager.conn.rollback()
 
@@ -2218,8 +3076,8 @@ def ensure_similarity_table_exists():
 if __name__ == '__main__':
     # Ensure analytics view exists before starting the app
     ensure_analytics_view_exists()
-    # Ensure similarity matrix table exists
-    ensure_similarity_table_exists()
+    # Ensure companies table exists
+    ensure_companies_table_exists()
     
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
