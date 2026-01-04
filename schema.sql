@@ -200,3 +200,19 @@ CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
 CREATE INDEX IF NOT EXISTS idx_companies_name ON companies(name);
 CREATE INDEX IF NOT EXISTS idx_companies_last_error_date ON companies(last_error_date);
 
+-- Create table for company embeddings (vectorized company descriptions)
+CREATE TABLE IF NOT EXISTS company_embeddings (
+    id SERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL REFERENCES companies(ticker) ON DELETE CASCADE,
+    model_name TEXT NOT NULL,  -- 'openai-text-embedding-3-small', etc.
+    embedding_vector FLOAT[] NOT NULL,
+    dimension INTEGER NOT NULL,  -- 1536, 384, etc.
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, model_name)
+);
+
+-- Create indexes for embeddings table
+CREATE INDEX IF NOT EXISTS idx_company_embeddings_ticker ON company_embeddings(ticker);
+CREATE INDEX IF NOT EXISTS idx_company_embeddings_model ON company_embeddings(model_name);
+

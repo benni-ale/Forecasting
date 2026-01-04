@@ -16,6 +16,15 @@ import threading
 import time
 from dotenv import load_dotenv
 
+# OpenAI imports for embeddings
+try:
+    import openai
+    import tiktoken
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    logger.warning("OpenAI or tiktoken not installed. Embedding features will be disabled.")
+
 # Configure logging first
 logging.basicConfig(
     level=logging.INFO,
@@ -2718,8 +2727,9 @@ def fetch_companies_batch():
     data = request.json if request.is_json else {}
     tickers = data.get('tickers', [])
     use_distributed = data.get('distributed', True)  # Default to distributed
+    total_tickers = data.get('total_tickers', None)  # Optional: total across all batches
     
-    logger.debug(f"Batch fetch request - tickers count: {len(tickers) if isinstance(tickers, list) else 0}, distributed: {use_distributed}")
+    logger.debug(f"Batch fetch request - tickers count: {len(tickers) if isinstance(tickers, list) else 0}, distributed: {use_distributed}, total_tickers: {total_tickers}")
     
     if not tickers or not isinstance(tickers, list):
         logger.warning(f"Batch fetch rejected: invalid tickers parameter - {type(tickers)}")
@@ -2728,6 +2738,12 @@ def fetch_companies_batch():
     # Check if already running
     if batch_fetch_status['running']:
         return jsonify({'error': 'Batch fetch is already running'}), 409
+    
+    # If total_tickers is provided and we're starting a new batch, use it as the total
+    # Otherwise, if we're continuing, keep the existing total
+    if total_tickers is not None and not batch_fetch_status['running']:
+        batch_fetch_status['total'] = total_tickers
+        logger.info(f"Setting total tickers to {total_tickers} for cumulative progress tracking")
     
     # Try Alpha Vantage first, then FMP
     av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
@@ -3073,11 +3089,572 @@ def ensure_companies_table_exists():
             db_manager.conn.rollback()
 
 
+# Global state for vectorization status
+vectorization_status = {
+    'running': False,
+    'message': '',
+    'started_at': None,
+    'total': 0,
+    'processed': 0,
+    'success': 0,
+    'failed': 0,
+    'current_ticker': None,
+    'last_updated': None,
+    'tokens_used': 0,
+    'estimated_cost': 0.0,
+    'model_name': None
+}
+
+
+def ensure_company_embeddings_table_exists():
+    """Ensure the company_embeddings table exists in the database."""
+    logger.info("Ensuring company_embeddings table exists")
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error("Database connection not established")
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'company_embeddings'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("Creating company_embeddings table...")
+                cursor.execute("""
+                    CREATE TABLE company_embeddings (
+                        id SERIAL PRIMARY KEY,
+                        ticker TEXT NOT NULL REFERENCES companies(ticker) ON DELETE CASCADE,
+                        model_name TEXT NOT NULL,
+                        embedding_vector FLOAT[] NOT NULL,
+                        dimension INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(ticker, model_name)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE INDEX idx_company_embeddings_ticker ON company_embeddings(ticker)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_company_embeddings_model ON company_embeddings(model_name)
+                """)
+                
+                db_manager.conn.commit()
+                logger.info("company_embeddings table created successfully")
+            else:
+                logger.info("company_embeddings table already exists")
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Error ensuring company_embeddings table exists: {str(e)}", exc_info=True)
+        if db_manager.conn:
+            db_manager.conn.rollback()
+
+
+def generate_company_embedding_text(business_description, sector, industry):
+    """
+    Combine company fields into a single text for embedding.
+    Format: Sector and Industry first (metadata), then description.
+    
+    Args:
+        business_description: Company business description
+        sector: Company sector
+        industry: Company industry
+    
+    Returns:
+        Combined text string or None if no text available
+    """
+    parts = []
+    
+    # Metadata first - helps with semantic clustering
+    if sector:
+        parts.append(f"Sector: {sector}")
+    if industry:
+        parts.append(f"Industry: {industry}")
+    
+    # Main description
+    if business_description:
+        parts.append(business_description)
+    
+    return "\n\n".join(parts) if parts else None
+
+
+def count_tokens(text, model="text-embedding-3-small"):
+    """
+    Count tokens in text using tiktoken.
+    
+    Args:
+        text: Text to count tokens for
+        model: OpenAI model name
+    
+    Returns:
+        Number of tokens
+    """
+    if not OPENAI_AVAILABLE:
+        return 0
+    
+    try:
+        # Map model names to tiktoken encoding names
+        encoding_map = {
+            'text-embedding-3-small': 'cl100k_base',
+            'text-embedding-3-large': 'cl100k_base',
+            'text-embedding-ada-002': 'cl100k_base'
+        }
+        encoding_name = encoding_map.get(model, 'cl100k_base')
+        encoding = tiktoken.get_encoding(encoding_name)
+        return len(encoding.encode(text))
+    except Exception as e:
+        logger.warning(f"Error counting tokens: {str(e)}")
+        # Fallback: rough estimate (1 token ≈ 4 characters)
+        return len(text) // 4
+
+
+def calculate_embedding_cost(tokens, model="text-embedding-3-small"):
+    """
+    Calculate cost for embedding based on token count and model.
+    
+    Args:
+        tokens: Number of tokens
+        model: OpenAI model name
+    
+    Returns:
+        Cost in USD
+    """
+    # Pricing per 1M tokens (as of 2024)
+    pricing = {
+        'text-embedding-3-small': 0.02,
+        'text-embedding-3-large': 0.13,
+        'text-embedding-ada-002': 0.10
+    }
+    price_per_million = pricing.get(model, 0.02)
+    return (tokens / 1_000_000) * price_per_million
+
+
+def generate_openai_embedding(text, model="text-embedding-3-small"):
+    """
+    Generate embedding using OpenAI API.
+    
+    Args:
+        text: Text to embed
+        model: OpenAI embedding model name
+    
+    Returns:
+        List of floats representing the embedding vector
+    """
+    if not OPENAI_AVAILABLE:
+        raise ImportError("OpenAI library not available")
+    
+    openai_key = os.getenv('OPENAI_API_KEY')
+    if not openai_key:
+        raise ValueError("OPENAI_API_KEY not found in environment variables")
+    
+    client = openai.OpenAI(api_key=openai_key)
+    response = client.embeddings.create(
+        model=model,
+        input=text
+    )
+    return response.data[0].embedding
+
+
+def vectorize_companies_openai(model_name="text-embedding-3-small"):
+    """
+    Vectorize all company descriptions using OpenAI embeddings.
+    Includes business_description, sector, and industry.
+    
+    Args:
+        model_name: OpenAI embedding model name (default: text-embedding-3-small)
+    
+    Returns:
+        dict with statistics about the vectorization process
+    """
+    global vectorization_status
+    
+    if not OPENAI_AVAILABLE:
+        error_msg = "OpenAI library not available. Please install: pip install openai tiktoken"
+        logger.error(error_msg)
+        vectorization_status.update({
+            'running': False,
+            'message': error_msg,
+            'failed': 0,
+            'success': 0
+        })
+        return {'error': error_msg}
+    
+    openai_key = os.getenv('OPENAI_API_KEY')
+    if not openai_key:
+        error_msg = "OPENAI_API_KEY not found in environment variables"
+        logger.error(error_msg)
+        vectorization_status.update({
+            'running': False,
+            'message': error_msg,
+            'failed': 0,
+            'success': 0
+        })
+        return {'error': error_msg}
+    
+    # Determine dimension based on model
+    dimension_map = {
+        'text-embedding-3-small': 1536,
+        'text-embedding-3-large': 3072,
+        'text-embedding-ada-002': 1536
+    }
+    dimension = dimension_map.get(model_name, 1536)
+    
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Get companies that need vectorization
+            cursor.execute("""
+                SELECT ticker, business_description, sector, industry, last_updated
+                FROM companies 
+                WHERE business_description IS NOT NULL 
+                AND business_description != ''
+                AND (
+                    -- No embedding exists for this model
+                    NOT EXISTS (
+                        SELECT 1 FROM company_embeddings 
+                        WHERE company_embeddings.ticker = companies.ticker 
+                        AND company_embeddings.model_name = %s
+                    )
+                    -- OR company was updated after embedding was created
+                    OR EXISTS (
+                        SELECT 1 FROM company_embeddings 
+                        WHERE company_embeddings.ticker = companies.ticker 
+                        AND company_embeddings.model_name = %s
+                        AND companies.last_updated > company_embeddings.updated_at
+                    )
+                )
+                ORDER BY ticker
+            """, (model_name, model_name))
+            
+            companies = cursor.fetchall()
+            total = len(companies)
+            
+            logger.info(f"Vectorizing {total} companies with {model_name} (including sector/industry)")
+            
+            # Initialize token and cost tracking
+            total_tokens = 0
+            total_cost = 0.0
+            
+            vectorization_status.update({
+                'running': True,
+                'message': f'Vectorizing {total} companies...',
+                'started_at': datetime.now().isoformat(),
+                'total': total,
+                'processed': 0,
+                'success': 0,
+                'failed': 0,
+                'current_ticker': None,
+                'last_updated': datetime.now().isoformat(),
+                'tokens_used': 0,
+                'estimated_cost': 0.0,
+                'model_name': model_name
+            })
+            
+            success_count = 0
+            failed_count = 0
+            
+            for idx, (ticker, description, sector, industry, last_updated) in enumerate(companies, 1):
+                try:
+                    vectorization_status.update({
+                        'current_ticker': ticker,
+                        'processed': idx,
+                        'last_updated': datetime.now().isoformat()
+                    })
+                    
+                    # Combine all fields
+                    combined_text = generate_company_embedding_text(
+                        description, sector, industry
+                    )
+                    
+                    if not combined_text:
+                        logger.warning(f"Skipping {ticker}: no text to vectorize")
+                        failed_count += 1
+                        continue
+                    
+                    # Count tokens before API call
+                    tokens = count_tokens(combined_text, model_name)
+                    cost = calculate_embedding_cost(tokens, model_name)
+                    
+                    # Generate embedding
+                    embedding = generate_openai_embedding(combined_text, model=model_name)
+                    
+                    # Update token and cost totals
+                    total_tokens += tokens
+                    total_cost += cost
+                    
+                    # Save to embeddings table
+                    cursor.execute("""
+                        INSERT INTO company_embeddings 
+                            (ticker, model_name, embedding_vector, dimension, updated_at)
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (ticker, model_name) 
+                        DO UPDATE SET
+                            embedding_vector = EXCLUDED.embedding_vector,
+                            dimension = EXCLUDED.dimension,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (ticker, model_name, embedding, dimension))
+                    
+                    success_count += 1
+                    vectorization_status.update({
+                        'success': success_count,
+                        'tokens_used': total_tokens,
+                        'estimated_cost': round(total_cost, 6)
+                    })
+                    
+                    if idx % 10 == 0:
+                        db_manager.conn.commit()
+                        logger.info(f"Vectorized {idx}/{total} companies (success: {success_count}, failed: {failed_count}, tokens: {total_tokens:,}, cost: ${total_cost:.4f})")
+                
+                except Exception as e:
+                    failed_count += 1
+                    vectorization_status['failed'] = failed_count
+                    logger.error(f"Error vectorizing {ticker}: {str(e)}", exc_info=True)
+            
+            # Final commit
+            db_manager.conn.commit()
+            
+            vectorization_status.update({
+                'running': False,
+                'message': f'Completed: {success_count} successful, {failed_count} failed',
+                'processed': total,
+                'success': success_count,
+                'failed': failed_count,
+                'current_ticker': None,
+                'last_updated': datetime.now().isoformat(),
+                'tokens_used': total_tokens,
+                'estimated_cost': round(total_cost, 6)
+            })
+            
+            logger.info(f"Vectorization completed: {success_count} successful, {failed_count} failed out of {total} total. Tokens: {total_tokens:,}, Cost: ${total_cost:.4f}")
+            
+            cursor.close()
+            
+            return {
+                'total': total,
+                'success': success_count,
+                'failed': failed_count,
+                'model_name': model_name
+            }
+            
+    except Exception as e:
+        error_msg = f"Error during vectorization: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        vectorization_status.update({
+            'running': False,
+            'message': error_msg,
+            'last_updated': datetime.now().isoformat()
+        })
+        return {'error': error_msg}
+
+
+def vectorize_companies_thread(model_name="text-embedding-3-small"):
+    """Wrapper function to run vectorization in a background thread."""
+    try:
+        vectorize_companies_openai(model_name)
+    except Exception as e:
+        logger.error(f"Error in vectorization thread: {str(e)}", exc_info=True)
+        vectorization_status.update({
+            'running': False,
+            'message': f'Error: {str(e)}',
+            'last_updated': datetime.now().isoformat()
+        })
+
+
+@app.route('/api/companies/vectorize', methods=['POST'])
+def vectorize_companies():
+    """API endpoint to start vectorizing company descriptions."""
+    global vectorization_status
+    
+    if vectorization_status['running']:
+        return jsonify({
+            'error': 'Vectorization already in progress',
+            'status': vectorization_status
+        }), 400
+    
+    model_name = request.json.get('model_name', 'text-embedding-3-small') if request.json else 'text-embedding-3-small'
+    
+    # Validate model name
+    valid_models = ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002']
+    if model_name not in valid_models:
+        return jsonify({
+            'error': f'Invalid model name. Must be one of: {", ".join(valid_models)}'
+        }), 400
+    
+    # Start vectorization in background thread
+    thread = threading.Thread(
+        target=vectorize_companies_thread,
+        args=(model_name,),
+        daemon=True
+    )
+    thread.start()
+    
+    return jsonify({
+        'message': f'Vectorization started with model {model_name}',
+        'status': vectorization_status
+    })
+
+
+@app.route('/api/companies/vectorization-status', methods=['GET'])
+def get_vectorization_status():
+    """API endpoint to get current vectorization status."""
+    return jsonify(vectorization_status)
+
+
+@app.route('/api/companies/vectorized', methods=['GET'])
+def get_vectorized_companies():
+    """API endpoint to fetch vectorized companies with filters."""
+    logger.info("API /api/companies/vectorized called")
+    
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Get query parameters
+            search = request.args.get('search', '').strip()
+            sector = request.args.get('sector', '').strip()
+            model_name = request.args.get('model_name', 'text-embedding-3-small').strip()
+            limit = int(request.args.get('limit', 100))
+            offset = int(request.args.get('offset', 0))
+            
+            logger.debug(f"Vectorized companies query params: search='{search}', sector='{sector}', model='{model_name}', limit={limit}, offset={offset}")
+            
+            # Build query - join companies with company_embeddings
+            where_clauses = ["ce.embedding_vector IS NOT NULL"]
+            params = []
+            
+            # Filter by model_name
+            where_clauses.append("ce.model_name = %s")
+            params.append(model_name)
+            
+            if search:
+                where_clauses.append("(c.ticker ILIKE %s OR c.name ILIKE %s)")
+                search_pattern = f"%{search}%"
+                params.extend([search_pattern, search_pattern])
+            
+            if sector:
+                where_clauses.append("c.sector = %s")
+                params.append(sector)
+            
+            where_clause = " AND ".join(where_clauses)
+            
+            # Get total count
+            count_query = f"""
+                SELECT COUNT(DISTINCT c.ticker)
+                FROM companies c
+                INNER JOIN company_embeddings ce ON c.ticker = ce.ticker
+                WHERE {where_clause}
+            """
+            cursor.execute(count_query, params)
+            total_count = cursor.fetchone()[0]
+            
+            # Get vectorized companies
+            query = f"""
+                SELECT 
+                    c.ticker,
+                    c.name,
+                    c.business_description,
+                    c.sector,
+                    c.industry,
+                    ce.model_name,
+                    ce.dimension,
+                    ce.updated_at as embedding_updated_at,
+                    c.last_updated
+                FROM companies c
+                INNER JOIN company_embeddings ce ON c.ticker = ce.ticker
+                WHERE {where_clause}
+                ORDER BY c.ticker
+                LIMIT %s OFFSET %s
+            """
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            companies = []
+            
+            for row in cursor.fetchall():
+                companies.append({
+                    'ticker': row[0],
+                    'name': row[1],
+                    'business_description': row[2],
+                    'sector': row[3],
+                    'industry': row[4],
+                    'model_name': row[5],
+                    'dimension': row[6],
+                    'embedding_updated_at': row[7].isoformat() if row[7] else None,
+                    'last_updated': row[8].isoformat() if row[8] else None
+                })
+            
+            # Get unique sectors for filter
+            cursor.execute("""
+                SELECT DISTINCT c.sector 
+                FROM companies c
+                INNER JOIN company_embeddings ce ON c.ticker = ce.ticker
+                WHERE c.sector IS NOT NULL AND ce.model_name = %s
+                ORDER BY c.sector
+            """, (model_name,))
+            sectors = [row[0] for row in cursor.fetchall()]
+            
+            # Get unique model names
+            cursor.execute("""
+                SELECT DISTINCT model_name 
+                FROM company_embeddings 
+                ORDER BY model_name
+            """)
+            model_names = [row[0] for row in cursor.fetchall()]
+            
+            # Get statistics
+            cursor.execute("""
+                SELECT COUNT(DISTINCT ce.ticker)
+                FROM company_embeddings ce
+                WHERE ce.model_name = %s
+            """, (model_name,))
+            vectorized_count = cursor.fetchone()[0]
+            
+            cursor.close()
+            
+            return jsonify({
+                'companies': companies,
+                'total': total_count,
+                'vectorized_count': vectorized_count,
+                'sectors': sectors,
+                'model_names': model_names,
+                'current_model': model_name
+            })
+            
+    except Exception as e:
+        logger.error(f"Error fetching vectorized companies: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     # Ensure analytics view exists before starting the app
     ensure_analytics_view_exists()
     # Ensure companies table exists
     ensure_companies_table_exists()
+    # Ensure company embeddings table exists
+    ensure_company_embeddings_table_exists()
     
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'

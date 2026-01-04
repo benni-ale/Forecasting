@@ -73,6 +73,23 @@
     <p class="text-muted">Manage company descriptions for semantic similarity calculation</p>
     
     <div class="controls">
+        <div class="row mb-3">
+            <div class="col-md-12">
+                <div class="btn-group" role="group" aria-label="View mode">
+                    <input type="radio" class="btn-check" name="viewMode" id="viewCompanies" value="companies" checked>
+                    <label class="btn btn-outline-primary" for="viewCompanies">
+                        <i class="bi bi-building"></i> Companies
+                    </label>
+                    <input type="radio" class="btn-check" name="viewMode" id="viewVectorized" value="vectorized">
+                    <label class="btn btn-outline-primary" for="viewVectorized">
+                        <i class="bi bi-diagram-3"></i> Vectorized Companies
+                    </label>
+                </div>
+                <button class="btn btn-info ms-3" id="vectorizeBtn">
+                    <i class="bi bi-cpu"></i> Vectorize Companies
+                </button>
+            </div>
+        </div>
         <div class="row">
             <div class="col-md-6">
                 <div class="input-group mb-3">
@@ -92,8 +109,11 @@
                         <i class="bi bi-search"></i> Search
                     </button>
                 </div>
-                <select class="form-select" id="sectorFilter">
+                <select class="form-select mb-2" id="sectorFilter">
                     <option value="">All Sectors</option>
+                </select>
+                <select class="form-select" id="modelFilter" style="display: none;">
+                    <option value="text-embedding-3-small">text-embedding-3-small</option>
                 </select>
             </div>
         </div>
@@ -110,17 +130,23 @@
     
     <div class="info-panel mb-3">
         <div class="row">
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <strong>Total Companies:</strong> <span id="totalCompanies">-</span>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <strong>With Descriptions:</strong> <span id="withDescriptions">-</span>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <strong>Missing Descriptions:</strong> <span id="missingDescriptions">-</span>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
+                <strong>Vectorized:</strong> <span id="vectorizedCount">-</span>
+            </div>
+            <div class="col-md-2">
                 <strong>Batch Status:</strong> <span id="batchStatus">Idle</span>
+            </div>
+            <div class="col-md-2">
+                <strong>Vectorization:</strong> <span id="vectorizationStatus">Idle</span>
             </div>
         </div>
         <div class="row mt-2" id="batchProgressRow" style="display: none;">
@@ -134,6 +160,39 @@
                     </div>
                 </div>
                 <small class="text-muted" id="batchProgressDetails">Starting...</small>
+            </div>
+        </div>
+        <div class="row mt-2" id="vectorizationProgressRow" style="display: none;">
+            <div class="col-md-12">
+                <div class="progress" style="height: 25px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
+                         role="progressbar" 
+                         id="vectorizationProgressBar" 
+                         style="width: 0%">
+                        <span id="vectorizationProgressText">0%</span>
+                    </div>
+                </div>
+                <small class="text-muted" id="vectorizationProgressDetails">Starting...</small>
+            </div>
+        </div>
+        <div class="row mt-2" id="vectorizationCostRow" style="display: none;">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-title"><i class="bi bi-currency-dollar"></i> Cost Tracking</h6>
+                        <div class="row">
+                            <div class="col-md-4">
+                                <strong>Tokens Used:</strong> <span id="tokensUsed">0</span>
+                            </div>
+                            <div class="col-md-4">
+                                <strong>Estimated Cost:</strong> <span id="estimatedCost">$0.00</span>
+                            </div>
+                            <div class="col-md-4">
+                                <strong>Model:</strong> <span id="currentModel">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -154,12 +213,15 @@
 {% block extra_js %}
 <script>
 let currentCompanies = [];
+let currentViewMode = 'companies'; // 'companies' or 'vectorized'
 let currentFilters = {
     search: '',
     sector: '',
+    model_name: 'text-embedding-3-small',
     limit: 100,
     offset: 0
 };
+let vectorizationStatusInterval = null;
 
 // Load companies from API
 async function loadCompanies() {
@@ -179,7 +241,11 @@ async function loadCompanies() {
             params.append('sector', currentFilters.sector);
         }
         
-        const response = await fetch(`/api/companies?${params}`);
+        const endpoint = currentViewMode === 'vectorized' 
+            ? `/api/companies/vectorized?${params}&model_name=${currentFilters.model_name}`
+            : `/api/companies?${params}`;
+        
+        const response = await fetch(endpoint);
         const data = await response.json();
         
         if (data.error) {
@@ -206,6 +272,22 @@ async function loadCompanies() {
             });
         }
         
+        // Update model filter for vectorized view
+        if (currentViewMode === 'vectorized' && data.model_names) {
+            const modelSelect = document.getElementById('modelFilter');
+            const currentValue = modelSelect.value;
+            modelSelect.innerHTML = '';
+            data.model_names.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                if (model === currentValue || (model === data.current_model)) {
+                    option.selected = true;
+                }
+                modelSelect.appendChild(option);
+            });
+        }
+        
     } catch (error) {
         console.error('Error loading companies:', error);
         document.getElementById('companiesList').innerHTML = `
@@ -224,17 +306,25 @@ function renderCompanies(companies) {
     const container = document.getElementById('companiesList');
     
     if (companies.length === 0) {
+        const message = currentViewMode === 'vectorized' 
+            ? 'No vectorized companies found. Click "Vectorize Companies" to create embeddings.'
+            : 'Use "Fetch from FMP" to add company descriptions.';
         container.innerHTML = `
             <div class="alert alert-info">
                 <h5>No companies found</h5>
-                <p>Use "Fetch from FMP" to add company descriptions.</p>
+                <p>${message}</p>
             </div>
         `;
         return;
     }
     
     let html = '<div class="table-responsive"><table class="table table-hover"><thead><tr>';
-    html += '<th>Ticker</th><th>Name</th><th>Sector</th><th>Industry</th><th>Description</th><th>Last Updated</th>';
+    html += '<th>Ticker</th><th>Name</th><th>Sector</th><th>Industry</th><th>Description</th>';
+    if (currentViewMode === 'vectorized') {
+        html += '<th>Model</th><th>Dimension</th><th>Embedding Updated</th>';
+    } else {
+        html += '<th>Last Updated</th>';
+    }
     html += '</tr></thead><tbody>';
     
     companies.forEach(company => {
@@ -248,9 +338,18 @@ function renderCompanies(companies) {
             <td>${company.name || '-'}</td>
             <td>${company.sector || '-'}</td>
             <td>${company.industry || '-'}</td>
-            <td title="${description}">${descriptionPreview}</td>
-            <td>${company.last_updated ? new Date(company.last_updated).toLocaleDateString() : '-'}</td>
-        </tr>`;
+            <td title="${description}">${descriptionPreview}</td>`;
+        
+        if (currentViewMode === 'vectorized') {
+            html += `
+            <td><small>${company.model_name || '-'}</small></td>
+            <td>${company.dimension || '-'}</td>
+            <td>${company.embedding_updated_at ? new Date(company.embedding_updated_at).toLocaleDateString() : '-'}</td>`;
+        } else {
+            html += `<td>${company.last_updated ? new Date(company.last_updated).toLocaleDateString() : '-'}</td>`;
+        }
+        
+        html += '</tr>';
     });
     
     html += '</tbody></table></div>';
@@ -260,6 +359,9 @@ function renderCompanies(companies) {
 // Update statistics
 function updateStats(data) {
     document.getElementById('totalCompanies').textContent = data.total || 0;
+    if (currentViewMode === 'vectorized') {
+        document.getElementById('vectorizedCount').textContent = data.vectorized_count || 0;
+    }
     // These will be updated when we get ticker stats
 }
 
@@ -530,6 +632,166 @@ async function updateTickerStats() {
     }
 }
 
+// Start vectorization
+async function startVectorization() {
+    if (!confirm('This will vectorize all companies that don\'t have embeddings yet. This may take a while and use OpenAI API credits. Continue?')) {
+        return;
+    }
+    
+    const btn = document.getElementById('vectorizeBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting...';
+    
+    try {
+        const response = await fetch('/api/companies/vectorize', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ model_name: 'text-embedding-3-small' })
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Start polling vectorization status
+        if (vectorizationStatusInterval) {
+            clearInterval(vectorizationStatusInterval);
+        }
+        vectorizationStatusInterval = setInterval(pollVectorizationStatus, 2000);
+        
+        alert('Vectorization started! Check the progress bar below.');
+        
+    } catch (error) {
+        console.error('Error starting vectorization:', error);
+        alert('Error starting vectorization: ' + error.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Poll vectorization status
+async function pollVectorizationStatus() {
+    try {
+        const response = await fetch('/api/companies/vectorization-status');
+        const status = await response.json();
+        
+        const statusEl = document.getElementById('vectorizationStatus');
+        const progressRow = document.getElementById('vectorizationProgressRow');
+        const progressBar = document.getElementById('vectorizationProgressBar');
+        const progressText = document.getElementById('vectorizationProgressText');
+        const progressDetails = document.getElementById('vectorizationProgressDetails');
+        const costRow = document.getElementById('vectorizationCostRow');
+        const tokensUsedEl = document.getElementById('tokensUsed');
+        const estimatedCostEl = document.getElementById('estimatedCost');
+        const currentModelEl = document.getElementById('currentModel');
+        
+        if (status.running) {
+            statusEl.textContent = 'Running';
+            statusEl.className = 'text-warning';
+            progressRow.style.display = 'block';
+            costRow.style.display = 'block';
+            
+            if (status.total > 0) {
+                const progress = (status.processed / status.total) * 100;
+                progressBar.style.width = `${progress}%`;
+                progressText.textContent = `${Math.round(progress)}%`;
+                progressDetails.textContent = 
+                    `${status.processed}/${status.total} processed | ` +
+                    `${status.success} success | ${status.failed} failed | ` +
+                    `Current: ${status.current_ticker || 'N/A'}`;
+            } else {
+                progressBar.style.width = '50%';
+                progressText.textContent = '...';
+                progressDetails.textContent = 
+                    `${status.success || 0} success | ${status.failed || 0} failed | ` +
+                    `Current: ${status.current_ticker || 'Starting...'}`;
+            }
+            
+            // Update cost tracking
+            if (status.tokens_used !== undefined) {
+                tokensUsedEl.textContent = status.tokens_used.toLocaleString();
+            }
+            if (status.estimated_cost !== undefined) {
+                estimatedCostEl.textContent = `$${status.estimated_cost.toFixed(6)}`;
+            }
+            if (status.model_name) {
+                currentModelEl.textContent = status.model_name;
+            }
+        } else {
+            statusEl.textContent = status.message || 'Idle';
+            statusEl.className = status.message && status.message.includes('Error') ? 'text-danger' : 'text-muted';
+            
+            if (status.processed > 0) {
+                // Show final status briefly
+                progressRow.style.display = 'block';
+                progressBar.style.width = '100%';
+                progressText.textContent = '100%';
+                progressDetails.textContent = 
+                    `Completed: ${status.success} success, ${status.failed} failed`;
+                
+                // Show final cost
+                costRow.style.display = 'block';
+                if (status.tokens_used !== undefined) {
+                    tokensUsedEl.textContent = status.tokens_used.toLocaleString();
+                }
+                if (status.estimated_cost !== undefined) {
+                    estimatedCostEl.textContent = `$${status.estimated_cost.toFixed(6)}`;
+                }
+                if (status.model_name) {
+                    currentModelEl.textContent = status.model_name;
+                }
+                
+                // Hide after 10 seconds (longer to see final cost)
+                setTimeout(() => {
+                    progressRow.style.display = 'none';
+                    costRow.style.display = 'none';
+                }, 10000);
+                
+                // Reload companies if in vectorized view
+                if (currentViewMode === 'vectorized') {
+                    await loadCompanies();
+                }
+            } else {
+                progressRow.style.display = 'none';
+                costRow.style.display = 'none';
+            }
+            
+            // Stop polling if not running
+            if (vectorizationStatusInterval) {
+                clearInterval(vectorizationStatusInterval);
+                vectorizationStatusInterval = null;
+            }
+        }
+    } catch (error) {
+        console.error('Error polling vectorization status:', error);
+    }
+}
+
+// Handle view mode change
+function handleViewModeChange() {
+    const companiesRadio = document.getElementById('viewCompanies');
+    const vectorizedRadio = document.getElementById('viewVectorized');
+    const modelFilter = document.getElementById('modelFilter');
+    
+    if (companiesRadio.checked) {
+        currentViewMode = 'companies';
+        modelFilter.style.display = 'none';
+    } else {
+        currentViewMode = 'vectorized';
+        modelFilter.style.display = 'block';
+    }
+    
+    // Reset filters
+    currentFilters.offset = 0;
+    loadCompanies();
+}
+
 // Event listeners
 document.getElementById('fetchSingleBtn').addEventListener('click', fetchSingleCompany);
 document.getElementById('tickerInput').addEventListener('keypress', (e) => {
@@ -538,6 +800,9 @@ document.getElementById('tickerInput').addEventListener('keypress', (e) => {
     }
 });
 document.getElementById('fetchFromArticlesBtn').addEventListener('click', fetchAllFromArticles);
+document.getElementById('vectorizeBtn').addEventListener('click', startVectorization);
+document.getElementById('viewCompanies').addEventListener('change', handleViewModeChange);
+document.getElementById('viewVectorized').addEventListener('change', handleViewModeChange);
 document.getElementById('searchBtn').addEventListener('click', () => {
     currentFilters.search = document.getElementById('searchInput').value;
     currentFilters.offset = 0;
@@ -555,6 +820,11 @@ document.getElementById('sectorFilter').addEventListener('change', (e) => {
     currentFilters.offset = 0;
     loadCompanies();
 });
+document.getElementById('modelFilter').addEventListener('change', (e) => {
+    currentFilters.model_name = e.target.value;
+    currentFilters.offset = 0;
+    loadCompanies();
+});
 
 // Load on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -564,6 +834,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Start polling batch status if running
     pollBatchStatus();
     batchStatusInterval = setInterval(pollBatchStatus, 3000); // Poll every 3 seconds
+    
+    // Start polling vectorization status
+    pollVectorizationStatus();
+    if (!vectorizationStatusInterval) {
+        vectorizationStatusInterval = setInterval(pollVectorizationStatus, 3000); // Poll every 3 seconds
+    }
 });
 </script>
 {% endblock %}
