@@ -2611,19 +2611,20 @@ def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, r
     logger.info(f"Worker {worker_id} completed: {success_count} success, {fail_count} failed")
 
 
-def start_distributed_company_fetch(tickers):
+def start_distributed_company_fetch(tickers, total_tickers=None):
     """Start distributed company fetch across multiple Python threads."""
     global batch_fetch_status
     
     # Initialize status
     batch_fetch_status['running'] = True
     batch_fetch_status['started_at'] = datetime.now().isoformat()
-    batch_fetch_status['total'] = len(tickers)
+    # Use total_tickers if provided (for cumulative progress), otherwise use len(tickers)
+    batch_fetch_status['total'] = total_tickers if total_tickers is not None else len(tickers)
     batch_fetch_status['processed'] = 0
     batch_fetch_status['success'] = 0
     batch_fetch_status['failed'] = 0
     batch_fetch_status['current_ticker'] = None
-    batch_fetch_status['message'] = f'Starting distributed fetch for {len(tickers)} tickers...'
+    batch_fetch_status['message'] = f'Starting distributed fetch for {len(tickers)} tickers (total: {batch_fetch_status["total"]})...'
     
     # Get API keys
     av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
@@ -2760,11 +2761,11 @@ def fetch_companies_batch():
     # Use distributed threads if requested and available
     if use_distributed and len(tickers) > 10:
         try:
-            start_distributed_company_fetch(tickers)
+            start_distributed_company_fetch(tickers, total_tickers=total_tickers)
             return jsonify({
                 'success': True,
-                'message': f'Distributed batch fetch started for {len(tickers)} tickers across 20 worker threads. Use /api/companies/batch-status to check progress.',
-                'total': len(tickers),
+                'message': f'Distributed batch fetch started for {len(tickers)} tickers (total: {total_tickers or len(tickers)}) across 20 worker threads. Use /api/companies/batch-status to check progress.',
+                'total': total_tickers if total_tickers is not None else len(tickers),
                 'distributed': True
             })
         except Exception as e:
@@ -2841,8 +2842,13 @@ def get_tickers_from_articles():
             logger.debug("Fetching existing companies from database...")
             start_time = time.time()
             
-            # Get which ones already have descriptions
-            cursor.execute("SELECT ticker FROM companies")
+            # Get which ones already have descriptions (with actual non-empty descriptions)
+            cursor.execute("""
+                SELECT ticker 
+                FROM companies 
+                WHERE business_description IS NOT NULL 
+                AND TRIM(business_description) != ''
+            """)
             existing_tickers = {row[0] for row in cursor.fetchall()}
             existing_time = time.time() - start_time
             logger.info(f"Found {len(existing_tickers)} companies with descriptions (query took {existing_time:.2f}s)")
@@ -3268,6 +3274,243 @@ def generate_openai_embedding(text, model="text-embedding-3-small"):
     return response.data[0].embedding
 
 
+def worker_thread_vectorize_companies(worker_id, companies_batch, model_name, dimension, results_dict):
+    """Worker thread to vectorize a batch of companies."""
+    logger.info(f"Vectorization worker {worker_id} starting: processing {len(companies_batch)} companies")
+    
+    success_count = 0
+    failed_count = 0
+    worker_tokens = 0
+    worker_cost = 0.0
+    
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error(f"Worker {worker_id}: Database connection not established")
+                results_dict[worker_id] = {
+                    'success': 0,
+                    'failed': len(companies_batch),
+                    'tokens': 0,
+                    'cost': 0.0
+                }
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            for idx, (ticker, description, sector, industry, last_updated) in enumerate(companies_batch, 1):
+                try:
+                    # Update global status with current ticker
+                    vectorization_status['current_ticker'] = ticker
+                    vectorization_status['last_updated'] = datetime.now().isoformat()
+                    
+                    # Combine all fields
+                    combined_text = generate_company_embedding_text(
+                        description, sector, industry
+                    )
+                    
+                    if not combined_text:
+                        logger.warning(f"Worker {worker_id}: Skipping {ticker}: no text to vectorize")
+                        failed_count += 1
+                        continue
+                    
+                    # Count tokens before API call
+                    tokens = count_tokens(combined_text, model_name)
+                    cost = calculate_embedding_cost(tokens, model_name)
+                    
+                    # Generate embedding
+                    embedding = generate_openai_embedding(combined_text, model=model_name)
+                    
+                    # Update worker totals
+                    worker_tokens += tokens
+                    worker_cost += cost
+                    
+                    # Save to embeddings table
+                    cursor.execute("""
+                        INSERT INTO company_embeddings 
+                            (ticker, model_name, embedding_vector, dimension, updated_at)
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (ticker, model_name) 
+                        DO UPDATE SET
+                            embedding_vector = EXCLUDED.embedding_vector,
+                            dimension = EXCLUDED.dimension,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (ticker, model_name, embedding, dimension))
+                    
+                    success_count += 1
+                    
+                    # Commit every 10 companies for safety
+                    if idx % 10 == 0:
+                        db_manager.conn.commit()
+                        logger.debug(f"Worker {worker_id}: Vectorized {idx}/{len(companies_batch)} companies")
+                
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"Worker {worker_id}: Error vectorizing {ticker}: {str(e)}", exc_info=True)
+            
+            # Final commit
+            db_manager.conn.commit()
+            cursor.close()
+            
+            results_dict[worker_id] = {
+                'success': success_count,
+                'failed': failed_count,
+                'tokens': worker_tokens,
+                'cost': worker_cost
+            }
+            
+            logger.info(f"Worker {worker_id} completed: {success_count} success, {failed_count} failed, "
+                       f"{worker_tokens:,} tokens, ${worker_cost:.4f} cost")
+            
+    except Exception as e:
+        logger.error(f"Worker {worker_id}: Fatal error: {str(e)}", exc_info=True)
+        results_dict[worker_id] = {
+            'success': success_count,
+            'failed': failed_count + len(companies_batch) - success_count - failed_count,
+            'tokens': worker_tokens,
+            'cost': worker_cost
+        }
+
+
+def start_distributed_vectorization(companies, model_name="text-embedding-3-small"):
+    """Start distributed vectorization using Python threads."""
+    global vectorization_status
+    
+    total = len(companies)
+    logger.info(f"Starting distributed vectorization for {total} companies with {model_name}")
+    
+    # Determine dimension based on model
+    dimension_map = {
+        'text-embedding-3-small': 1536,
+        'text-embedding-3-large': 3072,
+        'text-embedding-ada-002': 1536
+    }
+    dimension = dimension_map.get(model_name, 1536)
+    
+    # Initialize status
+    vectorization_status.update({
+        'running': True,
+        'message': f'Vectorizing {total} companies across 20 worker threads...',
+        'started_at': datetime.now().isoformat(),
+        'total': total,
+        'processed': 0,
+        'success': 0,
+        'failed': 0,
+        'current_ticker': None,
+        'last_updated': datetime.now().isoformat(),
+        'tokens_used': 0,
+        'estimated_cost': 0.0,
+        'model_name': model_name
+    })
+    
+    # Split companies across 20 worker threads
+    num_workers = 20
+    companies_per_worker = total // num_workers
+    remainder = total % num_workers
+    
+    worker_tasks = []
+    start_idx = 0
+    
+    for worker_num in range(1, num_workers + 1):
+        # Distribute remainder across first workers
+        size = companies_per_worker + (1 if worker_num <= remainder else 0)
+        worker_companies = companies[start_idx:start_idx + size]
+        start_idx += size
+        
+        if worker_companies:
+            worker_tasks.append((worker_num, worker_companies))
+    
+    logger.info(f"Distributing {total} companies across {len(worker_tasks)} worker threads")
+    
+    # Shared results dictionary
+    results_dict = {}
+    
+    # Start worker threads
+    threads = []
+    for worker_num, worker_companies in worker_tasks:
+        logger.info(f"Starting vectorization worker thread {worker_num} with {len(worker_companies)} companies")
+        thread = threading.Thread(
+            target=worker_thread_vectorize_companies,
+            args=(worker_num, worker_companies, model_name, dimension, results_dict),
+            daemon=True
+        )
+        thread.start()
+        threads.append((worker_num, thread, len(worker_companies)))
+    
+    # Monitor workers and update status
+    def monitor_workers():
+        global vectorization_status
+        
+        total_processed = 0
+        total_success = 0
+        total_failed = 0
+        total_tokens = 0
+        total_cost = 0.0
+        processed_per_worker = {wn: 0 for wn, _, _ in threads}
+        
+        while True:
+            all_done = True
+            current_tickers = []
+            
+            for worker_num, thread, worker_total in threads:
+                if thread.is_alive():
+                    # Still running
+                    all_done = False
+                    # Estimate progress (rough)
+                    if processed_per_worker[worker_num] < worker_total:
+                        processed_per_worker[worker_num] = min(
+                            processed_per_worker[worker_num] + 1,
+                            worker_total
+                        )
+                else:
+                    # Worker finished
+                    if worker_num in results_dict:
+                        result = results_dict[worker_num]
+                        total_success += result.get('success', 0)
+                        total_failed += result.get('failed', 0)
+                        total_tokens += result.get('tokens', 0)
+                        total_cost += result.get('cost', 0.0)
+                        logger.info(f"Vectorization worker {worker_num} completed: {result.get('success', 0)} success, {result.get('failed', 0)} failed")
+                        processed_per_worker[worker_num] = worker_total
+            
+            # Update status
+            total_processed = sum(processed_per_worker.values())
+            vectorization_status.update({
+                'processed': min(total_processed, total),
+                'success': total_success,
+                'failed': total_failed,
+                'tokens_used': total_tokens,
+                'estimated_cost': round(total_cost, 6),
+                'last_updated': datetime.now().isoformat()
+            })
+            
+            if all_done:
+                break
+            
+            time.sleep(2)  # Check every 2 seconds
+        
+        # Final status
+        vectorization_status.update({
+            'running': False,
+            'message': f'Completed: {total_success} successful, {total_failed} failed',
+            'processed': total,
+            'success': total_success,
+            'failed': total_failed,
+            'current_ticker': None,
+            'last_updated': datetime.now().isoformat(),
+            'tokens_used': total_tokens,
+            'estimated_cost': round(total_cost, 6)
+        })
+        
+        logger.info(f"Distributed vectorization completed: {total_success} successful, {total_failed} failed out of {total} total. "
+                   f"Tokens: {total_tokens:,}, Cost: ${total_cost:.4f}")
+    
+    # Start monitoring in background
+    monitor_thread = threading.Thread(target=monitor_workers, daemon=True)
+    monitor_thread.start()
+
+
 def vectorize_companies_openai(model_name="text-embedding-3-small"):
     """
     Vectorize all company descriptions using OpenAI embeddings.
@@ -3321,139 +3564,112 @@ def vectorize_companies_openai(model_name="text-embedding-3-small"):
             
             cursor = db_manager.conn.cursor()
             
+            # First, let's check how many companies have descriptions
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM companies 
+                WHERE business_description IS NOT NULL 
+                AND TRIM(business_description) != ''
+            """)
+            total_with_descriptions = cursor.fetchone()[0]
+            logger.info(f"Total companies with descriptions: {total_with_descriptions}")
+            
+            # Check how many already have embeddings
+            cursor.execute("""
+                SELECT COUNT(DISTINCT ticker) 
+                FROM company_embeddings 
+                WHERE model_name = %s
+            """, (model_name,))
+            already_vectorized = cursor.fetchone()[0]
+            logger.info(f"Companies already vectorized with {model_name}: {already_vectorized}")
+            logger.info(f"Companies needing vectorization: {total_with_descriptions - already_vectorized}")
+            
             # Get companies that need vectorization
+            # IMPORTANT: Only process companies that don't have embeddings yet for this model
+            # OR companies that were updated after the embedding was created (need re-vectorization)
             cursor.execute("""
                 SELECT ticker, business_description, sector, industry, last_updated
                 FROM companies 
                 WHERE business_description IS NOT NULL 
-                AND business_description != ''
+                AND TRIM(business_description) != ''
                 AND (
-                    -- No embedding exists for this model
+                    -- No embedding exists for this model (skip already vectorized companies)
                     NOT EXISTS (
                         SELECT 1 FROM company_embeddings 
                         WHERE company_embeddings.ticker = companies.ticker 
                         AND company_embeddings.model_name = %s
                     )
-                    -- OR company was updated after embedding was created
-                    OR EXISTS (
-                        SELECT 1 FROM company_embeddings 
-                        WHERE company_embeddings.ticker = companies.ticker 
-                        AND company_embeddings.model_name = %s
-                        AND companies.last_updated > company_embeddings.updated_at
+                    -- OR company was updated after embedding was created (need to re-vectorize)
+                    OR (
+                        EXISTS (
+                            SELECT 1 FROM company_embeddings 
+                            WHERE company_embeddings.ticker = companies.ticker 
+                            AND company_embeddings.model_name = %s
+                        )
+                        AND companies.last_updated > (
+                            SELECT updated_at FROM company_embeddings 
+                            WHERE company_embeddings.ticker = companies.ticker 
+                            AND company_embeddings.model_name = %s
+                            LIMIT 1
+                        )
                     )
                 )
                 ORDER BY ticker
-            """, (model_name, model_name))
+            """, (model_name, model_name, model_name))
             
             companies = cursor.fetchall()
             total = len(companies)
             
-            logger.info(f"Vectorizing {total} companies with {model_name} (including sector/industry)")
-            
-            # Initialize token and cost tracking
-            total_tokens = 0
-            total_cost = 0.0
-            
-            vectorization_status.update({
-                'running': True,
-                'message': f'Vectorizing {total} companies...',
-                'started_at': datetime.now().isoformat(),
-                'total': total,
-                'processed': 0,
-                'success': 0,
-                'failed': 0,
-                'current_ticker': None,
-                'last_updated': datetime.now().isoformat(),
-                'tokens_used': 0,
-                'estimated_cost': 0.0,
-                'model_name': model_name
-            })
-            
-            success_count = 0
-            failed_count = 0
-            
-            for idx, (ticker, description, sector, industry, last_updated) in enumerate(companies, 1):
-                try:
-                    vectorization_status.update({
-                        'current_ticker': ticker,
-                        'processed': idx,
-                        'last_updated': datetime.now().isoformat()
-                    })
-                    
-                    # Combine all fields
-                    combined_text = generate_company_embedding_text(
-                        description, sector, industry
-                    )
-                    
-                    if not combined_text:
-                        logger.warning(f"Skipping {ticker}: no text to vectorize")
-                        failed_count += 1
-                        continue
-                    
-                    # Count tokens before API call
-                    tokens = count_tokens(combined_text, model_name)
-                    cost = calculate_embedding_cost(tokens, model_name)
-                    
-                    # Generate embedding
-                    embedding = generate_openai_embedding(combined_text, model=model_name)
-                    
-                    # Update token and cost totals
-                    total_tokens += tokens
-                    total_cost += cost
-                    
-                    # Save to embeddings table
-                    cursor.execute("""
-                        INSERT INTO company_embeddings 
-                            (ticker, model_name, embedding_vector, dimension, updated_at)
-                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-                        ON CONFLICT (ticker, model_name) 
-                        DO UPDATE SET
-                            embedding_vector = EXCLUDED.embedding_vector,
-                            dimension = EXCLUDED.dimension,
-                            updated_at = CURRENT_TIMESTAMP
-                    """, (ticker, model_name, embedding, dimension))
-                    
-                    success_count += 1
-                    vectorization_status.update({
-                        'success': success_count,
-                        'tokens_used': total_tokens,
-                        'estimated_cost': round(total_cost, 6)
-                    })
-                    
-                    if idx % 10 == 0:
-                        db_manager.conn.commit()
-                        logger.info(f"Vectorized {idx}/{total} companies (success: {success_count}, failed: {failed_count}, tokens: {total_tokens:,}, cost: ${total_cost:.4f})")
-                
-                except Exception as e:
-                    failed_count += 1
-                    vectorization_status['failed'] = failed_count
-                    logger.error(f"Error vectorizing {ticker}: {str(e)}", exc_info=True)
-            
-            # Final commit
-            db_manager.conn.commit()
-            
-            vectorization_status.update({
-                'running': False,
-                'message': f'Completed: {success_count} successful, {failed_count} failed',
-                'processed': total,
-                'success': success_count,
-                'failed': failed_count,
-                'current_ticker': None,
-                'last_updated': datetime.now().isoformat(),
-                'tokens_used': total_tokens,
-                'estimated_cost': round(total_cost, 6)
-            })
-            
-            logger.info(f"Vectorization completed: {success_count} successful, {failed_count} failed out of {total} total. Tokens: {total_tokens:,}, Cost: ${total_cost:.4f}")
-            
             cursor.close()
             
-            return {
-                'total': total,
-                'success': success_count,
-                'failed': failed_count,
-                'model_name': model_name
-            }
+            if total == 0:
+                logger.info(f"No companies need vectorization for model {model_name}")
+                vectorization_status.update({
+                    'running': False,
+                    'message': f'No companies need vectorization for model {model_name}. All companies already have embeddings.',
+                    'total': 0,
+                    'processed': 0,
+                    'success': 0,
+                    'failed': 0,
+                    'current_ticker': None,
+                    'last_updated': datetime.now().isoformat(),
+                    'tokens_used': 0,
+                    'estimated_cost': 0.0,
+                    'model_name': model_name
+                })
+                return {
+                    'total': 0,
+                    'success': 0,
+                    'failed': 0,
+                    'model_name': model_name,
+                    'message': f'No companies need vectorization. All companies already have embeddings for model {model_name}.',
+                    'no_companies': True
+                }
+            
+            logger.info(f"Vectorizing {total} companies with {model_name} (including sector/industry) using 20 worker threads")
+            
+            # Use distributed vectorization for better performance
+            if total > 10:
+                # Start distributed vectorization (runs in background)
+                start_distributed_vectorization(companies, model_name)
+                return {
+                    'total': total,
+                    'message': f'Distributed vectorization started for {total} companies across 20 worker threads',
+                    'model_name': model_name,
+                    'distributed': True
+                }
+            else:
+                # For small batches, use sequential processing
+                logger.info("Using sequential processing for small batch")
+                # Fall through to original sequential code (kept for small batches)
+                # But we'll use distributed anyway for consistency
+                start_distributed_vectorization(companies, model_name)
+                return {
+                    'total': total,
+                    'message': f'Vectorization started for {total} companies',
+                    'model_name': model_name,
+                    'distributed': True
+                }
             
     except Exception as e:
         error_msg = f"Error during vectorization: {str(e)}"
@@ -3498,6 +3714,89 @@ def vectorize_companies():
         return jsonify({
             'error': f'Invalid model name. Must be one of: {", ".join(valid_models)}'
         }), 400
+    
+    # Check if there are companies to vectorize BEFORE starting the thread
+    # This gives immediate feedback to the user
+    db_manager = get_db_manager()
+    try:
+        with db_manager:
+            if db_manager.conn:
+                cursor = db_manager.conn.cursor()
+                
+                # First check total with descriptions
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM companies 
+                    WHERE business_description IS NOT NULL 
+                    AND TRIM(business_description) != ''
+                """)
+                total_with_desc = cursor.fetchone()[0]
+                logger.info(f"Pre-check: Total companies with descriptions: {total_with_desc}")
+                
+                # Check how many have embeddings
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT ticker) 
+                    FROM company_embeddings 
+                    WHERE model_name = %s
+                """, (model_name,))
+                already_vectorized = cursor.fetchone()[0]
+                logger.info(f"Pre-check: Already vectorized: {already_vectorized}")
+                
+                # Now check how many need vectorization
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM companies 
+                    WHERE business_description IS NOT NULL 
+                    AND TRIM(business_description) != ''
+                    AND (
+                        NOT EXISTS (
+                            SELECT 1 FROM company_embeddings 
+                            WHERE company_embeddings.ticker = companies.ticker 
+                            AND company_embeddings.model_name = %s
+                        )
+                        OR (
+                            EXISTS (
+                                SELECT 1 FROM company_embeddings 
+                                WHERE company_embeddings.ticker = companies.ticker 
+                                AND company_embeddings.model_name = %s
+                            )
+                            AND companies.last_updated > (
+                                SELECT updated_at FROM company_embeddings 
+                                WHERE company_embeddings.ticker = companies.ticker 
+                                AND company_embeddings.model_name = %s
+                                LIMIT 1
+                            )
+                        )
+                    )
+                """, (model_name, model_name, model_name))
+                count = cursor.fetchone()[0]
+                logger.info(f"Pre-check: Companies needing vectorization: {count} (expected: {total_with_desc - already_vectorized})")
+                cursor.close()
+                
+                if count == 0:
+                    vectorization_status.update({
+                        'running': False,
+                        'message': f'No companies need vectorization. All {total_with_desc} companies with descriptions already have embeddings for model {model_name}.',
+                        'total': 0,
+                        'processed': 0,
+                        'success': 0,
+                        'failed': 0,
+                        'current_ticker': None,
+                        'last_updated': datetime.now().isoformat(),
+                        'tokens_used': 0,
+                        'estimated_cost': 0.0,
+                        'model_name': model_name
+                    })
+                    return jsonify({
+                        'message': f'No companies need vectorization. All {total_with_desc} companies with descriptions already have embeddings for model {model_name}.',
+                        'status': vectorization_status,
+                        'no_companies': True,
+                        'total_with_descriptions': total_with_desc,
+                        'already_vectorized': already_vectorized
+                    })
+    except Exception as e:
+        logger.error(f"Error checking companies count before vectorization: {str(e)}", exc_info=True)
+        # Continue anyway - the check will happen in the thread
     
     # Start vectorization in background thread
     thread = threading.Thread(

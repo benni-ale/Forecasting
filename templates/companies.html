@@ -518,8 +518,10 @@ async function fetchAllFromArticles() {
         
         // Fetch in batches to avoid overwhelming the API
         const batchSize = 50; // Larger batches since we're doing async
+        const totalMissingTickers = missingTickers.length; // Total across all batches
         let totalSuccess = 0;
         let totalFail = 0;
+        let cumulativeProcessed = 0; // Track cumulative progress
         
         try {
             for (let i = 0; i < missingTickers.length; i += batchSize) {
@@ -527,15 +529,21 @@ async function fetchAllFromArticles() {
                 const batchNum = Math.floor(i / batchSize) + 1;
                 const totalBatches = Math.ceil(missingTickers.length / batchSize);
                 
-                console.log(`Starting batch ${batchNum}/${totalBatches} (${batch.length} tickers)`);
+                console.log(`Starting batch ${batchNum}/${totalBatches} (${batch.length} tickers) - Total: ${totalMissingTickers}`);
                 
                 // Start batch fetch (async, returns immediately)
+                // Pass total_tickers only on first batch to set the global total
+                const requestBody = {
+                    tickers: batch,
+                    total_tickers: (i === 0) ? totalMissingTickers : undefined
+                };
+                
                 const response = await fetch('/api/companies/fetch-batch', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ tickers: batch })
+                    body: JSON.stringify(requestBody)
                 });
                 
                 const result = await response.json();
@@ -547,6 +555,8 @@ async function fetchAllFromArticles() {
                 // Wait for this batch to complete - keep polling during wait
                 let batchComplete = false;
                 let waitCount = 0;
+                let previousProcessed = cumulativeProcessed;
+                
                 while (!batchComplete && waitCount < 600) { // Max 10 minutes wait (600 * 2s)
                     await new Promise(resolve => setTimeout(resolve, 2000));
                     
@@ -556,10 +566,25 @@ async function fetchAllFromArticles() {
                     batchComplete = !status.running;
                     
                     // Update totals from current status
+                    // The status.processed should be cumulative if total was set correctly
+                    if (status.total === totalMissingTickers) {
+                        // Total matches, so processed is cumulative
+                        cumulativeProcessed = status.processed || 0;
+                    } else {
+                        // Total doesn't match, calculate cumulative manually
+                        cumulativeProcessed = previousProcessed + (status.processed || 0);
+                    }
+                    
                     totalSuccess = (status.success || 0);
                     totalFail = (status.failed || 0);
                     
                     waitCount++;
+                }
+                
+                // Update cumulative processed after batch completes
+                if (batchComplete) {
+                    cumulativeProcessed = Math.min(cumulativeProcessed + batch.length, totalMissingTickers);
+                    previousProcessed = cumulativeProcessed;
                 }
                 
                 if (!batchComplete) {
@@ -656,6 +681,14 @@ async function startVectorization() {
         
         if (data.error) {
             throw new Error(data.error);
+        }
+        
+        // Check if there are no companies to vectorize
+        if (data.no_companies || (data.status && data.status.total === 0)) {
+            alert(data.message || 'No companies need vectorization. All companies already have embeddings.');
+            // Update status display
+            await pollVectorizationStatus();
+            return;
         }
         
         // Start polling vectorization status
