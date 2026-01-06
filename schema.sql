@@ -231,3 +231,39 @@ CREATE TABLE IF NOT EXISTS company_correlation_matrix (
 CREATE INDEX IF NOT EXISTS idx_company_correlation_matrix_model ON company_correlation_matrix(model_name);
 CREATE INDEX IF NOT EXISTS idx_company_correlation_matrix_calculated_at ON company_correlation_matrix(calculated_at);
 
+-- Create table for cross-diffused sentiment (sentiment diffused across correlated tickers)
+CREATE TABLE IF NOT EXISTS ticker_cross_diffused_sentiment (
+    id SERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    model_name TEXT NOT NULL,
+    weighted_sentiment_cross_diffused NUMERIC(10, 6) NOT NULL,
+    correlation_threshold NUMERIC(5, 4) DEFAULT 0.3,
+    time_decay_days INTEGER DEFAULT 7,
+    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, date, model_name)
+);
+
+-- Create indexes for cross-diffused sentiment table
+CREATE INDEX IF NOT EXISTS idx_ticker_cross_diffused_ticker ON ticker_cross_diffused_sentiment(ticker);
+CREATE INDEX IF NOT EXISTS idx_ticker_cross_diffused_date ON ticker_cross_diffused_sentiment(date);
+CREATE INDEX IF NOT EXISTS idx_ticker_cross_diffused_model ON ticker_cross_diffused_sentiment(model_name);
+CREATE INDEX IF NOT EXISTS idx_ticker_cross_diffused_ticker_date ON ticker_cross_diffused_sentiment(ticker, date);
+
+-- Create table for decayed sentiment (sentiment with exponential time decay)
+CREATE TABLE IF NOT EXISTS ticker_decayed_sentiment (
+    id SERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    weighted_sentiment_decayed NUMERIC(10, 6) NOT NULL,
+    half_life_days INTEGER DEFAULT 7,
+    lookback_days INTEGER DEFAULT 30,
+    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, date)
+);
+
+-- Create indexes for decayed sentiment table
+CREATE INDEX IF NOT EXISTS idx_ticker_decayed_ticker ON ticker_decayed_sentiment(ticker);
+CREATE INDEX IF NOT EXISTS idx_ticker_decayed_date ON ticker_decayed_sentiment(date);
+CREATE INDEX IF NOT EXISTS idx_ticker_decayed_ticker_date ON ticker_decayed_sentiment(ticker, date);
+

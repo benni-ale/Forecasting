@@ -7,9 +7,46 @@
     <div class="col-md-12">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h2><i class="bi bi-graph-up"></i> Ticker Sentiment Analytics</h2>
-            <a href="/" class="btn btn-outline-secondary">
-                <i class="bi bi-arrow-left"></i> Back to Dashboard
-            </a>
+            <div>
+                <button class="btn btn-info me-2" id="updateSentimentMeasuresBtn">
+                    <i class="bi bi-arrow-clockwise"></i> Update Sentiment Measures
+                </button>
+                <a href="/" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-3" id="sentimentMeasuresStatusRow" style="display: none;">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-cpu"></i> Sentiment Measures Calculation Status</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Decayed Sentiment</h6>
+                        <div id="decayedStatus">
+                            <div class="progress mb-2" style="height: 25px;">
+                                <div class="progress-bar" id="decayedProgress" role="progressbar" style="width: 0%">0%</div>
+                            </div>
+                            <small id="decayedMessage" class="text-muted">Idle</small>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Cross-Diffused Sentiment</h6>
+                        <div id="crossDiffusedStatus">
+                            <div class="progress mb-2" style="height: 25px;">
+                                <div class="progress-bar bg-success" id="crossDiffusedProgress" role="progressbar" style="width: 0%">0%</div>
+                            </div>
+                            <small id="crossDiffusedMessage" class="text-muted">Idle</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -235,7 +272,8 @@
         document.getElementById('comparisonLoading').style.display = 'block';
         document.getElementById('comparisonErrorMessage').style.display = 'none';
         
-        fetch(`/api/analytics/price-vs-sentiment/${ticker}?days_back=${daysBack}`)
+        const modelName = document.getElementById('modelNameSelect')?.value || 'text-embedding-3-small';
+        fetch(`/api/analytics/price-vs-sentiment/${ticker}?days_back=${daysBack}&model_name=${modelName}`)
             .then(response => response.json())
             .then(data => {
                 document.getElementById('comparisonLoading').style.display = 'none';
@@ -272,19 +310,22 @@
         const validDates = [];
         const validNormalizedSentiment = [];
         const validNormalizedSentimentDiffused = [];
+        const validNormalizedSentimentCrossDiffused = [];
         const validNormalizedPrices = [];
         const validArticleCounts = [];
         
         for (let i = 0; i < data.dates.length; i++) {
             // Prefer diffused sentiment, fallback to regular sentiment
             const hasSentiment = (data.normalized_sentiment_diffused && data.normalized_sentiment_diffused[i] !== null && data.normalized_sentiment_diffused[i] !== undefined) ||
-                                 (data.normalized_sentiment && data.normalized_sentiment[i] !== null && data.normalized_sentiment[i] !== undefined);
+                                 (data.normalized_sentiment && data.normalized_sentiment[i] !== null && data.normalized_sentiment[i] !== undefined) ||
+                                 (data.normalized_sentiment_cross_diffused && data.normalized_sentiment_cross_diffused[i] !== null && data.normalized_sentiment_cross_diffused[i] !== undefined);
             
             if (hasSentiment) {
                 validIndices.push(i);
                 validDates.push(data.dates[i]);
                 validNormalizedSentiment.push(data.normalized_sentiment[i]);
                 validNormalizedSentimentDiffused.push(data.normalized_sentiment_diffused ? data.normalized_sentiment_diffused[i] : null);
+                validNormalizedSentimentCrossDiffused.push(data.normalized_sentiment_cross_diffused ? data.normalized_sentiment_cross_diffused[i] : null);
                 validNormalizedPrices.push(data.normalized_prices[i]);
                 validArticleCounts.push(data.article_counts[i] || 0);
             }
@@ -317,14 +358,25 @@
                         borderDash: [5, 5]
                     },
                     {
-                        label: `${data.ticker} Weighted Sentiment Diffused (Normalized, Half-life 7d)`,
-                        data: validNormalizedSentimentDiffused,
+                        label: `${data.ticker} Weighted Sentiment Decayed (Normalized, Half-life 7d)`,
+                        data: validNormalizedSentimentDecayed,
                         borderColor: 'rgb(153, 102, 255)',
                         backgroundColor: 'rgba(153, 102, 255, 0.1)',
                         tension: 0.1,
                         fill: false,
                         yAxisID: 'y',
                         pointRadius: 2
+                    },
+                    {
+                        label: `${data.ticker} Weighted Sentiment Cross-Diffused (Normalized, Correlation-based)`,
+                        data: validNormalizedSentimentCrossDiffused,
+                        borderColor: 'rgb(255, 159, 64)',
+                        backgroundColor: 'rgba(255, 159, 64, 0.1)',
+                        tension: 0.1,
+                        fill: false,
+                        yAxisID: 'y',
+                        pointRadius: 2,
+                        borderDash: [10, 5]
                     }
                 ]
             },
@@ -617,6 +669,104 @@
     // Load data on page load
     loadTickers();
     loadAnalytics();
+    
+    // Sentiment measures update functionality
+    let sentimentMeasuresStatusInterval = null;
+
+    document.getElementById('updateSentimentMeasuresBtn')?.addEventListener('click', function() {
+        const btn = this;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+        
+        document.getElementById('sentimentMeasuresStatusRow').style.display = 'block';
+        
+        fetch('/api/analytics/update-sentiment-measures', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                half_life_days: 7,
+                lookback_days: 30,
+                days_back: 365,
+                model_name: 'text-embedding-3-small',
+                correlation_threshold: 0.3,
+                time_decay_days: 7
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Update Sentiment Measures';
+            } else {
+                // Start polling for status
+                if (sentimentMeasuresStatusInterval) {
+                    clearInterval(sentimentMeasuresStatusInterval);
+                }
+                sentimentMeasuresStatusInterval = setInterval(updateSentimentMeasuresStatus, 2000);
+                updateSentimentMeasuresStatus();
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error starting sentiment measures calculation: ' + error.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Update Sentiment Measures';
+        });
+    });
+
+    function updateSentimentMeasuresStatus() {
+        fetch('/api/analytics/sentiment-measures-status')
+            .then(response => response.json())
+            .then(data => {
+                // Update decayed status
+                const decayed = data.decayed;
+                const decayedProgress = document.getElementById('decayedProgress');
+                const decayedMessage = document.getElementById('decayedMessage');
+                
+                if (decayed.running) {
+                    const progress = decayed.total > 0 ? (decayed.processed / decayed.total) * 100 : 0;
+                    decayedProgress.style.width = progress + '%';
+                    decayedProgress.textContent = Math.round(progress) + '%';
+                    decayedMessage.textContent = `${decayed.message} - Processed: ${decayed.processed}/${decayed.total}`;
+                } else {
+                    decayedProgress.style.width = '100%';
+                    decayedProgress.textContent = '100%';
+                    decayedMessage.textContent = decayed.message || 'Completed';
+                    if (!decayed.running && !data.cross_diffused.running) {
+                        clearInterval(sentimentMeasuresStatusInterval);
+                        document.getElementById('updateSentimentMeasuresBtn').disabled = false;
+                        document.getElementById('updateSentimentMeasuresBtn').innerHTML = '<i class="bi bi-arrow-clockwise"></i> Update Sentiment Measures';
+                    }
+                }
+                
+                // Update cross-diffused status
+                const crossDiffused = data.cross_diffused;
+                const crossDiffusedProgress = document.getElementById('crossDiffusedProgress');
+                const crossDiffusedMessage = document.getElementById('crossDiffusedMessage');
+                
+                if (crossDiffused.running) {
+                    const progress = crossDiffused.total > 0 ? (crossDiffused.processed / crossDiffused.total) * 100 : 0;
+                    crossDiffusedProgress.style.width = progress + '%';
+                    crossDiffusedProgress.textContent = Math.round(progress) + '%';
+                    crossDiffusedMessage.textContent = `${crossDiffused.message} - Processed: ${crossDiffused.processed}/${crossDiffused.total}`;
+                } else {
+                    crossDiffusedProgress.style.width = '100%';
+                    crossDiffusedProgress.textContent = '100%';
+                    crossDiffusedMessage.textContent = crossDiffused.message || 'Completed';
+                    if (!decayed.running && !crossDiffused.running) {
+                        clearInterval(sentimentMeasuresStatusInterval);
+                        document.getElementById('updateSentimentMeasuresBtn').disabled = false;
+                        document.getElementById('updateSentimentMeasuresBtn').innerHTML = '<i class="bi bi-arrow-clockwise"></i> Update Sentiment Measures';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching status:', error);
+            });
+    }
 </script>
 {% endblock %}
 

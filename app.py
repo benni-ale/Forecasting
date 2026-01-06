@@ -1354,7 +1354,7 @@ def get_ticker_sentiment_analytics():
                     avg_relevance_score,
                     weighted_sentiment,
                     total_weighted_sentiment,
-                    weighted_sentiment_diffused,
+                    weighted_sentiment_decayed,
                     article_count,
                     bullish_count,
                     bearish_count,
@@ -1380,7 +1380,7 @@ def get_ticker_sentiment_analytics():
             for row in cursor.fetchall():
                 result = dict(zip(columns, row))
                 # Convert numeric types
-                for key in ['avg_sentiment_score', 'avg_relevance_score', 'weighted_sentiment', 'total_weighted_sentiment', 'weighted_sentiment_diffused']:
+                for key in ['avg_sentiment_score', 'avg_relevance_score', 'weighted_sentiment', 'total_weighted_sentiment', 'weighted_sentiment_decayed']:
                     if result.get(key) is not None:
                         result[key] = float(result[key])
                 # Convert date to ISO format
@@ -1474,7 +1474,7 @@ def get_price_vs_sentiment(ticker):
                 SELECT 
                     date,
                     weighted_sentiment,
-                    weighted_sentiment_diffused,
+                    weighted_sentiment_decayed,
                     article_count
                 FROM ticker_daily_sentiment_view
                 WHERE ticker = %s
@@ -1490,18 +1490,42 @@ def get_price_vs_sentiment(ticker):
             
             logger.info("Fetching sentiment data rows")
             sentiment_data = {}
-            sentiment_diffused_data = {}
+            sentiment_decayed_data = {}
             article_count_data = {}
             fetch_start = time.time()
             row_count = 0
             for row in cursor.fetchall():
                 date_str = row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])
                 sentiment_data[date_str] = float(row[1]) if row[1] is not None else None
-                sentiment_diffused_data[date_str] = float(row[2]) if row[2] is not None else None
+                sentiment_decayed_data[date_str] = float(row[2]) if row[2] is not None else None
                 article_count_data[date_str] = int(row[3]) if row[3] is not None else 0
                 row_count += 1
             fetch_time = time.time() - fetch_start
             logger.info(f"Fetched {row_count} sentiment rows in {fetch_time:.2f} seconds")
+            
+            # Get cross-diffused sentiment from ticker_cross_diffused_sentiment table
+            # Try to get the most recent model_name, or use default
+            model_name = request.args.get('model_name', 'text-embedding-3-small').strip()
+            logger.info(f"Fetching cross-diffused sentiment for model {model_name}")
+            
+            cross_diffused_query = """
+                SELECT 
+                    date,
+                    weighted_sentiment_cross_diffused
+                FROM ticker_cross_diffused_sentiment
+                WHERE ticker = %s
+                    AND model_name = %s
+                    AND date >= %s
+                ORDER BY date ASC
+            """
+            
+            cursor.execute(cross_diffused_query, (ticker.upper(), model_name, cutoff_date))
+            sentiment_cross_diffused_data = {}
+            for row in cursor.fetchall():
+                date_str = row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])
+                sentiment_cross_diffused_data[date_str] = float(row[1]) if row[1] is not None else None
+            
+            logger.info(f"Fetched {len(sentiment_cross_diffused_data)} cross-diffused sentiment rows")
             
             cursor.close()
         
@@ -1523,7 +1547,8 @@ def get_price_vs_sentiment(ticker):
             
             price_points = []
             sentiment_points = []
-            sentiment_diffused_points = []
+            sentiment_decayed_points = []
+            sentiment_cross_diffused_points = []
             article_counts = []
             dates = []
             
@@ -1551,13 +1576,15 @@ def get_price_vs_sentiment(ticker):
                         # Get sentiment for this date
                         # NO FORWARD FILL: Use exact values for the date, or None/0 if no news
                         sentiment_value = sentiment_data.get(date_str)  # None if no news that day
-                        sentiment_diffused_value = sentiment_diffused_data.get(date_str)  # Should exist if there were news in previous 30 days
+                        sentiment_decayed_value = sentiment_decayed_data.get(date_str)  # Decayed sentiment from table
+                        sentiment_cross_diffused_value = sentiment_cross_diffused_data.get(date_str)  # Cross-diffused from correlated tickers
                         article_count = article_count_data.get(date_str, 0)  # 0 if no news that day
                         
                         # Add to results - sentiment can be None, article_count can be 0
                         # This is correct: we don't want to forward fill sentiment or article counts
                         sentiment_points.append(sentiment_value)
-                        sentiment_diffused_points.append(sentiment_diffused_value)
+                        sentiment_decayed_points.append(sentiment_decayed_value)
+                        sentiment_cross_diffused_points.append(sentiment_cross_diffused_value)
                         article_counts.append(article_count)
                         processed_count += 1
                 except (ValueError, KeyError) as e:
@@ -1585,22 +1612,39 @@ def get_price_vs_sentiment(ticker):
             else:
                 normalized_sentiment = [None] * len(sentiment_points)
             
-            # Normalize diffused sentiment (Min-Max normalization)
-            sentiment_diffused_values = [s for s in sentiment_diffused_points if s is not None]
-            if sentiment_diffused_values:
-                min_sentiment_diffused = min(sentiment_diffused_values)
-                max_sentiment_diffused = max(sentiment_diffused_values)
-                sentiment_diffused_range = max_sentiment_diffused - min_sentiment_diffused if max_sentiment_diffused != min_sentiment_diffused else 1
+            # Normalize decayed sentiment (Min-Max normalization)
+            sentiment_decayed_values = [s for s in sentiment_decayed_points if s is not None]
+            if sentiment_decayed_values:
+                min_sentiment_decayed = min(sentiment_decayed_values)
+                max_sentiment_decayed = max(sentiment_decayed_values)
+                sentiment_decayed_range = max_sentiment_decayed - min_sentiment_decayed if max_sentiment_decayed != min_sentiment_decayed else 1
                 
-                normalized_sentiment_diffused = []
-                for i, sent in enumerate(sentiment_diffused_points):
+                normalized_sentiment_decayed = []
+                for i, sent in enumerate(sentiment_decayed_points):
                     if sent is not None:
-                        normalized = (sent - min_sentiment_diffused) / sentiment_diffused_range
-                        normalized_sentiment_diffused.append(normalized)
+                        normalized = (sent - min_sentiment_decayed) / sentiment_decayed_range
+                        normalized_sentiment_decayed.append(normalized)
                     else:
-                        normalized_sentiment_diffused.append(None)
+                        normalized_sentiment_decayed.append(None)
             else:
-                normalized_sentiment_diffused = [None] * len(sentiment_diffused_points)
+                normalized_sentiment_decayed = [None] * len(sentiment_decayed_points)
+            
+            # Normalize cross-diffused sentiment (Min-Max normalization)
+            sentiment_cross_diffused_values = [s for s in sentiment_cross_diffused_points if s is not None]
+            if sentiment_cross_diffused_values:
+                min_sentiment_cross_diffused = min(sentiment_cross_diffused_values)
+                max_sentiment_cross_diffused = max(sentiment_cross_diffused_values)
+                sentiment_cross_diffused_range = max_sentiment_cross_diffused - min_sentiment_cross_diffused if max_sentiment_cross_diffused != min_sentiment_cross_diffused else 1
+                
+                normalized_sentiment_cross_diffused = []
+                for i, sent in enumerate(sentiment_cross_diffused_points):
+                    if sent is not None:
+                        normalized = (sent - min_sentiment_cross_diffused) / sentiment_cross_diffused_range
+                        normalized_sentiment_cross_diffused.append(normalized)
+                    else:
+                        normalized_sentiment_cross_diffused.append(None)
+            else:
+                normalized_sentiment_cross_diffused = [None] * len(sentiment_cross_diffused_points)
             
             # Normalize price (Min-Max normalization)
             logger.info("Normalizing price data")
@@ -1621,15 +1665,19 @@ def get_price_vs_sentiment(ticker):
                 'normalized_prices': normalized_price,
                 'sentiment': sentiment_points,
                 'normalized_sentiment': normalized_sentiment,
-                'sentiment_diffused': sentiment_diffused_points,
-                'normalized_sentiment_diffused': normalized_sentiment_diffused,
+                'sentiment_decayed': sentiment_decayed_points,
+                'normalized_sentiment_decayed': normalized_sentiment_decayed,
+                'sentiment_cross_diffused': sentiment_cross_diffused_points,
+                'normalized_sentiment_cross_diffused': normalized_sentiment_cross_diffused,
                 'article_counts': article_counts,
                 'price_min': min_price if price_points else None,
                 'price_max': max_price if price_points else None,
                 'sentiment_min': min_sentiment if sentiment_values else None,
                 'sentiment_max': max_sentiment if sentiment_values else None,
-                'sentiment_diffused_min': min_sentiment_diffused if sentiment_diffused_values else None,
-                'sentiment_diffused_max': max_sentiment_diffused if sentiment_diffused_values else None
+                'sentiment_decayed_min': min_sentiment_decayed if sentiment_decayed_values else None,
+                'sentiment_decayed_max': max_sentiment_decayed if sentiment_decayed_values else None,
+                'sentiment_cross_diffused_min': min_sentiment_cross_diffused if sentiment_cross_diffused_values else None,
+                'sentiment_cross_diffused_max': max_sentiment_cross_diffused if sentiment_cross_diffused_values else None
             })
         else:
             return jsonify({'error': 'No price data available'}), 404
@@ -1745,24 +1793,12 @@ def ensure_analytics_view_exists():
                         d1.bearish_count,
                         d1.neutral_count,
                         d1.last_article_time,
-                        -- Sum of decayed sentiment values (not weighted average)
-                        -- Each day's sentiment decays exponentially: sentiment * 0.5^(days_ago / 7)
-                        -- This ensures the value decreases over time even with a single article
-                        -- Half-life = 7 days means after 7 days, the contribution is halved
-                        COALESCE(
-                            SUM(d2.weighted_sentiment * POWER(0.5, (d1.date - d2.date)::numeric / 7.0))
-                                FILTER (WHERE d2.weighted_sentiment IS NOT NULL),
-                            0
-                        ) as weighted_sentiment_diffused
+                        -- Get decayed sentiment from pre-calculated table (faster than on-the-fly calculation)
+                        COALESCE(tds.weighted_sentiment_decayed, 0) as weighted_sentiment_decayed
                     FROM all_days_with_aggregations d1
-                    LEFT JOIN all_days_with_aggregations d2 
-                        ON d1.ticker = d2.ticker 
-                        AND d2.date <= d1.date 
-                        AND d2.date >= d1.date - INTERVAL '30 days'
-                    GROUP BY 
-                        d1.ticker, d1.date, d1.avg_sentiment_score, d1.avg_relevance_score,
-                        d1.weighted_sentiment, d1.total_weighted_sentiment, d1.article_count,
-                        d1.bullish_count, d1.bearish_count, d1.neutral_count, d1.last_article_time
+                    LEFT JOIN ticker_decayed_sentiment tds 
+                        ON d1.ticker = tds.ticker 
+                        AND d1.date = tds.date
                 )
                 SELECT 
                     ticker,
@@ -1771,7 +1807,7 @@ def ensure_analytics_view_exists():
                     avg_relevance_score,
                     weighted_sentiment,
                     total_weighted_sentiment,
-                    weighted_sentiment_diffused,
+                    weighted_sentiment_decayed,
                     article_count,
                     bullish_count,
                     bearish_count,
@@ -3228,6 +3264,130 @@ def ensure_correlation_matrix_table_exists():
             db_manager.conn.rollback()
 
 
+def ensure_cross_diffused_sentiment_table_exists():
+    """Ensure the ticker_cross_diffused_sentiment table exists in the database."""
+    logger.info("Ensuring ticker_cross_diffused_sentiment table exists")
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error("Database connection not established")
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'ticker_cross_diffused_sentiment'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("Creating ticker_cross_diffused_sentiment table...")
+                cursor.execute("""
+                    CREATE TABLE ticker_cross_diffused_sentiment (
+                        id SERIAL PRIMARY KEY,
+                        ticker TEXT NOT NULL,
+                        date DATE NOT NULL,
+                        model_name TEXT NOT NULL,
+                        weighted_sentiment_cross_diffused NUMERIC(10, 6) NOT NULL,
+                        correlation_threshold NUMERIC(5, 4) DEFAULT 0.3,
+                        time_decay_days INTEGER DEFAULT 7,
+                        calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(ticker, date, model_name)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_cross_diffused_ticker ON ticker_cross_diffused_sentiment(ticker)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_cross_diffused_date ON ticker_cross_diffused_sentiment(date)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_cross_diffused_model ON ticker_cross_diffused_sentiment(model_name)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_cross_diffused_ticker_date ON ticker_cross_diffused_sentiment(ticker, date)
+                """)
+                
+                db_manager.conn.commit()
+                logger.info("ticker_cross_diffused_sentiment table created successfully")
+            else:
+                logger.info("ticker_cross_diffused_sentiment table already exists")
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Error ensuring ticker_cross_diffused_sentiment table exists: {str(e)}", exc_info=True)
+        if db_manager.conn:
+            db_manager.conn.rollback()
+
+
+def ensure_decayed_sentiment_table_exists():
+    """Ensure the ticker_decayed_sentiment table exists in the database."""
+    logger.info("Ensuring ticker_decayed_sentiment table exists")
+    db_manager = get_db_manager()
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error("Database connection not established")
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = 'ticker_decayed_sentiment'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("Creating ticker_decayed_sentiment table...")
+                cursor.execute("""
+                    CREATE TABLE ticker_decayed_sentiment (
+                        id SERIAL PRIMARY KEY,
+                        ticker TEXT NOT NULL,
+                        date DATE NOT NULL,
+                        weighted_sentiment_decayed NUMERIC(10, 6) NOT NULL,
+                        half_life_days INTEGER DEFAULT 7,
+                        lookback_days INTEGER DEFAULT 30,
+                        calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(ticker, date)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_decayed_ticker ON ticker_decayed_sentiment(ticker)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_decayed_date ON ticker_decayed_sentiment(date)
+                """)
+                cursor.execute("""
+                    CREATE INDEX idx_ticker_decayed_ticker_date ON ticker_decayed_sentiment(ticker, date)
+                """)
+                
+                db_manager.conn.commit()
+                logger.info("ticker_decayed_sentiment table created successfully")
+            else:
+                logger.info("ticker_decayed_sentiment table already exists")
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Error ensuring ticker_decayed_sentiment table exists: {str(e)}", exc_info=True)
+        if db_manager.conn:
+            db_manager.conn.rollback()
+
+
 def generate_company_embedding_text(business_description, sector, industry):
     """
     Combine company fields into a single text for embedding.
@@ -4153,6 +4313,772 @@ def get_correlation_matrix():
         return jsonify({'error': str(e)}), 500
 
 
+def get_correlation_matrix_from_db(model_name):
+    """
+    Retrieve correlation matrix from database.
+    
+    Returns:
+        tuple: (tickers_list, correlation_matrix, ticker_to_index_dict) or None if not found
+    """
+    db_manager = get_db_manager()
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error("Database connection not established")
+                return None
+            
+            cursor = db_manager.conn.cursor()
+            cursor.execute("""
+                SELECT tickers, matrix_data
+                FROM company_correlation_matrix
+                WHERE model_name = %s
+            """, (model_name,))
+            
+            result = cursor.fetchone()
+            cursor.close()
+            
+            if result:
+                import json
+                tickers = list(result[0])  # Convert array to list
+                matrix = json.loads(result[1]) if isinstance(result[1], str) else result[1]
+                
+                # Create ticker to index mapping
+                ticker_to_index = {ticker: idx for idx, ticker in enumerate(tickers)}
+                
+                logger.info(f"Retrieved correlation matrix for {model_name}: {len(tickers)} tickers")
+                return tickers, matrix, ticker_to_index
+            else:
+                logger.warning(f"No correlation matrix found for model {model_name}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Error retrieving correlation matrix: {str(e)}", exc_info=True)
+        return None
+
+
+# Global status for cross-diffused sentiment calculation
+cross_diffused_sentiment_status = {
+    'running': False,
+    'message': 'Idle',
+    'total': 0,
+    'processed': 0,
+    'success': 0,
+    'failed': 0,
+    'model_name': None,
+    'correlation_threshold': 0.3,
+    'time_decay_days': 7,
+    'last_updated': None
+}
+
+
+def calculate_cross_diffused_sentiment_worker(worker_id, ticker_date_chunk, correlation_matrix, ticker_to_index, 
+                                               tickers_list, sentiment_data, correlation_threshold, 
+                                               time_decay_days, results_dict, db_manager):
+    """
+    Worker thread to calculate cross-diffused sentiment for a chunk of ticker/date pairs.
+    
+    Args:
+        worker_id: Worker thread ID
+        ticker_date_chunk: List of (ticker, date) tuples to process
+        correlation_matrix: 2D list of correlation values
+        ticker_to_index: Dict mapping ticker to matrix index
+        tickers_list: List of all tickers in order
+        sentiment_data: Dict {(ticker, date): weighted_sentiment}
+        correlation_threshold: Minimum correlation to consider
+        time_decay_days: Days for time decay
+        results_dict: Shared dict to store results
+        db_manager: Database manager instance
+    """
+    logger.info(f"Cross-diffused worker {worker_id}: processing {len(ticker_date_chunk)} ticker/date pairs")
+    
+    results = []
+    processed = 0
+    success = 0
+    failed = 0
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error(f"Worker {worker_id}: Database connection not established")
+                results_dict[worker_id] = {'processed': 0, 'success': 0, 'failed': len(ticker_date_chunk), 'results': []}
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            for ticker, date in ticker_date_chunk:
+                try:
+                    processed += 1
+                    
+                    # Get index of current ticker in correlation matrix
+                    if ticker not in ticker_to_index:
+                        # Ticker not in correlation matrix, skip
+                        continue
+                    
+                    ticker_idx = ticker_to_index[ticker]
+                    
+                    # Calculate cross-diffused sentiment (simplified)
+                    # Simple weighted sum: sentiment(T2) × correlation(T1, T2) for all T2
+                    cross_diffused = 0.0
+                    sum_correlations = 0.0
+                    
+                    # For each other ticker in the matrix
+                    for other_ticker_idx, other_ticker in enumerate(tickers_list):
+                        if other_ticker_idx == ticker_idx:
+                            continue  # Skip self
+                        
+                        # Get correlation
+                        correlation = correlation_matrix[ticker_idx][other_ticker_idx]
+                        
+                        # Only consider positive correlations (similar companies)
+                        if correlation <= 0:
+                            continue
+                        
+                        # Get sentiment of other ticker for the same date
+                        other_sentiment = sentiment_data.get((other_ticker, date))
+                        
+                        if other_sentiment is not None:
+                            # Weight by correlation
+                            contribution = other_sentiment * correlation
+                            cross_diffused += contribution
+                            sum_correlations += correlation
+                    
+                    # Normalize by sum of correlations (weighted average)
+                    if sum_correlations > 0:
+                        cross_diffused = cross_diffused / sum_correlations
+                    
+                    # Save result
+                    results.append((ticker, date, cross_diffused))
+                    success += 1
+                    
+                except Exception as e:
+                    logger.error(f"Worker {worker_id}: Error processing {ticker} on {date}: {str(e)}")
+                    failed += 1
+                    continue
+            
+            # Batch insert results
+            if results:
+                try:
+                    cursor.executemany("""
+                        INSERT INTO ticker_cross_diffused_sentiment 
+                            (ticker, date, model_name, weighted_sentiment_cross_diffused, 
+                             correlation_threshold, time_decay_days, calculated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (ticker, date, model_name) 
+                        DO UPDATE SET
+                            weighted_sentiment_cross_diffused = EXCLUDED.weighted_sentiment_cross_diffused,
+                            correlation_threshold = EXCLUDED.correlation_threshold,
+                            time_decay_days = EXCLUDED.time_decay_days,
+                            calculated_at = CURRENT_TIMESTAMP
+                    """, [(ticker, date, cross_diffused_sentiment_status['model_name'], 
+                           cross_diffused, correlation_threshold, time_decay_days) 
+                          for ticker, date, cross_diffused in results])
+                    db_manager.conn.commit()
+                    logger.info(f"Worker {worker_id}: Saved {len(results)} results to database")
+                except Exception as e:
+                    logger.error(f"Worker {worker_id}: Error saving results: {str(e)}")
+                    db_manager.conn.rollback()
+                    failed += len(results)
+                    success -= len(results)
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Worker {worker_id}: Fatal error: {str(e)}", exc_info=True)
+        failed += len(ticker_date_chunk) - processed
+    
+    results_dict[worker_id] = {
+        'processed': processed,
+        'success': success,
+        'failed': failed,
+        'results': results
+    }
+    logger.info(f"Cross-diffused worker {worker_id}: completed - processed: {processed}, success: {success}, failed: {failed}")
+
+
+def calculate_cross_diffused_sentiment_thread(model_name, correlation_threshold=0.3, time_decay_days=7, days_back=365):
+    """
+    Background thread to calculate cross-diffused sentiment for all ticker/date pairs.
+    Distributes work across 40 worker threads.
+    """
+    global cross_diffused_sentiment_status
+    
+    cross_diffused_sentiment_status.update({
+        'running': True,
+        'message': f'Calculating cross-diffused sentiment for model {model_name}',
+        'total': 0,
+        'processed': 0,
+        'success': 0,
+        'failed': 0,
+        'model_name': model_name,
+        'correlation_threshold': correlation_threshold,
+        'time_decay_days': time_decay_days,
+        'last_updated': datetime.now().isoformat()
+    })
+    
+    try:
+        # Get correlation matrix
+        logger.info(f"Retrieving correlation matrix for {model_name}")
+        matrix_result = get_correlation_matrix_from_db(model_name)
+        
+        if not matrix_result:
+            cross_diffused_sentiment_status.update({
+                'running': False,
+                'message': f'No correlation matrix found for model {model_name}. Please calculate it first.',
+                'last_updated': datetime.now().isoformat()
+            })
+            return
+        
+        tickers_list, correlation_matrix, ticker_to_index = matrix_result
+        
+        # Get all sentiment data from view
+        logger.info("Retrieving sentiment data from ticker_daily_sentiment_view")
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Get all ticker/date pairs with sentiment
+            cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
+            cursor.execute("""
+                SELECT ticker, date, weighted_sentiment
+                FROM ticker_daily_sentiment_view
+                WHERE date >= %s
+                AND weighted_sentiment IS NOT NULL
+                ORDER BY ticker, date
+            """, (cutoff_date,))
+            
+            # Build sentiment data dict
+            sentiment_data = {}
+            ticker_date_pairs = []
+            for row in cursor.fetchall():
+                ticker, date, sentiment = row
+                sentiment_data[(ticker, date)] = float(sentiment) if sentiment is not None else None
+                # Only include tickers that are in the correlation matrix
+                if ticker in ticker_to_index:
+                    ticker_date_pairs.append((ticker, date))
+            
+            cursor.close()
+        
+        total = len(ticker_date_pairs)
+        cross_diffused_sentiment_status['total'] = total
+        logger.info(f"Found {total} ticker/date pairs to process")
+        
+        if total == 0:
+            cross_diffused_sentiment_status.update({
+                'running': False,
+                'message': 'No ticker/date pairs found to process',
+                'last_updated': datetime.now().isoformat()
+            })
+            return
+        
+        # Distribute work across 40 threads
+        num_workers = 40
+        chunk_size = (total + num_workers - 1) // num_workers
+        
+        threads = []
+        results_dict = {}
+        
+        for i in range(num_workers):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, total)
+            
+            if start_idx < end_idx:
+                chunk = ticker_date_pairs[start_idx:end_idx]
+                thread = threading.Thread(
+                    target=calculate_cross_diffused_sentiment_worker,
+                    args=(i, chunk, correlation_matrix, ticker_to_index, tickers_list, 
+                          sentiment_data, correlation_threshold, time_decay_days, 
+                          results_dict, get_db_manager()),
+                    daemon=True
+                )
+                threads.append(thread)
+                thread.start()
+        
+        logger.info(f"Started {len(threads)} worker threads")
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # Aggregate results
+        total_processed = 0
+        total_success = 0
+        total_failed = 0
+        
+        for worker_id, result in results_dict.items():
+            total_processed += result['processed']
+            total_success += result['success']
+            total_failed += result['failed']
+        
+        cross_diffused_sentiment_status.update({
+            'running': False,
+            'message': f'Completed: {total_success} successful, {total_failed} failed',
+            'processed': total_processed,
+            'success': total_success,
+            'failed': total_failed,
+            'last_updated': datetime.now().isoformat()
+        })
+        
+        logger.info(f"Cross-diffused sentiment calculation completed: {total_success} successful, {total_failed} failed")
+        
+    except Exception as e:
+        logger.error(f"Error calculating cross-diffused sentiment: {str(e)}", exc_info=True)
+        cross_diffused_sentiment_status.update({
+            'running': False,
+            'message': f'Error: {str(e)}',
+            'last_updated': datetime.now().isoformat()
+        })
+
+
+@app.route('/api/analytics/calculate-cross-diffused-sentiment', methods=['POST'])
+def calculate_cross_diffused_sentiment():
+    """API endpoint to start calculating cross-diffused sentiment."""
+    logger.info("API /api/analytics/calculate-cross-diffused-sentiment called")
+    
+    global cross_diffused_sentiment_status
+    
+    if cross_diffused_sentiment_status['running']:
+        return jsonify({
+            'message': 'Calculation already in progress',
+            'status': cross_diffused_sentiment_status
+        }), 400
+    
+    try:
+        data = request.get_json() or {}
+        model_name = data.get('model_name', 'text-embedding-3-small').strip()
+        correlation_threshold = float(data.get('correlation_threshold', 0.3))
+        time_decay_days = int(data.get('time_decay_days', 7))
+        days_back = int(data.get('days_back', 365))
+        
+        # Start calculation in background thread
+        thread = threading.Thread(
+            target=calculate_cross_diffused_sentiment_thread,
+            args=(model_name, correlation_threshold, time_decay_days, days_back),
+            daemon=True
+        )
+        thread.start()
+        
+        return jsonify({
+            'message': f'Cross-diffused sentiment calculation started for model {model_name}',
+            'status': cross_diffused_sentiment_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting cross-diffused sentiment calculation: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/analytics/cross-diffused-sentiment-status', methods=['GET'])
+def get_cross_diffused_sentiment_status():
+    """API endpoint to get current cross-diffused sentiment calculation status."""
+    return jsonify(cross_diffused_sentiment_status)
+
+
+# Global status for decayed sentiment calculation
+decayed_sentiment_status = {
+    'running': False,
+    'message': 'Idle',
+    'total': 0,
+    'processed': 0,
+    'success': 0,
+    'failed': 0,
+    'half_life_days': 7,
+    'lookback_days': 30,
+    'last_updated': None
+}
+
+
+def calculate_decayed_sentiment_worker(worker_id, ticker_date_chunk, sentiment_data, 
+                                       half_life_days, lookback_days, results_dict, db_manager):
+    """
+    Worker thread to calculate decayed sentiment for a chunk of ticker/date pairs.
+    Uses iterative approach: decayed_today = (decayed_yesterday * decay_factor) + sentiment_today
+    
+    Args:
+        worker_id: Worker thread ID
+        ticker_date_chunk: List of (ticker, date) tuples to process
+        sentiment_data: Dict {(ticker, date): weighted_sentiment}
+        half_life_days: Half-life for exponential decay
+        lookback_days: Days to look back for decay calculation
+        results_dict: Shared dict to store results
+        db_manager: Database manager instance
+    """
+    logger.info(f"Decayed worker {worker_id}: processing {len(ticker_date_chunk)} ticker/date pairs")
+    
+    results = []
+    processed = 0
+    success = 0
+    failed = 0
+    
+    # Calculate decay factor per day
+    decay_factor = 0.5 ** (1.0 / half_life_days)
+    
+    try:
+        with db_manager:
+            if not db_manager.conn:
+                logger.error(f"Worker {worker_id}: Database connection not established")
+                results_dict[worker_id] = {'processed': 0, 'success': 0, 'failed': len(ticker_date_chunk), 'results': []}
+                return
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Group by ticker for iterative calculation
+            ticker_groups = {}
+            for ticker, date in ticker_date_chunk:
+                if ticker not in ticker_groups:
+                    ticker_groups[ticker] = []
+                ticker_groups[ticker].append(date)
+            
+            for ticker, dates in ticker_groups.items():
+                try:
+                    # Sort dates chronologically
+                    dates_sorted = sorted(dates)
+                    
+                    # Get existing decayed values for this ticker (for incremental calculation)
+                    cursor.execute("""
+                        SELECT date, weighted_sentiment_decayed
+                        FROM ticker_decayed_sentiment
+                        WHERE ticker = %s
+                        AND date < %s
+                        ORDER BY date DESC
+                        LIMIT 1
+                    """, (ticker, dates_sorted[0] if dates_sorted else None))
+                    
+                    prev_result = cursor.fetchone()
+                    prev_decayed = prev_result[1] if prev_result else 0.0
+                    prev_date = prev_result[0] if prev_result else None
+                    
+                    # Process each date in order
+                    for date in dates_sorted:
+                        processed += 1
+                        
+                        # Calculate days since previous date
+                        if prev_date:
+                            days_diff = (date - prev_date).days
+                            # Apply decay to previous value
+                            prev_decayed = prev_decayed * (decay_factor ** days_diff)
+                        else:
+                            prev_decayed = 0.0
+                        
+                        # Get sentiment for this date
+                        sentiment = sentiment_data.get((ticker, date))
+                        if sentiment is not None:
+                            # Add current sentiment to decayed value
+                            decayed_value = prev_decayed + float(sentiment)
+                        else:
+                            # No sentiment for this date, just decay
+                            decayed_value = prev_decayed
+                        
+                        results.append((ticker, date, decayed_value))
+                        success += 1
+                        
+                        # Update for next iteration
+                        prev_decayed = decayed_value
+                        prev_date = date
+                    
+                except Exception as e:
+                    logger.error(f"Worker {worker_id}: Error processing ticker {ticker}: {str(e)}")
+                    failed += len(dates)
+                    continue
+            
+            # Batch insert results
+            if results:
+                try:
+                    cursor.executemany("""
+                        INSERT INTO ticker_decayed_sentiment 
+                            (ticker, date, weighted_sentiment_decayed, 
+                             half_life_days, lookback_days, calculated_at)
+                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (ticker, date) 
+                        DO UPDATE SET
+                            weighted_sentiment_decayed = EXCLUDED.weighted_sentiment_decayed,
+                            half_life_days = EXCLUDED.half_life_days,
+                            lookback_days = EXCLUDED.lookback_days,
+                            calculated_at = CURRENT_TIMESTAMP
+                    """, [(ticker, date, decayed, half_life_days, lookback_days) 
+                          for ticker, date, decayed in results])
+                    db_manager.conn.commit()
+                    logger.info(f"Worker {worker_id}: Saved {len(results)} results to database")
+                except Exception as e:
+                    logger.error(f"Worker {worker_id}: Error saving results: {str(e)}")
+                    db_manager.conn.rollback()
+                    failed += len(results)
+                    success -= len(results)
+            
+            cursor.close()
+            
+    except Exception as e:
+        logger.error(f"Worker {worker_id}: Fatal error: {str(e)}", exc_info=True)
+        failed += len(ticker_date_chunk) - processed
+    
+    results_dict[worker_id] = {
+        'processed': processed,
+        'success': success,
+        'failed': failed,
+        'results': results
+    }
+    logger.info(f"Decayed worker {worker_id}: completed - processed: {processed}, success: {success}, failed: {failed}")
+
+
+def calculate_decayed_sentiment_thread(half_life_days=7, lookback_days=30, days_back=365):
+    """
+    Background thread to calculate decayed sentiment for all ticker/date pairs.
+    Distributes work across 40 worker threads.
+    """
+    global decayed_sentiment_status
+    
+    decayed_sentiment_status.update({
+        'running': True,
+        'message': f'Calculating decayed sentiment (half-life: {half_life_days} days)',
+        'total': 0,
+        'processed': 0,
+        'success': 0,
+        'failed': 0,
+        'half_life_days': half_life_days,
+        'lookback_days': lookback_days,
+        'last_updated': datetime.now().isoformat()
+    })
+    
+    try:
+        # Get all sentiment data directly from articles (not from view to avoid circular dependency)
+        logger.info("Retrieving sentiment data directly from articles")
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                raise ConnectionError("Database connection not established")
+            
+            cursor = db_manager.conn.cursor()
+            
+            # Get all ticker/date pairs with sentiment directly from articles
+            cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
+            cursor.execute("""
+                WITH ticker_data AS (
+                    SELECT 
+                        DATE(time_published) as date,
+                        jsonb_array_elements(ticker_sentiment) as ticker_info
+                    FROM articles
+                    WHERE time_published IS NOT NULL
+                        AND ticker_sentiment IS NOT NULL
+                        AND jsonb_array_length(ticker_sentiment) > 0
+                        AND DATE(time_published) >= %s
+                ),
+                ticker_scores AS (
+                    SELECT 
+                        date,
+                        ticker_info->>'ticker' as ticker,
+                        (ticker_info->>'ticker_sentiment_score')::numeric as sentiment_score,
+                        (ticker_info->>'relevance_score')::numeric as relevance_score
+                    FROM ticker_data
+                    WHERE ticker_info->>'ticker' IS NOT NULL
+                        AND ticker_info->>'ticker_sentiment_score' IS NOT NULL
+                        AND ticker_info->>'relevance_score' IS NOT NULL
+                        AND (ticker_info->>'ticker_sentiment_score')::numeric IS NOT NULL
+                        AND (ticker_info->>'relevance_score')::numeric IS NOT NULL
+                ),
+                daily_aggregations AS (
+                    SELECT 
+                        ticker,
+                        date,
+                        AVG(sentiment_score * relevance_score) as weighted_sentiment
+                    FROM ticker_scores
+                    WHERE sentiment_score IS NOT NULL 
+                        AND relevance_score IS NOT NULL
+                    GROUP BY ticker, date
+                )
+                SELECT ticker, date, weighted_sentiment
+                FROM daily_aggregations
+                WHERE weighted_sentiment IS NOT NULL
+                ORDER BY ticker, date
+            """, (cutoff_date,))
+            
+            # Build sentiment data dict
+            sentiment_data = {}
+            ticker_date_pairs = []
+            for row in cursor.fetchall():
+                ticker, date, sentiment = row
+                sentiment_data[(ticker, date)] = float(sentiment) if sentiment is not None else None
+                ticker_date_pairs.append((ticker, date))
+            
+            cursor.close()
+        
+        total = len(ticker_date_pairs)
+        decayed_sentiment_status['total'] = total
+        logger.info(f"Found {total} ticker/date pairs to process")
+        
+        if total == 0:
+            decayed_sentiment_status.update({
+                'running': False,
+                'message': 'No ticker/date pairs found to process',
+                'last_updated': datetime.now().isoformat()
+            })
+            return
+        
+        # Distribute work across 40 threads
+        num_workers = 40
+        chunk_size = (total + num_workers - 1) // num_workers
+        
+        threads = []
+        results_dict = {}
+        
+        for i in range(num_workers):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, total)
+            
+            if start_idx < end_idx:
+                chunk = ticker_date_pairs[start_idx:end_idx]
+                thread = threading.Thread(
+                    target=calculate_decayed_sentiment_worker,
+                    args=(i, chunk, sentiment_data, half_life_days, lookback_days, 
+                          results_dict, get_db_manager()),
+                    daemon=True
+                )
+                threads.append(thread)
+                thread.start()
+        
+        logger.info(f"Started {len(threads)} worker threads")
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # Aggregate results
+        total_processed = 0
+        total_success = 0
+        total_failed = 0
+        
+        for worker_id, result in results_dict.items():
+            total_processed += result['processed']
+            total_success += result['success']
+            total_failed += result['failed']
+        
+        decayed_sentiment_status.update({
+            'running': False,
+            'message': f'Completed: {total_success} successful, {total_failed} failed',
+            'processed': total_processed,
+            'success': total_success,
+            'failed': total_failed,
+            'last_updated': datetime.now().isoformat()
+        })
+        
+        logger.info(f"Decayed sentiment calculation completed: {total_success} successful, {total_failed} failed")
+        
+    except Exception as e:
+        logger.error(f"Error calculating decayed sentiment: {str(e)}", exc_info=True)
+        decayed_sentiment_status.update({
+            'running': False,
+            'message': f'Error: {str(e)}',
+            'last_updated': datetime.now().isoformat()
+        })
+
+
+@app.route('/api/analytics/calculate-decayed-sentiment', methods=['POST'])
+def calculate_decayed_sentiment():
+    """API endpoint to start calculating decayed sentiment."""
+    logger.info("API /api/analytics/calculate-decayed-sentiment called")
+    
+    global decayed_sentiment_status
+    
+    if decayed_sentiment_status['running']:
+        return jsonify({
+            'message': 'Calculation already in progress',
+            'status': decayed_sentiment_status
+        }), 400
+    
+    try:
+        data = request.get_json() or {}
+        half_life_days = int(data.get('half_life_days', 7))
+        lookback_days = int(data.get('lookback_days', 30))
+        days_back = int(data.get('days_back', 365))
+        
+        # Start calculation in background thread
+        thread = threading.Thread(
+            target=calculate_decayed_sentiment_thread,
+            args=(half_life_days, lookback_days, days_back),
+            daemon=True
+        )
+        thread.start()
+        
+        return jsonify({
+            'message': f'Decayed sentiment calculation started (half-life: {half_life_days} days)',
+            'status': decayed_sentiment_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting decayed sentiment calculation: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/analytics/decayed-sentiment-status', methods=['GET'])
+def get_decayed_sentiment_status():
+    """API endpoint to get current decayed sentiment calculation status."""
+    return jsonify(decayed_sentiment_status)
+
+
+@app.route('/api/analytics/update-sentiment-measures', methods=['POST'])
+def update_sentiment_measures():
+    """API endpoint to update both decayed and cross-diffused sentiment measures."""
+    logger.info("API /api/analytics/update-sentiment-measures called")
+    
+    global decayed_sentiment_status, cross_diffused_sentiment_status
+    
+    # Check if any calculation is already running
+    if decayed_sentiment_status['running'] or cross_diffused_sentiment_status['running']:
+        return jsonify({
+            'message': 'One or more calculations already in progress',
+            'decayed_status': decayed_sentiment_status,
+            'cross_diffused_status': cross_diffused_sentiment_status
+        }), 400
+    
+    try:
+        data = request.get_json() or {}
+        
+        # Parameters for decayed sentiment
+        half_life_days = int(data.get('half_life_days', 7))
+        lookback_days = int(data.get('lookback_days', 30))
+        days_back = int(data.get('days_back', 365))
+        
+        # Parameters for cross-diffused sentiment
+        model_name = data.get('model_name', 'text-embedding-3-small').strip()
+        correlation_threshold = float(data.get('correlation_threshold', 0.3))
+        time_decay_days = int(data.get('time_decay_days', 7))
+        
+        # Start both calculations in background threads
+        thread_decayed = threading.Thread(
+            target=calculate_decayed_sentiment_thread,
+            args=(half_life_days, lookback_days, days_back),
+            daemon=True
+        )
+        thread_decayed.start()
+        
+        thread_cross_diffused = threading.Thread(
+            target=calculate_cross_diffused_sentiment_thread,
+            args=(model_name, correlation_threshold, time_decay_days, days_back),
+            daemon=True
+        )
+        thread_cross_diffused.start()
+        
+        return jsonify({
+            'message': 'Both sentiment measures calculation started',
+            'decayed_status': decayed_sentiment_status,
+            'cross_diffused_status': cross_diffused_sentiment_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting sentiment measures calculation: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/analytics/sentiment-measures-status', methods=['GET'])
+def get_sentiment_measures_status():
+    """API endpoint to get status of both sentiment measures calculations."""
+    return jsonify({
+        'decayed': decayed_sentiment_status,
+        'cross_diffused': cross_diffused_sentiment_status
+    })
+
+
 @app.route('/api/companies/vectorized', methods=['GET'])
 def get_vectorized_companies():
     """API endpoint to fetch vectorized companies with filters."""
@@ -4287,14 +5213,19 @@ def get_vectorized_companies():
 
 
 if __name__ == '__main__':
-    # Ensure analytics view exists before starting the app
-    ensure_analytics_view_exists()
+    # Ensure all tables exist BEFORE creating views that depend on them
     # Ensure companies table exists
     ensure_companies_table_exists()
     # Ensure company embeddings table exists
     ensure_company_embeddings_table_exists()
     # Ensure correlation matrix table exists
     ensure_correlation_matrix_table_exists()
+    # Ensure cross-diffused sentiment table exists
+    ensure_cross_diffused_sentiment_table_exists()
+    # Ensure decayed sentiment table exists (must be created before view)
+    ensure_decayed_sentiment_table_exists()
+    # Ensure analytics view exists (depends on ticker_decayed_sentiment table)
+    ensure_analytics_view_exists()
     
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
