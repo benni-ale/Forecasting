@@ -114,7 +114,7 @@
                         <textarea class="form-control font-monospace query-editor" id="sql_query" name="sql_query" rows="12" 
                                   placeholder="SELECT * FROM articles LIMIT 10;">{{ query if query else '' }}</textarea>
                         <small class="form-text text-muted">
-                            SELECT queries: Results are limited to 1000 rows. DDL/DML queries: Will execute and commit changes.
+                            DDL/DML queries: Will execute and commit changes. Large result sets may take time to load.
                         </small>
                     </div>
                     <div class="d-flex gap-2">
@@ -166,8 +166,6 @@
                                         <td>
                                             {% if value is none %}
                                                 <span class="text-muted">NULL</span>
-                                            {% elif value is string and value|length > 100 %}
-                                                <span title="{{ value }}">{{ value[:100] }}...</span>
                                             {% elif value is sameas true %}
                                                 <span class="badge bg-success">True</span>
                                             {% elif value is sameas false %}

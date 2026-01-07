@@ -2298,7 +2298,7 @@ def get_batch_fetch_status():
 @app.route('/api/companies/get-tickers-from-articles')
 def get_tickers_from_articles():
     """API endpoint to get list of unique tickers from articles table."""
-    logger.info("API /api/companies/get-tickers-from-articles called")
+    logger.debug("API /api/companies/get-tickers-from-articles called")
     
     try:
         db_manager = get_db_manager()
@@ -2322,7 +2322,7 @@ def get_tickers_from_articles():
             
             all_tickers = [row[0] for row in cursor.fetchall() if row[0]]
             query_time = time.time() - start_time
-            logger.info(f"Found {len(all_tickers)} unique tickers from articles (query took {query_time:.2f}s)")
+            logger.debug(f"Found {len(all_tickers)} unique tickers from articles (query took {query_time:.2f}s)")
             
             logger.debug("Fetching existing companies from database...")
             start_time = time.time()
@@ -2339,10 +2339,10 @@ def get_tickers_from_articles():
             """)
             existing_tickers = {row[0] for row in cursor.fetchall()}
             existing_time = time.time() - start_time
-            logger.info(f"Found {len(existing_tickers)} companies with descriptions (query took {existing_time:.2f}s)")
+            logger.debug(f"Found {len(existing_tickers)} companies with descriptions (query took {existing_time:.2f}s)")
             
             missing_tickers = [t for t in all_tickers if t not in existing_tickers]
-            logger.info(f"Missing descriptions: {len(missing_tickers)} tickers")
+            logger.debug(f"Missing descriptions: {len(missing_tickers)} tickers")
             
             cursor.close()
             
@@ -2436,10 +2436,7 @@ def sql_query():
             if cursor.description:
                 # SELECT query - fetch results
                 columns = [desc[0] for desc in cursor.description]
-                results = cursor.fetchmany(1000)  # Limit to 1000 rows
-                
-                if cursor.fetchone() is not None:
-                    flash(f'Results limited to 1000 rows. Query may have more results.', 'warning')
+                results = cursor.fetchall()  # Fetch all results (no limit)
             else:
                 # DDL/DML query (CREATE, INSERT, UPDATE, DELETE, etc.)
                 db_manager.conn.commit()
@@ -3811,7 +3808,7 @@ def get_correlation_matrix_from_db(model_name):
 @app.route('/api/companies/vectorized', methods=['GET'])
 def get_vectorized_companies():
     """API endpoint to fetch vectorized companies with filters."""
-    logger.info("API /api/companies/vectorized called")
+    logger.debug("API /api/companies/vectorized called")
     
     try:
         db_manager = get_db_manager()
@@ -3949,10 +3946,8 @@ if __name__ == '__main__':
     ensure_company_embeddings_table_exists()
     # Ensure correlation matrix table exists
     ensure_correlation_matrix_table_exists()
-    # Ensure cross-diffused sentiment table exists
-    ensure_cross_diffused_sentiment_table_exists()
-    # Ensure decayed sentiment table exists (must be created before view)
-    ensure_decayed_sentiment_table_exists()
+    # Note: ticker_cross_diffused_sentiment and ticker_decayed_sentiment tables
+    # are not created automatically as they are not currently used in the application
     
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'

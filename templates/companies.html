@@ -345,16 +345,13 @@ function renderCompanies(companies) {
     
     companies.forEach(company => {
         const description = company.business_description || 'No description';
-        const descriptionPreview = description.length > 100 
-            ? description.substring(0, 100) + '...' 
-            : description;
         
         html += `<tr>
             <td><strong>${company.ticker}</strong></td>
             <td>${company.name || '-'}</td>
             <td>${company.sector || '-'}</td>
             <td>${company.industry || '-'}</td>
-            <td title="${description}">${descriptionPreview}</td>`;
+            <td>${description}</td>`;
         
         if (currentViewMode === 'vectorized') {
             html += `
@@ -427,6 +424,18 @@ async function fetchSingleCompany() {
 // Poll batch fetch status
 let batchStatusInterval = null;
 
+// Helper function to poll batch status and return status
+async function pollBatchStatusWithReturn() {
+    try {
+        const response = await fetch('/api/companies/batch-status');
+        const status = await response.json();
+        return status;
+    } catch (error) {
+        console.error('Error polling batch status:', error);
+        return null;
+    }
+}
+
 let companiesReloadCounter = 0;
 let isProcessingBatches = false; // Flag to track if we're in the middle of processing multiple batches
 
@@ -464,9 +473,9 @@ async function pollBatchStatus() {
                     `Current: ${status.current_ticker || 'Starting...'}`;
             }
             
-            // Reload companies list every 3 polls (about every 4.5 seconds) while running
+            // Reload companies list every 5 polls (about every 7.5 seconds) while running to reduce log spam
             companiesReloadCounter++;
-            if (companiesReloadCounter >= 3) {
+            if (companiesReloadCounter >= 5) {
                 await loadCompanies();
                 await updateTickerStats();
                 companiesReloadCounter = 0;
@@ -478,17 +487,20 @@ async function pollBatchStatus() {
                 batchStatusEl.className = 'text-muted';
                 batchProgressRow.style.display = 'none';
                 
-                // Final reload
+                // Final reload (stats updated less frequently to reduce log spam)
                 await loadCompanies();
-                await updateTickerStats();
             } else {
                 // Between batches - keep showing progress
                 batchStatusEl.textContent = 'Preparing Next Batch...';
                 batchStatusEl.className = 'text-info';
             }
         }
+        
+        // Return status for promise-based handling
+        return status;
     } catch (error) {
         console.error('Error polling batch status:', error);
+        return null;
     }
 }
 
@@ -639,8 +651,9 @@ async function fetchAllFromArticles() {
         
         // Final status check and refresh
         await pollBatchStatus();
-        await updateTickerStats();
         await loadCompanies();
+        // Update stats only once at the end to reduce log spam
+        await updateTickerStats();
         
         alert(`Batch fetch complete!\nSuccess: ${totalSuccess}\nFailed: ${totalFail}`);
         
@@ -730,6 +743,9 @@ async function pollVectorizationStatus() {
         const response = await fetch('/api/companies/vectorization-status');
         const status = await response.json();
         
+        // Return status for promise-based handling
+        const statusPromise = Promise.resolve(status);
+        
         const statusEl = document.getElementById('vectorizationStatus');
         const progressRow = document.getElementById('vectorizationProgressRow');
         const progressBar = document.getElementById('vectorizationProgressBar');
@@ -739,6 +755,11 @@ async function pollVectorizationStatus() {
         const tokensUsedEl = document.getElementById('tokensUsed');
         const estimatedCostEl = document.getElementById('estimatedCost');
         const currentModelEl = document.getElementById('currentModel');
+        
+        // Debug log
+        if (status.running === false && (status.processed > 0 || status.success > 0)) {
+            console.log('Vectorization completed:', status);
+        }
         
         if (status.running) {
             statusEl.textContent = 'Running';
@@ -773,16 +794,26 @@ async function pollVectorizationStatus() {
                 currentModelEl.textContent = status.model_name;
             }
         } else {
+            // Process completed or not running
             statusEl.textContent = status.message || 'Idle';
             statusEl.className = status.message && status.message.includes('Error') ? 'text-danger' : 'text-muted';
             
-            if (status.processed > 0) {
-                // Show final status briefly
+            // Check if process was completed (has processed items or success count)
+            const wasCompleted = (status.processed > 0 || status.success > 0) && !status.running;
+            
+            if (wasCompleted) {
+                // Show final status with completion info
                 progressRow.style.display = 'block';
-                progressBar.style.width = '100%';
-                progressText.textContent = '100%';
+                
+                // Calculate final progress percentage
+                const finalProgress = status.total > 0 
+                    ? Math.min(100, Math.round((status.processed / status.total) * 100))
+                    : (status.processed > 0 ? 100 : 0);
+                
+                progressBar.style.width = `${finalProgress}%`;
+                progressText.textContent = `${finalProgress}%`;
                 progressDetails.textContent = 
-                    `Completed: ${status.success} success, ${status.failed} failed`;
+                    `Completed: ${status.success || status.processed} success, ${status.failed || 0} failed`;
                 
                 // Show final cost
                 costRow.style.display = 'block';
@@ -796,29 +827,39 @@ async function pollVectorizationStatus() {
                     currentModelEl.textContent = status.model_name;
                 }
                 
+                // Reload companies if in vectorized view
+                if (currentViewMode === 'vectorized') {
+                    await loadCompanies();
+                }
+                
                 // Hide after 10 seconds (longer to see final cost)
                 setTimeout(() => {
                     progressRow.style.display = 'none';
                     costRow.style.display = 'none';
                 }, 10000);
-                
-                // Reload companies if in vectorized view
-                if (currentViewMode === 'vectorized') {
-                    await loadCompanies();
-                }
             } else {
+                // No process was running or completed
                 progressRow.style.display = 'none';
                 costRow.style.display = 'none';
             }
             
-            // Stop polling if not running
+            // Stop polling if not running, or reduce frequency
             if (vectorizationStatusInterval) {
                 clearInterval(vectorizationStatusInterval);
                 vectorizationStatusInterval = null;
+                
+                // If completed, poll less frequently to check for new jobs
+                if (wasCompleted) {
+                    vectorizationStatusInterval = setInterval(pollVectorizationStatus, 10000); // Poll every 10 seconds when idle
+                }
             }
         }
+        
+        // Return status for promise-based handling
+        return status;
     } catch (error) {
         console.error('Error polling vectorization status:', error);
+        return null;
     }
 }
 
@@ -1011,17 +1052,38 @@ let correlationChart = null;
 // Load on page load
 document.addEventListener('DOMContentLoaded', () => {
     loadCompanies();
+    // Update ticker stats only once on page load, not continuously
     updateTickerStats();
     
-    // Start polling batch status if running
+    // Start polling batch status - check if running first
     pollBatchStatus();
-    batchStatusInterval = setInterval(pollBatchStatus, 3000); // Poll every 3 seconds
+    // Only start interval if batch is running, otherwise poll less frequently
+    batchStatusInterval = setInterval(async () => {
+        const status = await pollBatchStatusWithReturn();
+        // If not running and no active processing, poll less frequently
+        if (!status || (!status.running && !isProcessingBatches)) {
+            if (batchStatusInterval) {
+                clearInterval(batchStatusInterval);
+                batchStatusInterval = setInterval(pollBatchStatus, 10000); // Poll every 10 seconds when idle
+            }
+        }
+    }, 3000); // Poll every 3 seconds initially
     
-    // Start polling vectorization status
-    pollVectorizationStatus();
-    if (!vectorizationStatusInterval) {
-        vectorizationStatusInterval = setInterval(pollVectorizationStatus, 3000); // Poll every 3 seconds
-    }
+    // Start polling vectorization status - check if running first
+    (async () => {
+        const status = await pollVectorizationStatus();
+        // Only start interval if vectorization is running
+        if (status && status.running) {
+            if (!vectorizationStatusInterval) {
+                vectorizationStatusInterval = setInterval(pollVectorizationStatus, 3000); // Poll every 3 seconds
+            }
+        } else {
+            // Poll less frequently when idle
+            if (!vectorizationStatusInterval) {
+                vectorizationStatusInterval = setInterval(pollVectorizationStatus, 10000); // Poll every 10 seconds when idle
+            }
+        }
+    })();
 });
 </script>
 {% endblock %}
