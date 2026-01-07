@@ -1283,12 +1283,6 @@ def api_articles():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/docs')
-def docs():
-    """Documentation page explaining the weighted sentiment diffused calculation."""
-    return render_template('docs.html')
-
-
 def get_alpha_vantage_company_overview(ticker, api_key):
     """
     Fetch company overview from Alpha Vantage API.
