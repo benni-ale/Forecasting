@@ -277,65 +277,7 @@ diffused_sentiment AS (
                 </div>
 
                 <div class="section">
-                    <h4 class="subsection">4. Normalizzazione</h4>
-                    <p>
-                        Nella pagina Analytics, quando confrontiamo il sentiment con il prezzo delle azioni, normalizziamo 
-                        entrambe le serie usando la <strong>normalizzazione Min-Max</strong>:
-                    </p>
-                    <div class="math-formula">
-                        <div id="normalization-formula"></div>
-                    </div>
-                    <p>
-                        Questo porta entrambe le serie nel range [0, 1], permettendo un confronto visivo diretto anche se 
-                        hanno scale completamente diverse (prezzo in dollari vs sentiment in range 0-1).
-                    </p>
-                </div>
-
-                <div class="section">
-                    <h4 class="subsection">5. Esempio Pratico</h4>
-                    <p>
-                        Supponiamo di avere un articolo il 2025-12-19 con <code>weighted_sentiment = 0.0054</code>:
-                    </p>
-                    <ul>
-                        <li><strong>2025-12-19:</strong> <code>0.0054 × 0.5<sup>0/7</sup> = 0.0054 × 1.0 = 0.0054</code></li>
-                        <li><strong>2025-12-20:</strong> <code>0.0054 × 0.5<sup>1/7</sup> ≈ 0.0054 × 0.906 ≈ 0.0049</code></li>
-                        <li><strong>2025-12-21:</strong> <code>0.0054 × 0.5<sup>2/7</sup> ≈ 0.0054 × 0.821 ≈ 0.0044</code></li>
-                        <li><strong>2025-12-26:</strong> <code>0.0054 × 0.5<sup>7/7</sup> = 0.0054 × 0.5 = 0.0027</code> (metà dopo 7 giorni)</li>
-                        <li><strong>2026-01-02:</strong> <code>0.0054 × 0.5<sup>14/7</sup> = 0.0054 × 0.25 = 0.00135</code> (un quarto dopo 14 giorni)</li>
-                    </ul>
-                    <p>
-                        Se ci sono più articoli, i loro contributi vengono sommati. Ad esempio, se il 2025-12-20 c'è un 
-                        nuovo articolo con <code>weighted_sentiment = 0.003</code>, il sentiment diffused per quel giorno sarà:
-                    </p>
-                    <ul>
-                        <li>Contributo del 2025-12-19: <code>0.0054 × 0.5<sup>1/7</sup> ≈ 0.0049</code></li>
-                        <li>Contributo del 2025-12-20: <code>0.003 × 0.5<sup>0/7</sup> = 0.003</code></li>
-                        <li><strong>Totale:</strong> <code>0.0049 + 0.003 = 0.0079</code></li>
-                    </ul>
-                </div>
-
-                <div class="section">
-                    <h4 class="subsection">6. Query Utilizzate nell'Applicazione</h4>
-                    
-                    <h5>6.1. Query per ottenere i dati aggregati</h5>
-                    <div class="code-block">
-SELECT 
-    ticker,
-    date,
-    weighted_sentiment,
-    weighted_sentiment_diffused,
-    article_count
-FROM ticker_daily_sentiment_view
-WHERE ticker = 'AAPL'
-    AND date >= CURRENT_DATE - INTERVAL '30 days'
-ORDER BY date ASC
-                    </div>
-                    <p>
-                        Questa query viene eseguita quando l'utente seleziona un ticker nella pagina Analytics. 
-                        La vista è già pre-calcolata, quindi la query è veloce anche con molti dati.
-                    </p>
-
-                    <h5>6.2. Query per il confronto con il prezzo</h5>
+                    <h4 class="subsection">4. Esempio Pratico</h4>
                     <p>
                         Per confrontare il sentiment con il prezzo delle azioni, l'applicazione:
                     </p>
