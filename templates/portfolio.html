@@ -376,7 +376,33 @@
                             }
                         }
                     } else if (historyData.dates && historyData.closes && historyData.dates.length > 0) {
-                        renderChart(`chart-${i}`, data.symbol, historyData.dates, historyData.closes, historyData.granularity, historyData.interval);
+                        // For intraday data, check if we can add today's current price from quote
+                        let chartDates = [...historyData.dates];
+                        let chartCloses = [...historyData.closes];
+                        
+                        if (granularity === 'intraday' && data.price && data.latest_trading_day) {
+                            // Get the last timestamp from history to check format
+                            const lastHistoryTimestamp = historyData.dates[historyData.dates.length - 1];
+                            
+                            // Parse dates - Alpha Vantage intraday format is "YYYY-MM-DD HH:MM:SS"
+                            const latestHistoryDate = new Date(lastHistoryTimestamp.replace(' ', 'T'));
+                            const latestTradingDate = new Date(data.latest_trading_day + 'T00:00:00');
+                            
+                            // Extract just the date part (YYYY-MM-DD) from last history timestamp
+                            const lastHistoryDateStr = lastHistoryTimestamp.split(' ')[0];
+                            
+                            // If latest trading day is more recent than last history date, add current price
+                            if (data.latest_trading_day > lastHistoryDateStr) {
+                                // Format timestamp to match Alpha Vantage format: "YYYY-MM-DD HH:MM:SS"
+                                const now = new Date();
+                                const todayStr = now.toISOString().slice(0, 10) + ' ' + now.toTimeString().slice(0, 8); // Format: YYYY-MM-DD HH:MM:SS
+                                chartDates.push(todayStr);
+                                chartCloses.push(parseFloat(data.price));
+                                console.log(`Added current price ${data.price} for ${ticker} on ${todayStr}`);
+                            }
+                        }
+                        
+                        renderChart(`chart-${i}`, data.symbol, chartDates, chartCloses, historyData.granularity, historyData.interval);
                     } else {
                         console.warn(`No data available for ${ticker}`);
                         const chartRow = document.getElementById(`chart-row-${i}`);

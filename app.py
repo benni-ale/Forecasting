@@ -928,7 +928,7 @@ def get_stock_history(ticker):
                 "function": "TIME_SERIES_DAILY_ADJUSTED",
                 "symbol": ticker.upper(),
                 "apikey": api_key,
-                "outputsize": "compact"  # Returns last 100 data points
+                "outputsize": "full"  # Returns all available data (up to 20 years)
             }
         
         response = requests.get(url, params=params, timeout=30)
@@ -969,12 +969,20 @@ def get_stock_history(ticker):
                 '60min': 500
             }.get(interval, 500)
             
-            timestamps = sorted(time_series.keys(), reverse=True)[:max_points]
+            # Get all timestamps sorted (most recent first)
+            all_timestamps = sorted(time_series.keys(), reverse=True)
+            logger.debug(f"Available timestamps for {ticker}: first={all_timestamps[0] if all_timestamps else 'none'}, last={all_timestamps[-1] if all_timestamps else 'none'}, total={len(all_timestamps)}")
+            
+            # Take the most recent data points
+            timestamps = all_timestamps[:max_points]
             timestamps.reverse()  # Oldest first for chart
             
             if not timestamps:
                 logger.warning(f"No intraday timestamps found for {ticker}")
                 return jsonify({'error': 'No intraday data available for this ticker'}), 404
+            
+            # Log the date range
+            logger.info(f"Returning {len(timestamps)} intraday data points for {ticker} with interval {interval}, from {timestamps[0]} to {timestamps[-1]}")
             
             history = {
                 'dates': timestamps,
@@ -982,14 +990,21 @@ def get_stock_history(ticker):
                 'granularity': 'intraday',
                 'interval': interval
             }
-            logger.info(f"Returning {len(timestamps)} intraday data points for {ticker} with interval {interval}")
             return jsonify(history)
         
         # Handle daily data
         if "Time Series (Daily)" in data:
             time_series = data["Time Series (Daily)"]
-            dates = sorted(time_series.keys(), reverse=True)[:90]
-            dates.reverse()
+            # Get all dates sorted (most recent first)
+            all_dates = sorted(time_series.keys(), reverse=True)
+            logger.debug(f"Available daily dates for {ticker}: first={all_dates[0] if all_dates else 'none'}, last={all_dates[-1] if all_dates else 'none'}, total={len(all_dates)}")
+            
+            # Take the most recent 90 days
+            dates = all_dates[:90]
+            dates.reverse()  # Oldest first for chart
+            
+            # Log the date range
+            logger.info(f"Returning {len(dates)} daily data points for {ticker}, from {dates[0] if dates else 'none'} to {dates[-1] if dates else 'none'}")
             
             history = {
                 'dates': dates,
