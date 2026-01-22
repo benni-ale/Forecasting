@@ -74,6 +74,17 @@ batch_fetch_status = {
     'last_updated': None
 }
 
+# Flag to stop batch fetch process
+batch_fetch_stop_requested = False
+
+# Separate log for batch fetch process (visible in GUI)
+batch_fetch_logs = []
+MAX_BATCH_LOG_ENTRIES = 1000  # Keep last 1000 log entries
+
+# Separate log for batch fetch process (visible in GUI)
+batch_fetch_logs = []
+MAX_BATCH_LOG_ENTRIES = 1000  # Keep last 1000 log entries
+
 deep_ingestion_status = {
     'running': False,
     'message': 'Idle',
@@ -108,6 +119,21 @@ def get_db_manager():
         user=os.getenv("DB_USER", "newsuser"),
         password=os.getenv("DB_PASSWORD", "newspass")
     )
+
+
+def add_batch_log(level, message):
+    """Add a log entry to the batch fetch log (separate from main logging)."""
+    global batch_fetch_logs
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_entry = {
+        'timestamp': timestamp,
+        'level': level,
+        'message': message
+    }
+    batch_fetch_logs.append(log_entry)
+    # Keep only last MAX_BATCH_LOG_ENTRIES entries
+    if len(batch_fetch_logs) > MAX_BATCH_LOG_ENTRIES:
+        batch_fetch_logs = batch_fetch_logs[-MAX_BATCH_LOG_ENTRIES:]
 
 
 @app.route('/')
@@ -874,7 +900,7 @@ def get_stock_quote(ticker):
 
 @app.route('/api/portfolio/history/<ticker>')
 def get_stock_history(ticker):
-    """Get stock price history (last year) from Alpha Vantage API."""
+    """Get stock price history (daily) from Alpha Vantage API."""
     api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:
         return jsonify({'error': 'API key not configured'}), 500
@@ -883,9 +909,10 @@ def get_stock_history(ticker):
         import requests
         url = "https://www.alphavantage.co/query"
         params = {
-            "function": "TIME_SERIES_MONTHLY",
+            "function": "TIME_SERIES_DAILY_ADJUSTED",
             "symbol": ticker.upper(),
-            "apikey": api_key
+            "apikey": api_key,
+            "outputsize": "compact"  # Returns last 100 data points
         }
         
         response = requests.get(url, params=params, timeout=30)
@@ -900,15 +927,15 @@ def get_stock_history(ticker):
             logger.warning(f"Alpha Vantage API Note: {data['Note']}")
             return jsonify({'error': data['Note']}), 400
         
-        if "Monthly Time Series" in data:
-            time_series = data["Monthly Time Series"]
-            # Get last 12 months
-            dates = sorted(time_series.keys(), reverse=True)[:12]
+        if "Time Series (Daily)" in data:
+            time_series = data["Time Series (Daily)"]
+            # Get last 90 days (or all available if less)
+            dates = sorted(time_series.keys(), reverse=True)[:90]
             dates.reverse()  # Oldest first for chart
             
             history = {
                 'dates': dates,
-                'closes': [float(time_series[date]['4. close']) for date in dates]
+                'closes': [float(time_series[date]['5. adjusted close']) for date in dates]
             }
             return jsonify(history)
         else:
@@ -1294,7 +1321,7 @@ def get_alpha_vantage_company_overview(ticker, api_key):
     Returns:
         dict with company data or None if error
     """
-    logger.info(f"Fetching Alpha Vantage OVERVIEW for ticker: {ticker}")
+    # Log moved to batch log system
     
     if not api_key:
         logger.error(f"No Alpha Vantage API key provided for ticker {ticker}")
@@ -1310,7 +1337,8 @@ def get_alpha_vantage_company_overview(ticker, api_key):
         
         logger.debug(f"Alpha Vantage API Request - URL: {url}, Function: OVERVIEW, Symbol: {ticker}")
         
-        response = requests.get(url, params=params, timeout=10)
+        # Use shorter timeout to make stop more responsive
+        response = requests.get(url, params=params, timeout=5)
         
         logger.debug(f"Alpha Vantage API Response - Status: {response.status_code}")
         
@@ -1329,10 +1357,11 @@ def get_alpha_vantage_company_overview(ticker, api_key):
         
         # Check if we got valid data
         if not data or 'Symbol' not in data:
-            logger.warning(f"Alpha Vantage returned empty or invalid data for {ticker}")
+            # Don't spam main log - this is expected for many tickers
+            logger.debug(f"Alpha Vantage returned empty or invalid data for {ticker}")
             return None
         
-        logger.info(f"Alpha Vantage returned data for {ticker}")
+        logger.debug(f"Alpha Vantage returned data for {ticker}")
         logger.debug(f"Alpha Vantage data keys: {list(data.keys())}")
         
         # Map Alpha Vantage fields to our database schema
@@ -1405,7 +1434,7 @@ def get_fmp_company_profile(ticker, api_key):
     Returns:
         dict with company data or None if error
     """
-    logger.info(f"Fetching FMP profile for ticker: {ticker}")
+    logger.debug(f"Fetching FMP profile for ticker: {ticker}")
     
     if not api_key:
         logger.error(f"No FMP API key provided for ticker {ticker}")
@@ -1426,7 +1455,8 @@ def get_fmp_company_profile(ticker, api_key):
             logger.debug(f"FMP API Request - URL: {url}, Params: apikey={'*' * (len(api_key) - 4) + api_key[-4:]}")
             
             try:
-                response = requests.get(url, params=params, timeout=10)
+                # Use shorter timeout to make stop more responsive
+                response = requests.get(url, params=params, timeout=5)
                 
                 logger.debug(f"FMP API Response - Status: {response.status_code}, Headers: {dict(response.headers)}")
                 
@@ -1477,7 +1507,7 @@ def get_fmp_company_profile(ticker, api_key):
         logger.error(f"Timeout fetching FMP profile for {ticker}: {str(e)}")
         return None
     except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP error fetching FMP profile for {ticker}: Status {response.status_code}, Response: {response.text[:500]}")
+        logger.debug(f"HTTP error fetching FMP profile for {ticker}: Status {response.status_code}, Response: {response.text[:500]}")
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Request exception fetching FMP profile for {ticker}: {str(e)}", exc_info=True)
@@ -1558,7 +1588,7 @@ def save_company_error(ticker, error_message):
                 """, (ticker, ticker, error_message[:500]))
             
             db_manager.conn.commit()
-            logger.info(f"Saved error for ticker {ticker}: {error_message[:100]}")
+            logger.debug(f"Saved error for ticker {ticker}: {error_message[:100]}")
             cursor.close()
             return True
             
@@ -1578,7 +1608,7 @@ def save_company_to_db(ticker, company_data):
     Returns:
         bool: True if successful, False otherwise
     """
-    logger.info(f"Saving company {ticker} to database")
+    # Log moved to batch log system
     logger.debug(f"Company data keys: {list(company_data.keys()) if isinstance(company_data, dict) else 'N/A'}")
     
     db_manager = get_db_manager()
@@ -1643,7 +1673,7 @@ def save_company_to_db(ticker, company_data):
             ))
             
             db_manager.conn.commit()
-            logger.info(f"Successfully saved company {ticker} to database")
+            # Log moved to batch log system
             cursor.close()
             return True
             
@@ -1850,71 +1880,83 @@ def fetch_company_from_fmp():
         return jsonify({'error': str(e)}), 500
 
 
-def process_batch_fetch_thread(tickers, av_api_key, fmp_api_key):
+def process_batch_fetch_thread(tickers, av_api_key, fmp_api_key, total_tickers=None):
     """Process batch fetch in background thread."""
-    global batch_fetch_status
+    global batch_fetch_status, batch_fetch_logs, batch_fetch_stop_requested
+    
+    # Reset stop flag
+    batch_fetch_stop_requested = False
+    
+    # Clear previous logs and initialize
+    batch_fetch_logs = []
+    add_batch_log('INFO', f"Starting batch fetch for {len(tickers)} tickers (Alpha Vantage: {'Yes' if av_api_key else 'No'}, FMP: {'Yes' if fmp_api_key else 'No'})")
     
     # Initialize status
     batch_fetch_status['running'] = True
     batch_fetch_status['started_at'] = datetime.now().isoformat()
-    batch_fetch_status['total'] = len(tickers)
-    batch_fetch_status['processed'] = 0
-    batch_fetch_status['success'] = 0
-    batch_fetch_status['failed'] = 0
+    # Use total_tickers if provided, otherwise keep existing total or use len(tickers)
+    is_new_session = False
+    if total_tickers is not None:
+        # If total changed or was reset, it's a new session
+        if batch_fetch_status.get('total', 0) != total_tickers:
+            is_new_session = True
+        batch_fetch_status['total'] = total_tickers
+    elif batch_fetch_status.get('total', 0) == 0:
+        batch_fetch_status['total'] = len(tickers)
+        is_new_session = True
+    
+    # Only reset counters if this is a new session (total was just set/changed)
+    if is_new_session:
+        batch_fetch_status['processed'] = 0
+        batch_fetch_status['success'] = 0
+        batch_fetch_status['failed'] = 0
+    # Otherwise, keep existing cumulative values
     batch_fetch_status['current_ticker'] = None
-    batch_fetch_status['message'] = f'Starting batch fetch for {len(tickers)} tickers...'
+    batch_fetch_status['message'] = f'Starting batch fetch for {len(tickers)} tickers (total: {batch_fetch_status["total"]})...'
     
     logger.info(f"Starting batch fetch for {len(tickers)} tickers (Alpha Vantage: {'Yes' if av_api_key else 'No'}, FMP: {'Yes' if fmp_api_key else 'No'})")
+    # Log progress every N tickers to reduce spam
+    progress_log_interval = max(10, len(tickers) // 20)  # Log every 5% or every 10 tickers, whichever is larger
     
     start_time = time.time()
     
     try:
         for idx, ticker in enumerate(tickers, 1):
+            # Check if stop was requested
+            if batch_fetch_stop_requested:
+                add_batch_log('WARNING', 'Stop requested by user. Stopping batch fetch...')
+                batch_fetch_status['message'] = 'Stopped by user'
+                break
+            
             ticker = ticker.strip().upper()
             if not ticker:
                 logger.debug(f"Skipping empty ticker at index {idx}")
                 continue
             
-            # Update status
+            # Update status - processed is cumulative across batches
             batch_fetch_status['current_ticker'] = ticker
-            batch_fetch_status['processed'] = idx
+            # Processed is updated based on success + failed counts, not idx
             batch_fetch_status['message'] = f'Processing {idx}/{len(tickers)}: {ticker}'
             batch_fetch_status['last_updated'] = datetime.now().isoformat()
             
-            logger.info(f"Processing ticker {idx}/{len(tickers)}: {ticker}")
+            # Log progress periodically to batch log
+            if idx % progress_log_interval == 0 or idx == 1 or idx == len(tickers):
+                add_batch_log('INFO', f"Batch progress: {idx}/{len(tickers)} tickers processed ({batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed)")
+            
+            add_batch_log('DEBUG', f"Processing ticker {idx}/{len(tickers)}: {ticker}")
             
             try:
-                # Check if already exists in database and was updated today (skip API calls if present and fresh)
-                if company_exists_in_db(ticker):
-                    logger.info(f"Ticker {ticker} already exists in database and was updated today or had error today, skipping")
-                    batch_fetch_status['success'] += 1  # Count as success since it's already there and fresh
-                    batch_fetch_status['processed'] = idx
-                    continue
-                else:
-                    # Check if exists but needs update (last_updated before today)
-                    db_manager_check = get_db_manager()
-                    try:
-                        with db_manager_check:
-                            if db_manager_check.conn:
-                                cursor_check = db_manager_check.conn.cursor()
-                                cursor_check.execute("SELECT last_updated, last_error_date FROM companies WHERE ticker = %s", (ticker,))
-                                result = cursor_check.fetchone()
-                                cursor_check.close()
-                                if result:
-                                    last_updated, last_error_date = result
-                                    if last_error_date and last_error_date.date() == datetime.now().date():
-                                        logger.info(f"Ticker {ticker} had error today, skipping")
-                                        batch_fetch_status['success'] += 1
-                                        continue
-                                    elif last_updated:
-                                        logger.info(f"Ticker {ticker} exists but last updated on {last_updated}, will reprocess")
-                    except Exception:
-                        pass  # Ignore errors in check, just proceed with processing
-                
+                # Always reprocess to update the date
                 ticker_start = time.time()
                 company_data = None
                 source = None
                 error_message = None
+                
+                # Check stop flag before API calls
+                if batch_fetch_stop_requested:
+                    add_batch_log('WARNING', 'Stop requested by user. Stopping batch fetch...')
+                    batch_fetch_status['message'] = 'Stopped by user'
+                    break
                 
                 # Try Alpha Vantage first
                 if av_api_key:
@@ -1924,7 +1966,13 @@ def process_batch_fetch_thread(tickers, av_api_key, fmp_api_key):
                             source = 'Alpha Vantage'
                     except Exception as e:
                         error_message = f"Alpha Vantage error: {str(e)}"
-                        logger.warning(f"{error_message}")
+                        add_batch_log('WARNING', f"{error_message}")
+                
+                # Check stop flag after Alpha Vantage call
+                if batch_fetch_stop_requested:
+                    add_batch_log('WARNING', 'Stop requested by user. Stopping batch fetch...')
+                    batch_fetch_status['message'] = 'Stopped by user'
+                    break
                 
                 # Fallback to FMP
                 if not company_data and fmp_api_key:
@@ -1937,31 +1985,40 @@ def process_batch_fetch_thread(tickers, av_api_key, fmp_api_key):
                             error_message = f"FMP error: {str(e)}"
                         else:
                             error_message += f"; FMP error: {str(e)}"
-                        logger.warning(f"FMP error for {ticker}: {str(e)}")
+                        add_batch_log('WARNING', f"FMP error for {ticker}: {str(e)}")
+                
+                # Check stop flag after FMP call
+                if batch_fetch_stop_requested:
+                    add_batch_log('WARNING', 'Stop requested by user. Stopping batch fetch...')
+                    batch_fetch_status['message'] = 'Stopped by user'
+                    break
                 
                 fetch_time = time.time() - ticker_start
                 
                 if company_data:
-                    logger.debug(f"API returned data for {ticker} in {fetch_time:.2f}s")
+                    add_batch_log('DEBUG', f"API returned data for {ticker} in {fetch_time:.2f}s")
                     save_start = time.time()
                     success = save_company_to_db(ticker, company_data)
                     save_time = time.time() - save_start
                     
                     if success:
-                        logger.info(f"Successfully processed {ticker} from {source} (fetch: {fetch_time:.2f}s, save: {save_time:.2f}s)")
+                        add_batch_log('DEBUG', f"Successfully processed {ticker} from {source} (fetch: {fetch_time:.2f}s, save: {save_time:.2f}s)")
                         batch_fetch_status['success'] += 1
                     else:
                         error_msg = f"Database save failed for {ticker}"
-                        logger.error(error_msg)
+                        add_batch_log('ERROR', error_msg)
                         save_company_error(ticker, error_msg)
                         batch_fetch_status['failed'] += 1
                 else:
                     # No data from either API - save error
                     if not error_message:
                         error_message = f"No data returned from Alpha Vantage or FMP for {ticker}"
-                    logger.warning(error_message)
+                    add_batch_log('WARNING', error_message)
                     save_company_error(ticker, error_message)
                     batch_fetch_status['failed'] += 1
+                
+                # Update processed as sum of success + failed (cumulative)
+                batch_fetch_status['processed'] = batch_fetch_status['success'] + batch_fetch_status['failed']
                     
                 # Rate limiting - wait a bit between requests
                 if idx < len(tickers):  # Don't wait after last ticker
@@ -1970,29 +2027,41 @@ def process_batch_fetch_thread(tickers, av_api_key, fmp_api_key):
                 
             except Exception as e:
                 error_msg = f"Unexpected error processing {ticker}: {str(e)}"
-                logger.error(f"{error_msg}", exc_info=True)
+                add_batch_log('ERROR', error_msg)
                 save_company_error(ticker, error_msg)
                 batch_fetch_status['failed'] += 1
         
         total_time = time.time() - start_time
-        batch_fetch_status['message'] = f'Completed: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
-        batch_fetch_status['current_ticker'] = None
-        logger.info(f"Batch fetch completed: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed, "
-                   f"total time: {total_time:.2f}s, avg: {total_time/len(tickers):.2f}s per ticker")
+        if batch_fetch_stop_requested:
+            batch_fetch_status['message'] = f'Stopped: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+            add_batch_log('WARNING', f"Batch fetch stopped by user: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed, "
+                       f"total time: {total_time:.2f}s")
+        else:
+            batch_fetch_status['message'] = f'Completed: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+            add_batch_log('INFO', f"Batch fetch completed: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed, "
+                       f"total time: {total_time:.2f}s, avg: {total_time/len(tickers):.2f}s per ticker")
     
     finally:
         batch_fetch_status['running'] = False
         batch_fetch_status['last_updated'] = datetime.now().isoformat()
+        batch_fetch_stop_requested = False
+        # Don't reset processed, success, failed - they should be cumulative across batches
 
 
 def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, results_dict):
     """Worker thread to process a batch of tickers."""
-    logger.info(f"Worker {worker_id} starting: processing {len(tickers)} tickers")
+    global batch_fetch_stop_requested
+    add_batch_log('INFO', f"Worker {worker_id} starting: processing {len(tickers)} tickers")
     
     success_count = 0
     fail_count = 0
     
     for idx, ticker in enumerate(tickers, 1):
+        # Check if stop was requested
+        if batch_fetch_stop_requested:
+            add_batch_log('WARNING', f'Worker {worker_id}: Stop requested by user. Stopping...')
+            break
+        
         ticker = ticker.strip().upper()
         if not ticker:
             continue
@@ -2001,39 +2070,19 @@ def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, r
         batch_fetch_status['current_ticker'] = ticker
         batch_fetch_status['last_updated'] = datetime.now().isoformat()
         
-        logger.info(f"Worker {worker_id}: Processing ticker {idx}/{len(tickers)}: {ticker}")
+        add_batch_log('DEBUG', f"Worker {worker_id}: Processing ticker {idx}/{len(tickers)}: {ticker}")
         
         try:
-            # Check if already exists in database and was updated today (skip API calls if present and fresh)
-            if company_exists_in_db(ticker):
-                logger.info(f"Worker {worker_id}: Ticker {ticker} already exists in database and was updated today or had error today, skipping")
-                success_count += 1  # Count as success since it's already there and fresh
-                continue
-            else:
-                # Check if exists but needs update (last_updated before today)
-                db_manager_check = get_db_manager()
-                try:
-                    with db_manager_check:
-                        if db_manager_check.conn:
-                            cursor_check = db_manager_check.conn.cursor()
-                            cursor_check.execute("SELECT last_updated, last_error_date FROM companies WHERE ticker = %s", (ticker,))
-                            result = cursor_check.fetchone()
-                            cursor_check.close()
-                            if result:
-                                last_updated, last_error_date = result
-                                if last_error_date and last_error_date.date() == datetime.now().date():
-                                    logger.info(f"Worker {worker_id}: Ticker {ticker} had error today, skipping")
-                                    success_count += 1
-                                    continue
-                                elif last_updated:
-                                    logger.info(f"Worker {worker_id}: Ticker {ticker} exists but last updated on {last_updated}, will reprocess")
-                except Exception:
-                    pass  # Ignore errors in check, just proceed with processing
-            
+            # Always reprocess to update the date
             ticker_start = time.time()
             company_data = None
             source = None
             error_message = None
+            
+            # Check stop flag before API calls
+            if batch_fetch_stop_requested:
+                add_batch_log('WARNING', f'Worker {worker_id}: Stop requested by user. Stopping...')
+                break
             
             # Try Alpha Vantage first
             if av_api_key:
@@ -2043,7 +2092,12 @@ def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, r
                         source = 'Alpha Vantage'
                 except Exception as e:
                     error_message = f"Alpha Vantage error: {str(e)}"
-                    logger.warning(f"Worker {worker_id}: {error_message}")
+                    add_batch_log('WARNING', f"Worker {worker_id}: {error_message}")
+            
+            # Check stop flag after Alpha Vantage call
+            if batch_fetch_stop_requested:
+                add_batch_log('WARNING', f'Worker {worker_id}: Stop requested by user. Stopping...')
+                break
             
             # Fallback to FMP
             if not company_data and fmp_api_key:
@@ -2056,7 +2110,12 @@ def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, r
                         error_message = f"FMP error: {str(e)}"
                     else:
                         error_message += f"; FMP error: {str(e)}"
-                    logger.warning(f"Worker {worker_id}: FMP error for {ticker}: {str(e)}")
+                    add_batch_log('WARNING', f"Worker {worker_id}: FMP error for {ticker}: {str(e)}")
+            
+            # Check stop flag after FMP call
+            if batch_fetch_stop_requested:
+                add_batch_log('WARNING', f'Worker {worker_id}: Stop requested by user. Stopping...')
+                break
             
             fetch_time = time.time() - ticker_start
             
@@ -2066,18 +2125,18 @@ def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, r
                 save_time = time.time() - save_start
                 
                 if success:
-                    logger.info(f"Worker {worker_id}: Successfully processed {ticker} from {source} (fetch: {fetch_time:.2f}s, save: {save_time:.2f}s)")
+                    add_batch_log('DEBUG', f"Worker {worker_id}: Successfully processed {ticker} from {source} (fetch: {fetch_time:.2f}s, save: {save_time:.2f}s)")
                     success_count += 1
                 else:
                     error_msg = f"Database save failed for {ticker}"
-                    logger.error(f"Worker {worker_id}: {error_msg}")
+                    add_batch_log('ERROR', f"Worker {worker_id}: {error_msg}")
                     save_company_error(ticker, error_msg)
                     fail_count += 1
             else:
                 # No data from either API - save error
                 if not error_message:
                     error_message = f"No data returned from Alpha Vantage or FMP for {ticker}"
-                logger.warning(f"Worker {worker_id}: {error_message}")
+                add_batch_log('WARNING', f"Worker {worker_id}: {error_message}")
                 save_company_error(ticker, error_message)
                 fail_count += 1
             
@@ -2087,27 +2146,43 @@ def worker_thread_process_tickers(worker_id, tickers, av_api_key, fmp_api_key, r
         
         except Exception as e:
             error_msg = f"Unexpected error processing {ticker}: {str(e)}"
-            logger.error(f"Worker {worker_id}: {error_msg}", exc_info=True)
+            add_batch_log('ERROR', f"Worker {worker_id}: {error_msg}")
             save_company_error(ticker, error_msg)
             fail_count += 1
     
     # Store results
     results_dict[worker_id] = {'success': success_count, 'failed': fail_count}
-    logger.info(f"Worker {worker_id} completed: {success_count} success, {fail_count} failed")
+    add_batch_log('INFO', f"Worker {worker_id} completed: {success_count} success, {fail_count} failed")
 
 
 def start_distributed_company_fetch(tickers, total_tickers=None):
     """Start distributed company fetch across multiple Python threads."""
-    global batch_fetch_status
+    global batch_fetch_status, batch_fetch_logs
+    
+    # Clear previous logs and initialize
+    batch_fetch_logs = []
+    add_batch_log('INFO', f'Starting distributed fetch for {len(tickers)} tickers (total: {total_tickers if total_tickers is not None else len(tickers)})...')
     
     # Initialize status
     batch_fetch_status['running'] = True
     batch_fetch_status['started_at'] = datetime.now().isoformat()
-    # Use total_tickers if provided (for cumulative progress), otherwise use len(tickers)
-    batch_fetch_status['total'] = total_tickers if total_tickers is not None else len(tickers)
-    batch_fetch_status['processed'] = 0
-    batch_fetch_status['success'] = 0
-    batch_fetch_status['failed'] = 0
+    # Use total_tickers if provided (for cumulative progress), otherwise keep existing total or use len(tickers)
+    is_new_session = False
+    if total_tickers is not None:
+        # If total changed or was reset, it's a new session
+        if batch_fetch_status.get('total', 0) != total_tickers:
+            is_new_session = True
+        batch_fetch_status['total'] = total_tickers
+    elif batch_fetch_status.get('total', 0) == 0:
+        batch_fetch_status['total'] = len(tickers)
+        is_new_session = True
+    
+    # Only reset counters if this is a new session (total was just set/changed)
+    if is_new_session:
+        batch_fetch_status['processed'] = 0
+        batch_fetch_status['success'] = 0
+        batch_fetch_status['failed'] = 0
+    # Otherwise, keep existing cumulative values
     batch_fetch_status['current_ticker'] = None
     batch_fetch_status['message'] = f'Starting distributed fetch for {len(tickers)} tickers (total: {batch_fetch_status["total"]})...'
     
@@ -2115,8 +2190,8 @@ def start_distributed_company_fetch(tickers, total_tickers=None):
     av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
     fmp_api_key = os.getenv('FMP_API_KEY', '')
     
-    # Split tickers across 20 worker threads
-    num_workers = 20
+    # Split tickers across 40 worker threads
+    num_workers = 40
     tickers_per_worker = len(tickers) // num_workers
     remainder = len(tickers) % num_workers
     
@@ -2132,15 +2207,16 @@ def start_distributed_company_fetch(tickers, total_tickers=None):
         if worker_tickers:
             worker_tasks.append((worker_num, worker_tickers))
     
-    logger.info(f"Distributing {len(tickers)} tickers across {len(worker_tasks)} worker threads")
+    add_batch_log('INFO', f"Distributing {len(tickers)} tickers across {len(worker_tasks)} worker threads")
     
     # Shared results dictionary
     results_dict = {}
     
     # Start worker threads
     threads = []
+    start_time = time.time()
     for worker_num, worker_tickers in worker_tasks:
-        logger.info(f"Starting worker thread {worker_num} with {len(worker_tickers)} tickers")
+        add_batch_log('DEBUG', f"Starting worker thread {worker_num} with {len(worker_tickers)} tickers")
         thread = threading.Thread(
             target=worker_thread_process_tickers,
             args=(worker_num, worker_tickers, av_api_key, fmp_api_key, results_dict),
@@ -2151,39 +2227,71 @@ def start_distributed_company_fetch(tickers, total_tickers=None):
     
     # Monitor workers and update status
     def monitor_workers():
-        global batch_fetch_status
+        global batch_fetch_status, batch_fetch_stop_requested
         
-        total_processed = 0
-        processed_per_worker = {wn: 0 for wn, _, _ in threads}
+        last_logged_progress = 0
+        progress_log_interval = max(10, batch_fetch_status['total'] // 20)  # Log every 5% or every 10, whichever is larger
+        processed_workers = set()  # Track which workers we've already counted
         
         while True:
+            # Check if stop was requested - break immediately
+            if batch_fetch_stop_requested:
+                add_batch_log('WARNING', 'Stop requested by user. Stopping monitoring and waiting for workers to finish current tickers...')
+                batch_fetch_status['running'] = False
+                batch_fetch_status['message'] = 'Stopped by user'
+                # Wait a bit for workers to see the flag, then break
+                time.sleep(1)
+                break
+            
             all_done = True
-            current_tickers = []
+            total_success = 0
+            total_failed = 0
+            total_processed_from_completed = 0
             
             for worker_num, thread, worker_total in threads:
                 if thread.is_alive():
                     # Still running
                     all_done = False
-                    # Estimate progress (rough)
-                    if processed_per_worker[worker_num] < worker_total:
-                        processed_per_worker[worker_num] = min(
-                            processed_per_worker[worker_num] + 1,
-                            worker_total
-                        )
                 else:
-                    # Worker finished
-                    if worker_num in results_dict:
+                    # Worker finished - get actual results (only count once)
+                    if worker_num in results_dict and worker_num not in processed_workers:
                         result = results_dict[worker_num]
-                        batch_fetch_status['success'] += result.get('success', 0)
-                        batch_fetch_status['failed'] += result.get('failed', 0)
-                        logger.info(f"Worker {worker_num} completed: {result.get('success', 0)} success, {result.get('failed', 0)} failed")
-                        processed_per_worker[worker_num] = worker_total
+                        worker_success = result.get('success', 0)
+                        worker_failed = result.get('failed', 0)
+                        worker_processed = worker_success + worker_failed
+                        total_success += worker_success
+                        total_failed += worker_failed
+                        total_processed_from_completed += worker_processed
+                        processed_workers.add(worker_num)
             
-            # Update status
-            total_processed = sum(processed_per_worker.values())
-            batch_fetch_status['processed'] = min(total_processed, batch_fetch_status['total'])
+            # Update status with actual counts from completed workers
+            # For running workers, we estimate based on time elapsed (rough estimate)
+            if not all_done:
+                # Estimate: assume workers process at ~3 tickers per second
+                # This is just for progress display, actual counts come from completed workers
+                elapsed_time = time.time() - start_time
+                estimated_from_running = sum(
+                    min(worker_total, int(elapsed_time * 3))
+                    for worker_num, thread, worker_total in threads
+                    if thread.is_alive()
+                )
+                total_processed = total_processed_from_completed + estimated_from_running
+            else:
+                total_processed = total_processed_from_completed
+            
+            # Use actual success/failed counts
+            batch_fetch_status['success'] = total_success
+            batch_fetch_status['failed'] = total_failed
+            # Processed is the sum of success and failed (actual counts)
+            batch_fetch_status['processed'] = min(total_success + total_failed, batch_fetch_status['total'])
             batch_fetch_status['last_updated'] = datetime.now().isoformat()
             batch_fetch_status['message'] = f'Processing: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+            
+            # Log progress periodically
+            current_progress = batch_fetch_status['processed']
+            if current_progress - last_logged_progress >= progress_log_interval or all_done:
+                add_batch_log('INFO', f"Batch fetch progress: {current_progress}/{batch_fetch_status['total']} processed ({batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed)")
+                last_logged_progress = current_progress
             
             if all_done:
                 break
@@ -2192,11 +2300,15 @@ def start_distributed_company_fetch(tickers, total_tickers=None):
         
         # Final status
         batch_fetch_status['running'] = False
-        batch_fetch_status['message'] = f'Completed: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+        if batch_fetch_stop_requested:
+            batch_fetch_status['message'] = f'Stopped: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+            add_batch_log('WARNING', f"Distributed fetch stopped by user: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed")
+        else:
+            batch_fetch_status['message'] = f'Completed: {batch_fetch_status["success"]} success, {batch_fetch_status["failed"]} failed'
+            add_batch_log('INFO', f"Distributed fetch completed: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed")
         batch_fetch_status['current_ticker'] = None
         batch_fetch_status['last_updated'] = datetime.now().isoformat()
-        
-        logger.info(f"Distributed fetch completed: {batch_fetch_status['success']} success, {batch_fetch_status['failed']} failed")
+        batch_fetch_stop_requested = False
     
     # Start monitoring in background
     monitor_thread = threading.Thread(target=monitor_workers, daemon=True)
@@ -2225,11 +2337,15 @@ def fetch_companies_batch():
     if batch_fetch_status['running']:
         return jsonify({'error': 'Batch fetch is already running'}), 409
     
-    # If total_tickers is provided and we're starting a new batch, use it as the total
-    # Otherwise, if we're continuing, keep the existing total
-    if total_tickers is not None and not batch_fetch_status['running']:
+    # If total_tickers is provided, always use it as the total (for cumulative progress across batches)
+    # This allows subsequent batches to update the total if needed
+    if total_tickers is not None:
         batch_fetch_status['total'] = total_tickers
         logger.info(f"Setting total tickers to {total_tickers} for cumulative progress tracking")
+    # If no total_tickers provided but we have an existing total, keep it (for subsequent batches)
+    elif batch_fetch_status.get('total', 0) > 0:
+        # Keep existing total for cumulative tracking
+        logger.debug(f"Keeping existing total: {batch_fetch_status['total']}")
     
     # Try Alpha Vantage first, then FMP
     av_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
@@ -2293,6 +2409,33 @@ def get_batch_fetch_status():
         batch_fetch_status['total_companies_in_db'] = None
     
     return jsonify(batch_fetch_status)
+
+
+@app.route('/api/companies/batch-logs')
+def get_batch_fetch_logs():
+    """API endpoint to get batch fetch process logs."""
+    global batch_fetch_logs
+    return jsonify({'logs': batch_fetch_logs})
+
+
+@app.route('/api/companies/batch-stop', methods=['POST'])
+def stop_batch_fetch():
+    """API endpoint to stop the running batch fetch process."""
+    global batch_fetch_status, batch_fetch_stop_requested
+    
+    if not batch_fetch_status['running']:
+        return jsonify({'error': 'No batch fetch is currently running'}), 400
+    
+    batch_fetch_stop_requested = True
+    batch_fetch_status['running'] = False  # Immediately mark as not running
+    batch_fetch_status['message'] = 'Stopping...'
+    add_batch_log('WARNING', 'Stop requested by user - workers will stop after current ticker')
+    logger.info("Batch fetch stop requested by user")
+    
+    return jsonify({
+        'success': True,
+        'message': 'Stop request sent. Process will stop after completing current ticker(s).'
+    })
 
 
 @app.route('/api/companies/get-tickers-from-articles')
@@ -3070,7 +3213,7 @@ def start_distributed_vectorization(companies, model_name="text-embedding-3-smal
     })
     
     # Split companies across 20 worker threads
-    num_workers = 20
+    num_workers = 40
     companies_per_worker = total // num_workers
     remainder = total % num_workers
     
@@ -3675,7 +3818,7 @@ def get_correlation_matrix():
                 logger.info(f"Correlation worker {worker_id}: completed {len(row_indices)} rows")
             
             # Split rows across 20 worker threads
-            num_workers = 20
+            num_workers = 40
             rows_per_worker = n // num_workers
             remainder = n % num_workers
             

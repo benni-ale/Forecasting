@@ -72,9 +72,10 @@
     <h1><i class="bi bi-building"></i> Companies Management</h1>
     <p class="text-muted">Manage company descriptions for semantic similarity calculation</p>
     
-    <div class="controls">
-        <div class="row mb-3">
-            <div class="col-md-12">
+    <!-- View Mode Selector -->
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center">
                 <div class="btn-group" role="group" aria-label="View mode">
                     <input type="radio" class="btn-check" name="viewMode" id="viewCompanies" value="companies" checked>
                     <label class="btn btn-outline-primary" for="viewCompanies">
@@ -89,45 +90,110 @@
                         <i class="bi bi-grid-3x3-gap"></i> Correlation Matrix
                     </label>
                 </div>
-                <button class="btn btn-info ms-3" id="vectorizeBtn">
-                    <i class="bi bi-cpu"></i> Vectorize Companies
-                </button>
             </div>
         </div>
-        <div class="row">
-            <div class="col-md-6">
-                <div class="input-group mb-3">
-                    <input type="text" class="form-control" id="tickerInput" placeholder="Enter ticker (e.g., AAPL)">
-                    <button class="btn btn-primary" id="fetchSingleBtn">
-                        <i class="bi bi-download"></i> Fetch Company Data
+    </div>
+
+    <!-- Companies View Controls -->
+    <div class="card mb-3" id="companiesViewControls">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-building"></i> Company Management</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <h6 class="mb-3">Fetch Company Data</h6>
+                    <div class="input-group mb-3">
+                        <input type="text" class="form-control" id="tickerInput" placeholder="Enter ticker (e.g., AAPL)">
+                        <button class="btn btn-primary" id="fetchSingleBtn">
+                            <i class="bi bi-download"></i> Fetch Single
+                        </button>
+                    </div>
+                    <button class="btn btn-success w-100" id="fetchFromArticlesBtn">
+                        <i class="bi bi-download"></i> Fetch All from Articles
                     </button>
+                    <small class="form-text text-muted mt-2 d-block">
+                        Fetches company profiles from Alpha Vantage (first) or Financial Modeling Prep (fallback).
+                        Requires ALPHA_VANTAGE_API_KEY or FMP_API_KEY in environment variables.
+                    </small>
                 </div>
-                <button class="btn btn-success" id="fetchFromArticlesBtn">
-                    <i class="bi bi-download"></i> Fetch All from Articles
-                </button>
-            </div>
-            <div class="col-md-6">
-                <div class="input-group mb-3">
-                    <input type="text" class="form-control" id="searchInput" placeholder="Search ticker or name...">
-                    <button class="btn btn-secondary" id="searchBtn">
-                        <i class="bi bi-search"></i> Search
-                    </button>
+                <div class="col-md-6">
+                    <h6 class="mb-3">Search & Filter</h6>
+                    <div class="input-group mb-3">
+                        <input type="text" class="form-control" id="searchInput" placeholder="Search ticker or name...">
+                        <button class="btn btn-secondary" id="searchBtn">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                    <select class="form-select" id="sectorFilter">
+                        <option value="">All Sectors</option>
+                    </select>
                 </div>
-                <select class="form-select mb-2" id="sectorFilter">
-                    <option value="">All Sectors</option>
-                </select>
-                <select class="form-select" id="modelFilter" style="display: none;">
-                    <option value="text-embedding-3-small">text-embedding-3-small</option>
-                </select>
             </div>
         </div>
-        <div class="row mt-2">
-            <div class="col-md-12">
-                <small class="text-muted">
-                    <strong>Data Sources:</strong> Fetches company profiles from Alpha Vantage (first) or Financial Modeling Prep (fallback).
-                    Includes business descriptions, sector, industry, and other details. 
-                    Requires ALPHA_VANTAGE_API_KEY (recommended) or FMP_API_KEY in environment variables.
-                </small>
+    </div>
+
+    <!-- Vectorized Companies View Controls -->
+    <div class="card mb-3" id="vectorizedViewControls" style="display: none;">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-diagram-3"></i> Vectorization</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <h6 class="mb-3">Vectorize Companies</h6>
+                    <button class="btn btn-info w-100 mb-3" id="vectorizeBtn">
+                        <i class="bi bi-cpu"></i> Vectorize Companies
+                    </button>
+                    <small class="form-text text-muted">
+                        Creates embeddings for company descriptions using OpenAI. This may take a while and use API credits.
+                    </small>
+                </div>
+                <div class="col-md-6">
+                    <h6 class="mb-3">Filter Options</h6>
+                    <div class="input-group mb-3">
+                        <input type="text" class="form-control" id="searchInputVectorized" placeholder="Search ticker or name...">
+                        <button class="btn btn-secondary" id="searchBtnVectorized">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                    <select class="form-select mb-2" id="sectorFilterVectorized">
+                        <option value="">All Sectors</option>
+                    </select>
+                    <select class="form-select" id="modelFilter">
+                        <option value="text-embedding-3-small">text-embedding-3-small</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Correlation Matrix View Controls -->
+    <div class="card mb-3" id="correlationViewControls" style="display: none;">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-grid-3x3-gap"></i> Correlation Matrix</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <h6 class="mb-3">Calculate Correlation Matrix</h6>
+                    <select class="form-select mb-3" id="correlationModelSelect">
+                        <option value="text-embedding-3-small">text-embedding-3-small</option>
+                    </select>
+                    <button class="btn btn-primary w-100" id="loadCorrelationBtn">
+                        <i class="bi bi-calculator"></i> Calculate Correlation Matrix
+                    </button>
+                    <small class="form-text text-muted mt-2 d-block">
+                        Calculates cosine similarity matrix between all vectorized companies. This may take a while for large datasets.
+                    </small>
+                </div>
+                <div class="col-md-6">
+                    <h6 class="mb-3">Matrix Information</h6>
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> The correlation matrix shows how similar companies are based on their business descriptions.
+                        Higher values indicate more similar companies.
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -179,6 +245,20 @@
                 <small class="text-muted" id="vectorizationProgressDetails">Starting...</small>
             </div>
         </div>
+        <div class="row mt-3" id="batchLogsRow" style="display: none;">
+            <div class="col-md-12">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h5>Batch Fetch Process Log</h5>
+                    <button class="btn btn-sm btn-danger" id="stopBatchBtn" onclick="stopBatchFetch()" style="display: none;">
+                        <i class="bi bi-stop-fill"></i> Stop Batch
+                    </button>
+                </div>
+                <div id="batchLogsContainer" style="max-height: 300px; overflow-y: auto; background-color: #f8f9fa; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 12px;">
+                    <div id="batchLogsContent">No logs yet...</div>
+                </div>
+                <button class="btn btn-sm btn-secondary mt-2" onclick="clearBatchLogs()">Clear Logs</button>
+            </div>
+        </div>
         <div class="row mt-2" id="vectorizationCostRow" style="display: none;">
             <div class="col-md-12">
                 <div class="card">
@@ -211,15 +291,6 @@
             <!-- Companies will be loaded here -->
         </div>
         <div id="correlationMatrixContainer" style="display: none;">
-            <div class="mb-3">
-                <label for="correlationModelSelect" class="form-label">Select Model:</label>
-                <select class="form-select" id="correlationModelSelect" style="max-width: 300px;">
-                    <option value="text-embedding-3-small">text-embedding-3-small</option>
-                </select>
-                <button class="btn btn-primary mt-2" id="loadCorrelationBtn">
-                    <i class="bi bi-arrow-clockwise"></i> Load Correlation Matrix
-                </button>
-            </div>
             <div id="correlationMatrixChart" style="width: 100%; height: 800px;"></div>
         </div>
     </div>
@@ -242,19 +313,35 @@ let vectorizationStatusInterval = null;
 // Load companies from API
 async function loadCompanies() {
     const loadingOverlay = document.getElementById('loadingOverlay');
-    loadingOverlay.style.display = 'flex';
+    if (loadingOverlay) loadingOverlay.style.display = 'flex';
     
     try {
+        // Get search and sector from the appropriate inputs based on view mode
+        let search = '';
+        let sector = '';
+        
+        if (currentViewMode === 'vectorized') {
+            const searchInput = document.getElementById('searchInputVectorized');
+            const sectorSelect = document.getElementById('sectorFilterVectorized');
+            search = searchInput ? searchInput.value.trim() : '';
+            sector = sectorSelect ? sectorSelect.value : '';
+        } else {
+            const searchInput = document.getElementById('searchInput');
+            const sectorSelect = document.getElementById('sectorFilter');
+            search = searchInput ? searchInput.value.trim() : '';
+            sector = sectorSelect ? sectorSelect.value : '';
+        }
+        
         const params = new URLSearchParams({
             limit: currentFilters.limit,
             offset: currentFilters.offset
         });
         
-        if (currentFilters.search) {
-            params.append('search', currentFilters.search);
+        if (search) {
+            params.append('search', search);
         }
-        if (currentFilters.sector) {
-            params.append('sector', currentFilters.sector);
+        if (sector) {
+            params.append('sector', sector);
         }
         
         const endpoint = currentViewMode === 'vectorized' 
@@ -272,48 +359,58 @@ async function loadCompanies() {
         renderCompanies(data.companies);
         updateStats(data);
         
-        // Update sector filter options
+        // Update sector filter options for both views
         if (data.sectors) {
-            const sectorSelect = document.getElementById('sectorFilter');
-            const currentValue = sectorSelect.value;
-            sectorSelect.innerHTML = '<option value="">All Sectors</option>';
-            data.sectors.forEach(sector => {
-                const option = document.createElement('option');
-                option.value = sector;
-                option.textContent = sector;
-                if (sector === currentValue) {
-                    option.selected = true;
-                }
-                sectorSelect.appendChild(option);
-            });
+            const sectorSelect = currentViewMode === 'vectorized' 
+                ? document.getElementById('sectorFilterVectorized')
+                : document.getElementById('sectorFilter');
+            
+            if (sectorSelect) {
+                const currentValue = sectorSelect.value;
+                sectorSelect.innerHTML = '<option value="">All Sectors</option>';
+                data.sectors.forEach(sector => {
+                    const option = document.createElement('option');
+                    option.value = sector;
+                    option.textContent = sector;
+                    if (sector === currentValue) {
+                        option.selected = true;
+                    }
+                    sectorSelect.appendChild(option);
+                });
+            }
         }
         
         // Update model filter for vectorized view
         if (currentViewMode === 'vectorized' && data.model_names) {
             const modelSelect = document.getElementById('modelFilter');
-            const currentValue = modelSelect.value;
-            modelSelect.innerHTML = '';
-            data.model_names.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model;
-                option.textContent = model;
-                if (model === currentValue || (model === data.current_model)) {
-                    option.selected = true;
-                }
-                modelSelect.appendChild(option);
-            });
+            if (modelSelect) {
+                const currentValue = modelSelect.value;
+                modelSelect.innerHTML = '';
+                data.model_names.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model;
+                    if (model === currentValue || (model === data.current_model)) {
+                        option.selected = true;
+                    }
+                    modelSelect.appendChild(option);
+                });
+            }
         }
         
     } catch (error) {
         console.error('Error loading companies:', error);
-        document.getElementById('companiesList').innerHTML = `
-            <div class="alert alert-danger">
-                <h5>Error loading companies</h5>
-                <p>${error.message}</p>
-            </div>
-        `;
+        const companiesList = document.getElementById('companiesList');
+        if (companiesList) {
+            companiesList.innerHTML = `
+                <div class="alert alert-danger">
+                    <h5>Error loading companies</h5>
+                    <p>${error.message}</p>
+                </div>
+            `;
+        }
     } finally {
-        loadingOverlay.style.display = 'none';
+        if (loadingOverlay) loadingOverlay.style.display = 'none';
     }
 }
 
@@ -436,8 +533,87 @@ async function pollBatchStatusWithReturn() {
     }
 }
 
+// Load batch fetch logs
+async function loadBatchLogs() {
+    try {
+        const response = await fetch('/api/companies/batch-logs');
+        const data = await response.json();
+        const logs = data.logs || [];
+        
+        const logsContent = document.getElementById('batchLogsContent');
+        if (logs.length === 0) {
+            logsContent.innerHTML = '<div class="text-muted">No logs yet...</div>';
+            return;
+        }
+        
+        let html = '';
+        logs.forEach(log => {
+            const levelClass = {
+                'DEBUG': 'text-secondary',
+                'INFO': 'text-info',
+                'WARNING': 'text-warning',
+                'ERROR': 'text-danger'
+            }[log.level] || 'text-muted';
+            
+            html += `<div class="${levelClass}">[${log.timestamp}] [${log.level}] ${log.message}</div>`;
+        });
+        
+        logsContent.innerHTML = html;
+        // Auto-scroll to bottom
+        const container = document.getElementById('batchLogsContainer');
+        container.scrollTop = container.scrollHeight;
+    } catch (error) {
+        console.error('Error loading batch logs:', error);
+    }
+}
+
+// Clear batch logs
+function clearBatchLogs() {
+    document.getElementById('batchLogsContent').innerHTML = '<div class="text-muted">No logs yet...</div>';
+}
+
+// Stop batch fetch
+async function stopBatchFetch() {
+    if (!confirm('Are you sure you want to stop the batch fetch? The process will stop after completing the current ticker(s).')) {
+        return;
+    }
+    
+    const btn = document.getElementById('stopBatchBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Stopping...';
+    
+    try {
+        const response = await fetch('/api/companies/batch-stop', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        alert(data.message || 'Stop request sent successfully');
+        btn.style.display = 'none';
+    } catch (error) {
+        console.error('Error stopping batch fetch:', error);
+        alert('Error stopping batch fetch: ' + error.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
 let companiesReloadCounter = 0;
 let isProcessingBatches = false; // Flag to track if we're in the middle of processing multiple batches
+
+// Track progress history for smoothing
+let progressHistory = [];
+const MAX_HISTORY = 5;
 
 async function pollBatchStatus() {
     try {
@@ -455,15 +631,38 @@ async function pollBatchStatus() {
             batchStatusEl.textContent = status.running ? 'Running' : 'Between Batches';
             batchStatusEl.className = 'text-warning';
             batchProgressRow.style.display = 'block';
+            document.getElementById('batchLogsRow').style.display = 'block';
+            
+            // Show stop button if running
+            if (status.running) {
+                document.getElementById('stopBatchBtn').style.display = 'block';
+            } else {
+                document.getElementById('stopBatchBtn').style.display = 'none';
+            }
+            
+            // Load batch logs
+            await loadBatchLogs();
             
             if (status.total > 0) {
-                const progress = (status.processed / status.total) * 100;
-                batchProgressBar.style.width = `${progress}%`;
-                batchProgressText.textContent = `${Math.round(progress)}%`;
+                const rawProgress = (status.processed / status.total) * 100;
+                
+                // Smooth progress to avoid oscillation
+                progressHistory.push(rawProgress);
+                if (progressHistory.length > MAX_HISTORY) {
+                    progressHistory.shift();
+                }
+                // Use average of last N values for smoother display
+                const smoothedProgress = progressHistory.reduce((a, b) => a + b, 0) / progressHistory.length;
+                
+                // Only update if progress actually increased (or is final)
+                const currentProgress = parseFloat(batchProgressBar.style.width) || 0;
+                const newProgress = Math.max(currentProgress, smoothedProgress);
+                
+                batchProgressBar.style.width = `${newProgress}%`;
+                batchProgressText.textContent = `${Math.round(newProgress)}%`;
                 batchProgressDetails.textContent = 
                     `${status.processed}/${status.total} processed | ` +
-                    `${status.success} success | ${status.failed} failed | ` +
-                    `Current: ${status.current_ticker || 'N/A'}`;
+                    `${status.success} success | ${status.failed} failed`;
             } else {
                 // If no total yet, show generic progress
                 batchProgressBar.style.width = '50%';
@@ -486,6 +685,8 @@ async function pollBatchStatus() {
                 batchStatusEl.textContent = 'Idle';
                 batchStatusEl.className = 'text-muted';
                 batchProgressRow.style.display = 'none';
+                document.getElementById('batchLogsRow').style.display = 'none';
+                document.getElementById('stopBatchBtn').style.display = 'none';
                 
                 // Final reload (stats updated less frequently to reduce log spam)
                 await loadCompanies();
@@ -493,6 +694,8 @@ async function pollBatchStatus() {
                 // Between batches - keep showing progress
                 batchStatusEl.textContent = 'Preparing Next Batch...';
                 batchStatusEl.className = 'text-info';
+                document.getElementById('stopBatchBtn').style.display = 'none';
+                await loadBatchLogs();
             }
         }
         
@@ -506,6 +709,9 @@ async function pollBatchStatus() {
 
 // Fetch all tickers from articles
 async function fetchAllFromArticles() {
+    // Reset progress history when starting new batch
+    progressHistory = [];
+    
     if (!confirm('This will fetch company descriptions for all tickers found in articles. This may take a while. Continue?')) {
         return;
     }
@@ -560,10 +766,10 @@ async function fetchAllFromArticles() {
                 console.log(`Starting batch ${batchNum}/${totalBatches} (${batch.length} tickers) - Total: ${totalMissingTickers}`);
                 
                 // Start batch fetch (async, returns immediately)
-                // Pass total_tickers only on first batch to set the global total
+                // Always pass total_tickers to maintain cumulative progress across batches
                 const requestBody = {
                     tickers: batch,
-                    total_tickers: (i === 0) ? totalMissingTickers : undefined
+                    total_tickers: totalMissingTickers
                 };
                 
                 const response = await fetch('/api/companies/fetch-batch', {
@@ -868,28 +1074,48 @@ function handleViewModeChange() {
     const companiesRadio = document.getElementById('viewCompanies');
     const vectorizedRadio = document.getElementById('viewVectorized');
     const correlationRadio = document.getElementById('viewCorrelation');
-    const modelFilter = document.getElementById('modelFilter');
     const companiesList = document.getElementById('companiesList');
     const correlationContainer = document.getElementById('correlationMatrixContainer');
     
+    // Get control panels
+    const companiesControls = document.getElementById('companiesViewControls');
+    const vectorizedControls = document.getElementById('vectorizedViewControls');
+    const correlationControls = document.getElementById('correlationViewControls');
+    
     if (companiesRadio.checked) {
         currentViewMode = 'companies';
-        modelFilter.style.display = 'none';
+        // Show/hide controls
+        if (companiesControls) companiesControls.style.display = 'block';
+        if (vectorizedControls) vectorizedControls.style.display = 'none';
+        if (correlationControls) correlationControls.style.display = 'none';
+        // Show/hide content
         companiesList.style.display = 'block';
         correlationContainer.style.display = 'none';
         loadCompanies();
     } else if (vectorizedRadio.checked) {
         currentViewMode = 'vectorized';
-        modelFilter.style.display = 'block';
+        // Show/hide controls
+        if (companiesControls) companiesControls.style.display = 'none';
+        if (vectorizedControls) vectorizedControls.style.display = 'block';
+        if (correlationControls) correlationControls.style.display = 'none';
+        // Show/hide content
         companiesList.style.display = 'block';
         correlationContainer.style.display = 'none';
         loadCompanies();
     } else if (correlationRadio.checked) {
         currentViewMode = 'correlation';
-        modelFilter.style.display = 'none';
+        // Show/hide controls
+        if (companiesControls) companiesControls.style.display = 'none';
+        if (vectorizedControls) vectorizedControls.style.display = 'none';
+        if (correlationControls) correlationControls.style.display = 'block';
+        // Show/hide content
         companiesList.style.display = 'none';
         correlationContainer.style.display = 'block';
-        loadCorrelationMatrix();
+        // Don't auto-load correlation matrix, wait for user to click calculate
+        const chartDiv = document.getElementById('correlationMatrixChart');
+        if (chartDiv) {
+            chartDiv.innerHTML = '<div class="alert alert-info text-center p-5"><i class="bi bi-info-circle"></i><br><br>Click "Calculate Correlation Matrix" above to generate the correlation matrix.<br><small class="text-muted">This will calculate cosine similarity between all vectorized companies.</small></div>';
+        }
     }
     
     // Reset filters
@@ -1023,23 +1249,50 @@ document.getElementById('viewCompanies').addEventListener('change', handleViewMo
 document.getElementById('viewVectorized').addEventListener('change', handleViewModeChange);
 document.getElementById('viewCorrelation').addEventListener('change', handleViewModeChange);
 document.getElementById('loadCorrelationBtn').addEventListener('click', loadCorrelationMatrix);
+
+// Search and filter listeners for Companies view
 document.getElementById('searchBtn').addEventListener('click', () => {
-    currentFilters.search = document.getElementById('searchInput').value;
     currentFilters.offset = 0;
     loadCompanies();
 });
 document.getElementById('searchInput').addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
-        currentFilters.search = document.getElementById('searchInput').value;
         currentFilters.offset = 0;
         loadCompanies();
     }
 });
 document.getElementById('sectorFilter').addEventListener('change', (e) => {
-    currentFilters.sector = e.target.value;
     currentFilters.offset = 0;
     loadCompanies();
 });
+
+// Search and filter listeners for Vectorized view
+const searchBtnVectorized = document.getElementById('searchBtnVectorized');
+const searchInputVectorized = document.getElementById('searchInputVectorized');
+const sectorFilterVectorized = document.getElementById('sectorFilterVectorized');
+
+if (searchBtnVectorized) {
+    searchBtnVectorized.addEventListener('click', () => {
+        currentFilters.offset = 0;
+        loadCompanies();
+    });
+}
+if (searchInputVectorized) {
+    searchInputVectorized.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            currentFilters.offset = 0;
+            loadCompanies();
+        }
+    });
+}
+if (sectorFilterVectorized) {
+    sectorFilterVectorized.addEventListener('change', (e) => {
+        currentFilters.offset = 0;
+        loadCompanies();
+    });
+}
+
+// Model filter listener
 document.getElementById('modelFilter').addEventListener('change', (e) => {
     currentFilters.model_name = e.target.value;
     currentFilters.offset = 0;
