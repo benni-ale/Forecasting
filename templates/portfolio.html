@@ -308,6 +308,13 @@
                                         </div>
                                     </td>
                                 </tr>
+                                <tr id="sentiment-chart-row-${index}">
+                                    <td colspan="8">
+                                        <div class="chart-container">
+                                            <canvas id="sentiment-chart-${index}"></canvas>
+                                        </div>
+                                    </td>
+                                </tr>
                             `;
                         }).join('')}
                     </tbody>
@@ -335,12 +342,21 @@
             const { ticker, data, error } = quotes[i];
             if (!error && data.symbol) {
                 try {
+                    // Fetch price history
                     const apiUrl = granularity === 'daily' 
                         ? `/api/portfolio/history/${data.symbol}?granularity=daily`
                         : `/api/portfolio/history/${data.symbol}?granularity=intraday&interval=${interval}`;
                     
                     const historyResponse = await fetch(apiUrl);
                     const historyData = await historyResponse.json();
+                    
+                    // Fetch sentiment data
+                    const sentimentUrl = granularity === 'daily'
+                        ? `/api/portfolio/sentiment/${data.symbol}?granularity=daily`
+                        : `/api/portfolio/sentiment/${data.symbol}?granularity=intraday&interval=${interval}`;
+                    
+                    const sentimentResponse = await fetch(sentimentUrl);
+                    const sentimentData = await sentimentResponse.json();
                     
                     if (historyData.error) {
                         console.error(`Error for ${ticker}:`, historyData.error);
@@ -403,6 +419,19 @@
                         }
                         
                         renderChart(`chart-${i}`, data.symbol, chartDates, chartCloses, historyData.granularity, historyData.interval);
+                        
+                        // Render sentiment chart if data is available
+                        if (!sentimentData.error && sentimentData.dates && sentimentData.sentiments && sentimentData.dates.length > 0) {
+                            renderSentimentChart(`sentiment-chart-${i}`, data.symbol, sentimentData.dates, sentimentData.sentiments, sentimentData.granularity, sentimentData.interval);
+                        } else {
+                            const sentimentChartRow = document.getElementById(`sentiment-chart-row-${i}`);
+                            if (sentimentChartRow) {
+                                const sentimentChartContainer = sentimentChartRow.querySelector('.chart-container');
+                                if (sentimentChartContainer) {
+                                    sentimentChartContainer.innerHTML = `<p class="text-muted text-center small">No sentiment data available</p>`;
+                                }
+                            }
+                        }
                     } else {
                         console.warn(`No data available for ${ticker}`);
                         const chartRow = document.getElementById(`chart-row-${i}`);
@@ -517,6 +546,102 @@
                         ticks: {
                             callback: function(value) {
                                 return '$' + value.toFixed(2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // Render sentiment chart
+    function renderSentimentChart(canvasId, symbol, dates, sentiments, granularity, interval) {
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+        
+        // Check if intraday (has time component) or daily
+        const isIntraday = granularity === 'intraday' || (dates[0] && dates[0].includes(' '));
+        
+        // Format dates for display
+        const formattedDates = dates.map(date => {
+            // PostgreSQL returns dates as "YYYY-MM-DD HH:MM:SS" for intraday or "YYYY-MM-DD" for daily
+            let d;
+            try {
+                if (date.includes(' ')) {
+                    // Intraday format: "YYYY-MM-DD HH:MM:SS"
+                    d = new Date(date.replace(' ', 'T'));
+                } else {
+                    // Daily format: "YYYY-MM-DD"
+                    d = new Date(date + 'T00:00:00');
+                }
+                if (isNaN(d.getTime())) {
+                    return date;
+                }
+            } catch (e) {
+                console.warn(`Error parsing date: ${date}`, e);
+                return date;
+            }
+            
+            if (isIntraday) {
+                // Intraday: show date and time
+                return d.toLocaleString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                });
+            } else {
+                // Daily: show date only
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }
+        });
+        
+        // Create label based on granularity
+        let label = `${symbol} Weighted Average Sentiment`;
+        if (isIntraday && interval) {
+            label += ` (${interval} intervals)`;
+        } else {
+            label += ' (Daily)';
+        }
+        
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: formattedDates,
+                datasets: [{
+                    label: label,
+                    data: sentiments,
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                    tension: 0.1,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            maxTicksLimit: isIntraday ? 20 : 15,
+                            autoSkip: true
+                        }
+                    },
+                    y: {
+                        beginAtZero: false,
+                        ticks: {
+                            callback: function(value) {
+                                return value.toFixed(3);
                             }
                         }
                     }

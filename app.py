@@ -1020,6 +1020,107 @@ def get_stock_history(ticker):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/portfolio/sentiment/<ticker>')
+def get_portfolio_sentiment(ticker):
+    """Get weighted average sentiment for a ticker, grouped by time intervals."""
+    granularity = request.args.get('granularity', 'intraday').lower()
+    interval = request.args.get('interval', '15min')
+    
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            cursor = db_manager.conn.cursor()
+            
+            # Determine time interval for grouping
+            if granularity == 'daily':
+                time_trunc = "DATE(time_published)"
+                time_format = "YYYY-MM-DD"
+            else:
+                # Intraday: group by minutes
+                interval_minutes = {
+                    '1min': 1,
+                    '5min': 5,
+                    '15min': 15,
+                    '30min': 30,
+                    '60min': 60
+                }.get(interval, 15)
+                
+                # PostgreSQL date_trunc for minute intervals
+                time_trunc = f"DATE_TRUNC('hour', time_published) + INTERVAL '{interval_minutes} minutes' * FLOOR(EXTRACT(MINUTE FROM time_published) / {interval_minutes})"
+                time_format = "YYYY-MM-DD HH24:MI:SS"
+            
+            # Query to calculate weighted average sentiment
+            # sum(relevance*sentiment)/sum(relevance)
+            query = f"""
+                WITH ticker_data AS (
+                    SELECT 
+                        {time_trunc} as time_bucket,
+                        jsonb_array_elements(ticker_sentiment) as ticker_info,
+                        time_published
+                    FROM articles
+                    WHERE time_published IS NOT NULL
+                        AND ticker_sentiment IS NOT NULL
+                        AND jsonb_array_length(ticker_sentiment) > 0
+                        AND time_published >= NOW() - INTERVAL '90 days'
+                ),
+                ticker_scores AS (
+                    SELECT 
+                        time_bucket,
+                        (ticker_info->>'ticker_sentiment_score')::numeric as sentiment_score,
+                        (ticker_info->>'relevance_score')::numeric as relevance_score
+                    FROM ticker_data
+                    WHERE ticker_info->>'ticker' = %s
+                        AND ticker_info->>'ticker_sentiment_score' IS NOT NULL
+                        AND ticker_info->>'relevance_score' IS NOT NULL
+                        AND (ticker_info->>'ticker_sentiment_score')::numeric IS NOT NULL
+                        AND (ticker_info->>'relevance_score')::numeric IS NOT NULL
+                ),
+                weighted_sentiment AS (
+                    SELECT 
+                        time_bucket,
+                        SUM(sentiment_score * relevance_score) / NULLIF(SUM(relevance_score), 0) as weighted_avg_sentiment,
+                        SUM(relevance_score) as total_relevance
+                    FROM ticker_scores
+                    GROUP BY time_bucket
+                    HAVING SUM(relevance_score) > 0
+                )
+                SELECT 
+                    TO_CHAR(time_bucket, %s) as time_bucket_str,
+                    weighted_avg_sentiment,
+                    total_relevance
+                FROM weighted_sentiment
+                ORDER BY time_bucket ASC
+            """
+            
+            cursor.execute(query, (ticker.upper(), time_format))
+            results = cursor.fetchall()
+            cursor.close()
+            
+            if not results:
+                return jsonify({
+                    'dates': [],
+                    'sentiments': [],
+                    'granularity': granularity,
+                    'interval': interval if granularity == 'intraday' else None
+                })
+            
+            dates = [row[0] for row in results]
+            sentiments = [float(row[1]) if row[1] is not None else 0.0 for row in results]
+            
+            logger.info(f"Returning {len(dates)} sentiment data points for {ticker} with {granularity} granularity")
+            
+            return jsonify({
+                'dates': dates,
+                'sentiments': sentiments,
+                'granularity': granularity,
+                'interval': interval if granularity == 'intraday' else None
+            })
+            
+    except Exception as e:
+        logger.error(f"Error fetching sentiment for {ticker}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/portfolio/news/<tickers>')
 def get_portfolio_news(tickers):
     """Get latest news for portfolio tickers and save to database."""
