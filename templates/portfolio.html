@@ -358,6 +358,10 @@
                     const sentimentResponse = await fetch(sentimentUrl);
                     const sentimentData = await sentimentResponse.json();
                     
+                    // Determine actual granularity used (might fallback to daily)
+                    let actualGranularity = granularity;
+                    let actualInterval = interval;
+                    
                     if (historyData.error) {
                         console.error(`Error for ${ticker}:`, historyData.error);
                         // If intraday fails and user requested intraday, try daily as fallback
@@ -367,7 +371,12 @@
                                 const dailyResponse = await fetch(`/api/portfolio/history/${data.symbol}?granularity=daily`);
                                 const dailyData = await dailyResponse.json();
                                 if (!dailyData.error && dailyData.dates && dailyData.closes && dailyData.dates.length > 0) {
-                                    renderChart(`chart-${i}`, data.symbol, dailyData.dates, dailyData.closes, 'daily', null);
+                                    actualGranularity = 'daily';
+                                    actualInterval = null;
+                                    historyData = dailyData;
+                                    // Also fetch daily sentiment
+                                    const dailySentimentResponse = await fetch(`/api/portfolio/sentiment/${data.symbol}?granularity=daily`);
+                                    sentimentData = await dailySentimentResponse.json();
                                 } else {
                                     throw new Error(dailyData.error || 'No daily data available');
                                 }
@@ -380,6 +389,7 @@
                                         chartContainer.innerHTML = `<p class="text-warning text-center small">Intraday data not available. ${historyData.error}</p>`;
                                     }
                                 }
+                                continue; // Skip this ticker
                             }
                         } else {
                             // Show error message in chart container
@@ -390,8 +400,22 @@
                                     chartContainer.innerHTML = `<p class="text-muted text-center small">${historyData.error}</p>`;
                                 }
                             }
+                            continue; // Skip this ticker
                         }
                     } else if (historyData.dates && historyData.closes && historyData.dates.length > 0) {
+                        // If sentiment data is missing or has error, try to fetch with same granularity as price
+                        if (sentimentData.error || !sentimentData.dates || sentimentData.dates.length === 0) {
+                            console.log(`Sentiment data missing for ${ticker}, fetching with same granularity as price`);
+                            const sentimentUrl = actualGranularity === 'daily'
+                                ? `/api/portfolio/sentiment/${data.symbol}?granularity=daily`
+                                : `/api/portfolio/sentiment/${data.symbol}?granularity=intraday&interval=${actualInterval}`;
+                            try {
+                                const sentimentResponse = await fetch(sentimentUrl);
+                                sentimentData = await sentimentResponse.json();
+                            } catch (err) {
+                                console.error(`Error fetching sentiment for ${ticker}:`, err);
+                            }
+                        }
                         // For intraday data, check if we can add today's current price from quote
                         let chartDates = [...historyData.dates];
                         let chartCloses = [...historyData.closes];
@@ -418,17 +442,17 @@
                             }
                         }
                         
-                        renderChart(`chart-${i}`, data.symbol, chartDates, chartCloses, historyData.granularity, historyData.interval);
+                        renderChart(`chart-${i}`, data.symbol, chartDates, chartCloses, historyData.granularity || actualGranularity, historyData.interval || actualInterval);
                         
-                        // Render sentiment chart if data is available
+                        // Render sentiment chart if data is available - use same granularity as price chart
                         if (!sentimentData.error && sentimentData.dates && sentimentData.sentiments && sentimentData.dates.length > 0) {
-                            renderSentimentChart(`sentiment-chart-${i}`, data.symbol, sentimentData.dates, sentimentData.sentiments, sentimentData.granularity, sentimentData.interval);
+                            renderSentimentChart(`sentiment-chart-${i}`, data.symbol, sentimentData.dates, sentimentData.sentiments, sentimentData.granularity || actualGranularity, sentimentData.interval || actualInterval);
                         } else {
                             const sentimentChartRow = document.getElementById(`sentiment-chart-row-${i}`);
                             if (sentimentChartRow) {
                                 const sentimentChartContainer = sentimentChartRow.querySelector('.chart-container');
                                 if (sentimentChartContainer) {
-                                    sentimentChartContainer.innerHTML = `<p class="text-muted text-center small">No sentiment data available</p>`;
+                                    sentimentChartContainer.innerHTML = `<p class="text-muted text-center small">No sentiment data available for this granularity</p>`;
                                 }
                             }
                         }

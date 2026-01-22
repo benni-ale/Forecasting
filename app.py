@@ -1097,6 +1097,7 @@ def get_portfolio_sentiment(ticker):
             cursor.close()
             
             if not results:
+                logger.warning(f"No sentiment data found for {ticker} with {granularity} granularity (interval: {interval})")
                 return jsonify({
                     'dates': [],
                     'sentiments': [],
@@ -1107,7 +1108,7 @@ def get_portfolio_sentiment(ticker):
             dates = [row[0] for row in results]
             sentiments = [float(row[1]) if row[1] is not None else 0.0 for row in results]
             
-            logger.info(f"Returning {len(dates)} sentiment data points for {ticker} with {granularity} granularity")
+            logger.info(f"Returning {len(dates)} sentiment data points for {ticker} with {granularity} granularity (interval: {interval}), from {dates[0] if dates else 'none'} to {dates[-1] if dates else 'none'}")
             
             return jsonify({
                 'dates': dates,
