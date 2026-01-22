@@ -900,42 +900,101 @@ def get_stock_quote(ticker):
 
 @app.route('/api/portfolio/history/<ticker>')
 def get_stock_history(ticker):
-    """Get stock price history (daily) from Alpha Vantage API."""
+    """Get stock price history (intraday or daily) from Alpha Vantage API."""
     api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:
         return jsonify({'error': 'API key not configured'}), 500
     
+    # Get granularity from query parameter (default: 'intraday' for maximum granularity)
+    granularity = request.args.get('granularity', 'intraday').lower()
+    interval = request.args.get('interval', '15min')  # Default to 15min for intraday
+    
     try:
         import requests
         url = "https://www.alphavantage.co/query"
-        params = {
-            "function": "TIME_SERIES_DAILY_ADJUSTED",
-            "symbol": ticker.upper(),
-            "apikey": api_key,
-            "outputsize": "compact"  # Returns last 100 data points
-        }
+        
+        if granularity == 'intraday':
+            # Use intraday data with configurable intervals
+            params = {
+                "function": "TIME_SERIES_INTRADAY",
+                "symbol": ticker.upper(),
+                "interval": interval,  # 1min, 5min, 15min, 30min, 60min
+                "apikey": api_key,
+                "outputsize": "full"  # Returns up to 2 months of data
+            }
+        else:
+            # Daily data
+            params = {
+                "function": "TIME_SERIES_DAILY_ADJUSTED",
+                "symbol": ticker.upper(),
+                "apikey": api_key,
+                "outputsize": "compact"  # Returns last 100 data points
+            }
         
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         
         if "Error Message" in data:
-            logger.error(f"Alpha Vantage API Error: {data['Error Message']}")
+            logger.error(f"Alpha Vantage API Error for {ticker}: {data['Error Message']}")
             return jsonify({'error': data['Error Message']}), 400
         
         if "Note" in data:
-            logger.warning(f"Alpha Vantage API Note: {data['Note']}")
+            logger.warning(f"Alpha Vantage API Note for {ticker}: {data['Note']}")
             return jsonify({'error': data['Note']}), 400
         
+        # Log available keys for debugging
+        logger.debug(f"Alpha Vantage response keys for {ticker}: {list(data.keys())}")
+        
+        # Handle intraday data - check for various interval formats
+        # Alpha Vantage returns keys like "Time Series (15min)", "Time Series (5min)", etc.
+        time_series_key = None
+        for key in data.keys():
+            if "Time Series" in key:
+                # Check if it's intraday format (contains interval in parentheses)
+                if "(" in key and ")" in key:
+                    time_series_key = key
+                    logger.debug(f"Found intraday time series key: {time_series_key}")
+                    break
+        
+        if time_series_key:
+            time_series = data[time_series_key]
+            # Get last 500 data points (or all available) for intraday
+            # Limit based on interval to avoid too many points
+            max_points = {
+                '1min': 200,
+                '5min': 300,
+                '15min': 400,
+                '30min': 500,
+                '60min': 500
+            }.get(interval, 500)
+            
+            timestamps = sorted(time_series.keys(), reverse=True)[:max_points]
+            timestamps.reverse()  # Oldest first for chart
+            
+            if not timestamps:
+                logger.warning(f"No intraday timestamps found for {ticker}")
+                return jsonify({'error': 'No intraday data available for this ticker'}), 404
+            
+            history = {
+                'dates': timestamps,
+                'closes': [float(time_series[ts]['4. close']) for ts in timestamps],
+                'granularity': 'intraday',
+                'interval': interval
+            }
+            logger.info(f"Returning {len(timestamps)} intraday data points for {ticker} with interval {interval}")
+            return jsonify(history)
+        
+        # Handle daily data
         if "Time Series (Daily)" in data:
             time_series = data["Time Series (Daily)"]
-            # Get last 90 days (or all available if less)
             dates = sorted(time_series.keys(), reverse=True)[:90]
-            dates.reverse()  # Oldest first for chart
+            dates.reverse()
             
             history = {
                 'dates': dates,
-                'closes': [float(time_series[date]['5. adjusted close']) for date in dates]
+                'closes': [float(time_series[date]['5. adjusted close']) for date in dates],
+                'granularity': 'daily'
             }
             return jsonify(history)
         else:

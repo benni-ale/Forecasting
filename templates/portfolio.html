@@ -79,8 +79,18 @@
     <div class="col-md-8">
         <!-- Stock Quotes Table -->
         <div class="card mb-4">
-            <div class="card-header">
+            <div class="card-header d-flex justify-content-between align-items-center">
                 <h5><i class="bi bi-graph-up-arrow"></i> Stock Quotes</h5>
+                <div class="d-flex align-items-center gap-2">
+                    <label for="granularitySelect" class="form-label mb-0 small">Granularity:</label>
+                    <select id="granularitySelect" class="form-select form-select-sm" style="width: auto;">
+                        <option value="intraday-15min" selected>15 min</option>
+                        <option value="intraday-5min">5 min</option>
+                        <option value="intraday-30min">30 min</option>
+                        <option value="intraday-60min">60 min</option>
+                        <option value="daily">Daily</option>
+                    </select>
+                </div>
             </div>
             <div class="card-body">
                 <div id="quotesLoading" class="text-center" style="display: none;">
@@ -307,41 +317,148 @@
         
         tableEl.innerHTML = table;
         
+        // Get selected granularity
+        const granularitySelect = document.getElementById('granularitySelect');
+        const granularityValue = granularitySelect.value;
+        let granularity = 'intraday';
+        let interval = '15min';
+        
+        if (granularityValue === 'daily') {
+            granularity = 'daily';
+        } else {
+            // Extract interval from value (e.g., "intraday-15min" -> "15min")
+            interval = granularityValue.split('-')[1] || '15min';
+        }
+        
         // Then fetch and render charts for each ticker
         for (let i = 0; i < quotes.length; i++) {
             const { ticker, data, error } = quotes[i];
             if (!error && data.symbol) {
                 try {
-                    const historyResponse = await fetch(`/api/portfolio/history/${data.symbol}`);
+                    const apiUrl = granularity === 'daily' 
+                        ? `/api/portfolio/history/${data.symbol}?granularity=daily`
+                        : `/api/portfolio/history/${data.symbol}?granularity=intraday&interval=${interval}`;
+                    
+                    const historyResponse = await fetch(apiUrl);
                     const historyData = await historyResponse.json();
                     
-                    if (!historyData.error && historyData.dates && historyData.closes) {
-                        renderChart(`chart-${i}`, data.symbol, historyData.dates, historyData.closes);
+                    if (historyData.error) {
+                        console.error(`Error for ${ticker}:`, historyData.error);
+                        // If intraday fails and user requested intraday, try daily as fallback
+                        if (granularity === 'intraday' && historyData.error.includes('intraday')) {
+                            console.log(`Falling back to daily for ${ticker}`);
+                            try {
+                                const dailyResponse = await fetch(`/api/portfolio/history/${data.symbol}?granularity=daily`);
+                                const dailyData = await dailyResponse.json();
+                                if (!dailyData.error && dailyData.dates && dailyData.closes && dailyData.dates.length > 0) {
+                                    renderChart(`chart-${i}`, data.symbol, dailyData.dates, dailyData.closes, 'daily', null);
+                                } else {
+                                    throw new Error(dailyData.error || 'No daily data available');
+                                }
+                            } catch (fallbackErr) {
+                                console.error(`Fallback to daily also failed for ${ticker}:`, fallbackErr);
+                                const chartRow = document.getElementById(`chart-row-${i}`);
+                                if (chartRow) {
+                                    const chartContainer = chartRow.querySelector('.chart-container');
+                                    if (chartContainer) {
+                                        chartContainer.innerHTML = `<p class="text-warning text-center small">Intraday data not available. ${historyData.error}</p>`;
+                                    }
+                                }
+                            }
+                        } else {
+                            // Show error message in chart container
+                            const chartRow = document.getElementById(`chart-row-${i}`);
+                            if (chartRow) {
+                                const chartContainer = chartRow.querySelector('.chart-container');
+                                if (chartContainer) {
+                                    chartContainer.innerHTML = `<p class="text-muted text-center small">${historyData.error}</p>`;
+                                }
+                            }
+                        }
+                    } else if (historyData.dates && historyData.closes && historyData.dates.length > 0) {
+                        renderChart(`chart-${i}`, data.symbol, historyData.dates, historyData.closes, historyData.granularity, historyData.interval);
+                    } else {
+                        console.warn(`No data available for ${ticker}`);
+                        const chartRow = document.getElementById(`chart-row-${i}`);
+                        if (chartRow) {
+                            const chartContainer = chartRow.querySelector('.chart-container');
+                            if (chartContainer) {
+                                chartContainer.innerHTML = `<p class="text-muted text-center small">No historical data available</p>`;
+                            }
+                        }
                     }
                 } catch (err) {
                     console.error(`Error fetching history for ${ticker}:`, err);
+                    const chartRow = document.getElementById(`chart-row-${i}`);
+                    if (chartRow) {
+                        const chartContainer = chartRow.querySelector('.chart-container');
+                        if (chartContainer) {
+                            chartContainer.innerHTML = `<p class="text-danger text-center small">Error loading chart: ${err.message}</p>`;
+                        }
+                    }
                 }
             }
         }
     }
     
     // Render chart for a ticker
-    function renderChart(canvasId, symbol, dates, closes) {
+    function renderChart(canvasId, symbol, dates, closes, granularity, interval) {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
         
-        // Format dates for display (show day/month for daily granularity)
+        // Check if intraday (has time component) or daily
+        const isIntraday = granularity === 'intraday' || (dates[0] && dates[0].includes(' '));
+        
+        // Format dates for display
         const formattedDates = dates.map(date => {
-            const d = new Date(date);
-            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            // Alpha Vantage returns dates as "YYYY-MM-DD HH:MM:SS" for intraday or "YYYY-MM-DD" for daily
+            let d;
+            try {
+                d = new Date(date);
+                // Check if date is valid
+                if (isNaN(d.getTime())) {
+                    // Try parsing manually if Date constructor fails
+                    if (date.includes(' ')) {
+                        // Intraday format: "YYYY-MM-DD HH:MM:SS"
+                        d = new Date(date.replace(' ', 'T'));
+                    } else {
+                        // Daily format: "YYYY-MM-DD"
+                        d = new Date(date + 'T00:00:00');
+                    }
+                }
+            } catch (e) {
+                console.warn(`Error parsing date: ${date}`, e);
+                return date; // Return original if parsing fails
+            }
+            
+            if (isIntraday) {
+                // Intraday: show date and time
+                return d.toLocaleString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                });
+            } else {
+                // Daily: show date only
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }
         });
+        
+        // Create label based on granularity
+        let label = `${symbol} Close Price`;
+        if (isIntraday && interval) {
+            label += ` (${interval} intervals)`;
+        } else {
+            label += ' (Daily)';
+        }
         
         new Chart(ctx, {
             type: 'line',
             data: {
                 labels: formattedDates,
                 datasets: [{
-                    label: `${symbol} Close Price (Daily)`,
+                    label: label,
                     data: closes,
                     borderColor: 'rgb(75, 192, 192)',
                     backgroundColor: 'rgba(75, 192, 192, 0.1)',
@@ -365,7 +482,7 @@
                 scales: {
                     x: {
                         ticks: {
-                            maxTicksLimit: 15,  // Limit number of x-axis labels for readability
+                            maxTicksLimit: isIntraday ? 20 : 15,  // More labels for intraday
                             autoSkip: true
                         }
                     },
@@ -425,6 +542,16 @@
         if (e.key === 'Enter') {
             e.preventDefault();
             addTicker();
+        }
+    });
+    
+    // Update charts when granularity changes
+    document.getElementById('granularitySelect').addEventListener('change', function() {
+        // Only update if portfolio is already loaded
+        const tickers = loadPortfolio();
+        if (tickers.length > 0 && document.getElementById('quotesTableBody')) {
+            // Re-fetch quotes to update charts with new granularity
+            updatePortfolio();
         }
     });
     
