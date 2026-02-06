@@ -446,7 +446,7 @@
                         
                         // Render sentiment chart if data is available - use same granularity as price chart
                         if (!sentimentData.error && sentimentData.dates && sentimentData.sentiments && sentimentData.dates.length > 0) {
-                            renderSentimentChart(`sentiment-chart-${i}`, data.symbol, sentimentData.dates, sentimentData.sentiments, sentimentData.granularity || actualGranularity, sentimentData.interval || actualInterval);
+                            renderSentimentChart(`sentiment-chart-${i}`, data.symbol, sentimentData.dates, sentimentData.sentiments, sentimentData.article_counts || [], sentimentData.granularity || actualGranularity, sentimentData.interval || actualInterval);
                         } else {
                             const sentimentChartRow = document.getElementById(`sentiment-chart-row-${i}`);
                             if (sentimentChartRow) {
@@ -579,7 +579,7 @@
     }
     
     // Render sentiment chart
-    function renderSentimentChart(canvasId, symbol, dates, sentiments, granularity, interval) {
+    function renderSentimentChart(canvasId, symbol, dates, sentiments, articleCounts, granularity, interval) {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
         
@@ -628,13 +628,22 @@
             label += ' (Daily)';
         }
         
+        // Prepare data with article counts for tooltip
+        // Ensure articleCounts is an array with same length as sentiments
+        const articleCountsArray = articleCounts && Array.isArray(articleCounts) ? articleCounts : new Array(sentiments.length).fill(0);
+        const chartData = sentiments.map((sentiment, index) => ({
+            x: formattedDates[index],
+            y: sentiment,
+            articleCount: articleCountsArray[index] || 0
+        }));
+        
         new Chart(ctx, {
             type: 'line',
             data: {
                 labels: formattedDates,
                 datasets: [{
                     label: label,
-                    data: sentiments,
+                    data: chartData,
                     borderColor: 'rgb(255, 99, 132)',
                     backgroundColor: 'rgba(255, 99, 132, 0.1)',
                     tension: 0.1,
@@ -651,7 +660,26 @@
                     },
                     tooltip: {
                         mode: 'index',
-                        intersect: false
+                        intersect: false,
+                        callbacks: {
+                            afterLabel: function(context) {
+                                const dataPoint = context.raw;
+                                if (dataPoint && typeof dataPoint === 'object' && 'articleCount' in dataPoint) {
+                                    return `Articles: ${dataPoint.articleCount}`;
+                                }
+                                return '';
+                            },
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(3);
+                                }
+                                return label;
+                            }
+                        }
                     }
                 },
                 scales: {

@@ -1049,8 +1049,10 @@ def get_portfolio_sentiment(ticker):
                 time_trunc = f"DATE_TRUNC('hour', time_published) + INTERVAL '{interval_minutes} minutes' * FLOOR(EXTRACT(MINUTE FROM time_published) / {interval_minutes})"
                 time_format = "YYYY-MM-DD HH24:MI:SS"
             
-            # Query to calculate weighted average sentiment
-            # sum(relevance*sentiment)/sum(relevance)
+            # Query to calculate weighted average sentiment with temporal decay
+            # For each time bucket, consider data from that bucket + previous buckets within 14 days
+            # with exponential decay: weight = 0.5^(days_ago / 7) where half-life is 7 days
+            # This fills gaps by using data from previous intervals with decreasing weight
             query = f"""
                 WITH ticker_data AS (
                     SELECT 
@@ -1067,7 +1069,8 @@ def get_portfolio_sentiment(ticker):
                     SELECT 
                         time_bucket,
                         (ticker_info->>'ticker_sentiment_score')::numeric as sentiment_score,
-                        (ticker_info->>'relevance_score')::numeric as relevance_score
+                        (ticker_info->>'relevance_score')::numeric as relevance_score,
+                        time_published
                     FROM ticker_data
                     WHERE ticker_info->>'ticker' = %s
                         AND ticker_info->>'ticker_sentiment_score' IS NOT NULL
@@ -1075,21 +1078,55 @@ def get_portfolio_sentiment(ticker):
                         AND (ticker_info->>'ticker_sentiment_score')::numeric IS NOT NULL
                         AND (ticker_info->>'relevance_score')::numeric IS NOT NULL
                 ),
-                weighted_sentiment AS (
-                    SELECT 
-                        time_bucket,
-                        SUM(sentiment_score * relevance_score) / NULLIF(SUM(relevance_score), 0) as weighted_avg_sentiment,
-                        SUM(relevance_score) as total_relevance
+                -- Get all unique time buckets that have data
+                buckets_with_data AS (
+                    SELECT DISTINCT time_bucket
                     FROM ticker_scores
-                    GROUP BY time_bucket
-                    HAVING SUM(relevance_score) > 0
+                ),
+                -- For each bucket, calculate decayed sentiment from current + previous buckets (within 14 days)
+                -- This includes:
+                -- 1. Data from the same bucket
+                -- 2. Data from previous buckets (all previous intervals within 14 days)
+                -- 3. For intraday: also same time-of-day from previous days
+                decayed_sentiment AS (
+                    SELECT 
+                        b1.time_bucket as target_bucket,
+                        -- Calculate weighted average with temporal decay
+                        -- Half-life of 7 days: weight = 0.5^(days_ago / 7)
+                        -- days_ago is calculated in days (for daily) or fractional days (for intraday)
+                        SUM(
+                            s2.sentiment_score * s2.relevance_score * 
+                            POWER(0.5, GREATEST(0, EXTRACT(EPOCH FROM (b1.time_bucket - s2.time_bucket)) / 86400.0) / 7.0)
+                        ) / NULLIF(
+                            SUM(
+                                s2.relevance_score * 
+                                POWER(0.5, GREATEST(0, EXTRACT(EPOCH FROM (b1.time_bucket - s2.time_bucket)) / 86400.0) / 7.0)
+                            ),
+                            0
+                        ) as weighted_avg_sentiment_decayed,
+                        SUM(
+                            s2.relevance_score * 
+                            POWER(0.5, GREATEST(0, EXTRACT(EPOCH FROM (b1.time_bucket - s2.time_bucket)) / 86400.0) / 7.0)
+                        ) as total_relevance_decayed,
+                        COUNT(*) as article_count
+                    FROM buckets_with_data b1
+                    LEFT JOIN ticker_scores s2 ON (
+                        s2.time_bucket <= b1.time_bucket 
+                        AND s2.time_bucket >= b1.time_bucket - INTERVAL '14 days'
+                    )
+                    GROUP BY b1.time_bucket
+                    HAVING SUM(
+                        s2.relevance_score * 
+                        POWER(0.5, GREATEST(0, EXTRACT(EPOCH FROM (b1.time_bucket - s2.time_bucket)) / 86400.0) / 7.0)
+                    ) > 0
                 )
                 SELECT 
-                    TO_CHAR(time_bucket, %s) as time_bucket_str,
-                    weighted_avg_sentiment,
-                    total_relevance
-                FROM weighted_sentiment
-                ORDER BY time_bucket ASC
+                    TO_CHAR(target_bucket, %s) as time_bucket_str,
+                    weighted_avg_sentiment_decayed,
+                    total_relevance_decayed,
+                    article_count
+                FROM decayed_sentiment
+                ORDER BY target_bucket ASC
             """
             
             cursor.execute(query, (ticker.upper(), time_format))
@@ -1107,12 +1144,14 @@ def get_portfolio_sentiment(ticker):
             
             dates = [row[0] for row in results]
             sentiments = [float(row[1]) if row[1] is not None else 0.0 for row in results]
+            article_counts = [int(row[3]) if row[3] is not None else 0 for row in results]
             
             logger.info(f"Returning {len(dates)} sentiment data points for {ticker} with {granularity} granularity (interval: {interval}), from {dates[0] if dates else 'none'} to {dates[-1] if dates else 'none'}")
             
             return jsonify({
                 'dates': dates,
                 'sentiments': sentiments,
+                'article_counts': article_counts,
                 'granularity': granularity,
                 'interval': interval if granularity == 'intraday' else None
             })
