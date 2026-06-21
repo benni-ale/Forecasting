@@ -10,10 +10,11 @@ import logging
 import requests
 import subprocess
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from news_collector import AlphaVantageNewsCollector, DatabaseManager
 import threading
 import time
+from functools import wraps
 from dotenv import load_dotenv
 
 # OpenAI imports for embeddings
@@ -52,6 +53,80 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)  # Reduce Flask request 
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# ---------------------------------------------------------------------------
+# Authentication / access control
+# ---------------------------------------------------------------------------
+# When ADMIN_PASSWORD is set (e.g. in production on Heroku), the app locks down:
+# anonymous visitors can ONLY reach the public read-only dashboard + login page,
+# while every other page/route requires an authenticated admin session.
+# When ADMIN_PASSWORD is NOT set (local development), everything stays open as
+# before, so the existing local workflow is unchanged.
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
+AUTH_ENABLED = bool(ADMIN_PASSWORD)
+
+# Endpoints reachable without an admin session (everything else is admin-only
+# when AUTH_ENABLED). 'static' is needed for assets; the others are the public
+# dashboard and the login/logout flow.
+PUBLIC_ENDPOINTS = {'public_dashboard', 'login', 'logout', 'static'}
+
+
+def is_admin():
+    """True if the current session is an authenticated admin (or auth is off)."""
+    return (not AUTH_ENABLED) or bool(session.get('is_admin'))
+
+
+@app.context_processor
+def inject_auth():
+    """Expose auth state to all templates (used to hide admin-only nav links)."""
+    return {'is_admin': is_admin(), 'auth_enabled': AUTH_ENABLED}
+
+
+@app.before_request
+def _enforce_access_control():
+    """Gate all non-public endpoints behind admin auth when AUTH_ENABLED."""
+    if not AUTH_ENABLED:
+        return  # local/dev: no restrictions
+    if request.endpoint in PUBLIC_ENDPOINTS:
+        return
+    if session.get('is_admin'):
+        return
+    # Not authenticated and not a public endpoint -> block.
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'unauthorized', 'message': 'Admin login required.'}), 401
+    return redirect(url_for('login', next=request.path))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Admin login. Only relevant when ADMIN_PASSWORD is configured."""
+    if not AUTH_ENABLED:
+        # No password configured -> nothing to log into.
+        return redirect(url_for('public_dashboard'))
+
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        if password and password == ADMIN_PASSWORD:
+            session['is_admin'] = True
+            session.permanent = True
+            next_url = request.args.get('next') or request.form.get('next') or url_for('index')
+            # Avoid open-redirects: only allow same-site relative paths.
+            if not next_url.startswith('/'):
+                next_url = url_for('index')
+            logger.info("Admin login successful")
+            return redirect(next_url)
+        logger.warning("Admin login failed (wrong password)")
+        flash('Incorrect password.', 'error')
+
+    return render_template('login.html', next=request.args.get('next', ''))
+
+
+@app.route('/logout')
+def logout():
+    """Clear the admin session."""
+    session.pop('is_admin', None)
+    flash('Logged out.', 'info')
+    return redirect(url_for('public_dashboard'))
 
 # Global state for collection status
 collection_status = {
@@ -150,8 +225,33 @@ coverage_ingestion_status = {
 }
 
 
-def get_db_manager():
-    """Get database manager with environment variables."""
+def _normalize_dsn(dsn):
+    """Normalize a Postgres DSN (Heroku gives 'postgres://', psycopg2 prefers 'postgresql://')."""
+    if dsn and dsn.startswith("postgres://"):
+        return dsn.replace("postgres://", "postgresql://", 1)
+    return dsn
+
+
+def get_db_manager(readonly=False):
+    """Get database manager.
+
+    Priority:
+      1. DATABASE_URL / DATABASE_URL_RO (managed Postgres, e.g. Heroku) when present.
+      2. Discrete DB_HOST/DB_PORT/... env vars (local development / docker-compose).
+
+    Args:
+        readonly: when True, prefer the read-only connection string
+                  (DATABASE_URL_RO) so anonymous/public views cannot write.
+    """
+    dsn = None
+    if readonly:
+        dsn = os.getenv("DATABASE_URL_RO") or os.getenv("DATABASE_URL")
+    else:
+        dsn = os.getenv("DATABASE_URL")
+
+    if dsn:
+        return DatabaseManager(dsn=_normalize_dsn(dsn))
+
     return DatabaseManager(
         host=os.getenv("DB_HOST", "localhost"),
         port=int(os.getenv("DB_PORT", "5432")),
@@ -174,6 +274,85 @@ def add_batch_log(level, message):
     # Keep only last MAX_BATCH_LOG_ENTRIES entries
     if len(batch_fetch_logs) > MAX_BATCH_LOG_ENTRIES:
         batch_fetch_logs = batch_fetch_logs[-MAX_BATCH_LOG_ENTRIES:]
+
+
+@app.route('/dashboard')
+def public_dashboard():
+    """Public, read-only daily dashboard.
+
+    Shows, over a recent window, the most-cited tickers and a relevance-weighted
+    sentiment KPI with exponential time decay:
+        KPI = SUM(sentiment * relevance * 0.5^(age_days / half_life))
+            / SUM(relevance * 0.5^(age_days / half_life))
+    Uses the read-only DB connection so it can never write.
+    """
+    # Parameters (with sane bounds).
+    try:
+        days = int(request.args.get('days', 14))
+    except (TypeError, ValueError):
+        days = 14
+    days = max(1, min(days, 365))
+
+    try:
+        half_life = float(request.args.get('half_life', 7.0))
+    except (TypeError, ValueError):
+        half_life = 7.0
+    half_life = max(0.5, min(half_life, 365.0))
+
+    rows = []
+    error = None
+    try:
+        db_manager = get_db_manager(readonly=True)
+        with db_manager:
+            cursor = db_manager.conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT
+                        ticker,
+                        SUM(ticker_sentiment_score * relevance_score
+                            * POWER(0.5, (CURRENT_DATE - article_time_published::date) / %(hl)s))
+                          / NULLIF(SUM(relevance_score
+                            * POWER(0.5, (CURRENT_DATE - article_time_published::date) / %(hl)s)), 0)
+                            AS kpi,
+                        MAX(article_time_published::date) AS last_seen,
+                        COUNT(*) AS mentions
+                    FROM article_ticker_sentiment_view
+                    WHERE article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
+                    GROUP BY ticker
+                    HAVING COUNT(*) > 0
+                    ORDER BY kpi DESC
+                    """,
+                    {'hl': half_life, 'days': days}
+                )
+                for ticker, kpi, last_seen, mentions in cursor.fetchall():
+                    rows.append({
+                        'ticker': ticker,
+                        'kpi': float(kpi) if kpi is not None else None,
+                        'last_seen': last_seen.isoformat() if last_seen else None,
+                        'mentions': int(mentions),
+                    })
+            finally:
+                cursor.close()
+    except Exception as e:
+        logger.error(f"Error building public dashboard: {str(e)}", exc_info=True)
+        error = str(e)
+
+    # "Best sentiment" = ordered by KPI (already from SQL).
+    by_sentiment = [r for r in rows if r['kpi'] is not None][:20]
+    # "Most cited" = same data re-sorted by number of mentions.
+    by_mentions = sorted(rows, key=lambda r: r['mentions'], reverse=True)[:20]
+
+    return render_template(
+        'dashboard.html',
+        by_sentiment=by_sentiment,
+        by_mentions=by_mentions,
+        days=days,
+        half_life=half_life,
+        error=error,
+        is_admin=is_admin(),
+        auth_enabled=AUTH_ENABLED,
+    )
 
 
 @app.route('/')

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Daily Dashboard - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Daily Sentiment Dashboard</h2>
+    <div>
+        {% if auth_enabled and is_admin %}
+            <a href="/" class="btn btn-sm btn-outline-light"><i class="bi bi-speedometer2"></i> Admin</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-arrow-right"></i> Logout</a>
+        {% elif auth_enabled %}
+            <a href="{{ url_for('login') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-arrow-in-right"></i> Admin login</a>
+        {% endif %}
+    </div>
+</div>
+
+<form method="get" action="{{ url_for('public_dashboard') }}" class="row g-2 align-items-end mb-4">
+    <div class="col-auto">
+        <label class="form-label mb-1" for="days">Window (days)</label>
+        <input type="number" min="1" max="365" class="form-control" id="days" name="days" value="{{ days }}">
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1" for="half_life">Decay half-life (days)</label>
+        <input type="number" min="0.5" max="365" step="0.5" class="form-control" id="half_life" name="half_life" value="{{ half_life }}">
+    </div>
+    <div class="col-auto">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-repeat"></i> Update</button>
+    </div>
+</form>
+
+{% if error %}
+    <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> Could not load data: {{ error }}
+    </div>
+{% endif %}
+
+<p class="text-muted">
+    KPI = relevance-weighted sentiment with exponential time decay
+    (half-life {{ half_life }} days), over the last {{ days }} days.
+</p>
+
+<div class="row">
+    <div class="col-lg-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-emoji-smile"></i> Best sentiment</div>
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Ticker</th>
+                            <th class="text-end">KPI</th>
+                            <th class="text-end">Mentions</th>
+                            <th class="text-end">Last seen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in by_sentiment %}
+                        <tr>
+                            <td class="text-muted">{{ loop.index }}</td>
+                            <td><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></td>
+                            <td class="text-end {% if r.kpi is not none and r.kpi > 0 %}sentiment-bullish{% elif r.kpi is not none and r.kpi < 0 %}sentiment-bearish{% else %}sentiment-neutral{% endif %}">
+                                {{ '%.4f'|format(r.kpi) if r.kpi is not none else '-' }}
+                            </td>
+                            <td class="text-end">{{ r.mentions }}</td>
+                            <td class="text-end text-muted">{{ r.last_seen }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="5" class="text-center text-muted py-4">No data in this window.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-megaphone"></i> Most cited</div>
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Ticker</th>
+                            <th class="text-end">Mentions</th>
+                            <th class="text-end">KPI</th>
+                            <th class="text-end">Last seen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in by_mentions %}
+                        <tr>
+                            <td class="text-muted">{{ loop.index }}</td>
+                            <td><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></td>
+                            <td class="text-end">{{ r.mentions }}</td>
+                            <td class="text-end {% if r.kpi is not none and r.kpi > 0 %}sentiment-bullish{% elif r.kpi is not none and r.kpi < 0 %}sentiment-bearish{% else %}sentiment-neutral{% endif %}">
+                                {{ '%.4f'|format(r.kpi) if r.kpi is not none else '-' }}
+                            </td>
+                            <td class="text-end text-muted">{{ r.last_seen }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="5" class="text-center text-muted py-4">No data in this window.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

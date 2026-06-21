@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Login - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5 col-lg-4">
+        <div class="card mt-5">
+            <div class="card-header"><i class="bi bi-shield-lock"></i> Admin login</div>
+            <div class="card-body">
+                <form method="post" action="{{ url_for('login') }}{% if next %}?next={{ next }}{% endif %}">
+                    <input type="hidden" name="next" value="{{ next }}">
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" autofocus required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100"><i class="bi bi-box-arrow-in-right"></i> Sign in</button>
+                </form>
+                <hr>
+                <a href="{{ url_for('public_dashboard') }}" class="btn btn-outline-secondary w-100">
+                    <i class="bi bi-arrow-left"></i> Back to dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

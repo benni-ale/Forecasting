@@ -168,6 +168,30 @@ SELECT
 FROM diffused_sentiment
 ORDER BY ticker, date DESC;
 
+-- Create view that "explodes" the ticker_sentiment JSONB array into one row per
+-- (article, ticker) pair. Used by the public daily dashboard to compute a
+-- relevance-weighted, time-decayed sentiment KPI.
+CREATE OR REPLACE VIEW article_ticker_sentiment_view AS
+SELECT
+    a.id                                        AS article_id,
+    a.title                                     AS article_title,
+    a.url                                       AS article_url,
+    a.source                                    AS article_source,
+    a.time_published                            AS article_time_published,
+    a.overall_sentiment_score                   AS overall_sentiment_score,
+    t->>'ticker'                                AS ticker,
+    (t->>'ticker_sentiment_score')::numeric     AS ticker_sentiment_score,
+    (t->>'relevance_score')::numeric            AS relevance_score,
+    t->>'ticker_sentiment_label'                AS ticker_sentiment_label
+FROM articles a,
+     LATERAL jsonb_array_elements(a.ticker_sentiment) AS t
+WHERE a.ticker_sentiment IS NOT NULL
+    AND jsonb_array_length(a.ticker_sentiment) > 0
+    AND a.time_published IS NOT NULL
+    AND t->>'ticker' IS NOT NULL
+    AND (t->>'ticker_sentiment_score') IS NOT NULL
+    AND (t->>'relevance_score') IS NOT NULL;
+
 -- Create table for company descriptions (for semantic similarity)
 CREATE TABLE IF NOT EXISTS companies (
     ticker TEXT PRIMARY KEY,

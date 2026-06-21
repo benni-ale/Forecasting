@@ -163,7 +163,11 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Dashboard</a>
+                        <a class="nav-link" href="/dashboard">Daily Dashboard</a>
+                    </li>
+                    {% if is_admin %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Admin</a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/articles">Articles</a>
@@ -177,6 +181,18 @@
                     <li class="nav-item">
                         <a class="nav-link" href="/sql-query">SQL Query</a>
                     </li>
+                    {% endif %}
+                    {% if auth_enabled %}
+                        {% if is_admin %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="/logout">Logout</a>
+                        </li>
+                        {% else %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="/login">Admin login</a>
+                        </li>
+                        {% endif %}
+                    {% endif %}
                 </ul>
             </div>
         </div>

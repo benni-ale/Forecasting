@@ -373,7 +373,8 @@ class DatabaseManager:
         port: int = None,
         database: str = None,
         user: str = None,
-        password: str = None
+        password: str = None,
+        dsn: str = None
     ):
         """
         Initialize database connection.
@@ -384,7 +385,11 @@ class DatabaseManager:
             database: Database name (default: from DB_NAME env var)
             user: Database user (default: from DB_USER env var)
             password: Database password (default: from DB_PASSWORD env var)
+            dsn: Full connection string (e.g. Heroku DATABASE_URL). When set, it
+                 takes precedence over the individual host/port/... parameters.
         """
+        # A full DSN (like Heroku's DATABASE_URL) overrides the discrete params.
+        self.dsn = dsn
         self.host = host or os.getenv("DB_HOST", "localhost")
         self.port = port or int(os.getenv("DB_PORT", "5432"))
         self.database = database or os.getenv("DB_NAME", "newsdb")
@@ -395,13 +400,20 @@ class DatabaseManager:
     def connect(self):
         """Establish database connection."""
         try:
-            self.conn = psycopg2.connect(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password
-            )
+            if self.dsn:
+                # Managed Postgres (e.g. Heroku) requires SSL. Allow override via DB_SSLMODE.
+                self.conn = psycopg2.connect(
+                    self.dsn,
+                    sslmode=os.getenv("DB_SSLMODE", "require")
+                )
+            else:
+                self.conn = psycopg2.connect(
+                    host=self.host,
+                    port=self.port,
+                    database=self.database,
+                    user=self.user,
+                    password=self.password
+                )
             self.conn.autocommit = False
             return True
         except psycopg2.Error as e:
