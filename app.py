@@ -68,7 +68,11 @@ AUTH_ENABLED = bool(ADMIN_PASSWORD)
 # Endpoints reachable without an admin session (everything else is admin-only
 # when AUTH_ENABLED). 'static' is needed for assets; the others are the public
 # dashboard and the login/logout flow.
-PUBLIC_ENDPOINTS = {'public_dashboard', 'api_dashboard_stocks', 'login', 'logout', 'static'}
+PUBLIC_ENDPOINTS = {
+    'public_dashboard', 'api_dashboard_stocks',
+    'view_articles', 'api_articles', 'view_article_detail',
+    'login', 'logout', 'static',
+}
 
 
 def is_admin():
@@ -299,6 +303,17 @@ def public_dashboard():
         half_life = 7.0
     half_life = max(0.5, min(half_life, 365.0))
 
+    try:
+        min_mentions = int(request.args.get('min_mentions', 1))
+    except (TypeError, ValueError):
+        min_mentions = 1
+    min_mentions = max(1, min(min_mentions, 100000))
+
+    ticker_filter = (request.args.get('ticker', '') or '').strip().upper()
+    direction = (request.args.get('direction', 'all') or 'all').lower()
+    if direction not in ('all', 'bullish', 'bearish'):
+        direction = 'all'
+
     rows = []
     stats = {}
     error = None
@@ -320,11 +335,18 @@ def public_dashboard():
                         COUNT(*) AS mentions
                     FROM article_ticker_sentiment_view
                     WHERE article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
+                      AND (%(ticker)s = '' OR ticker ILIKE %(tickerlike)s)
                     GROUP BY ticker
-                    HAVING COUNT(*) > 0
+                    HAVING COUNT(*) >= %(min_mentions)s
                     ORDER BY kpi DESC
                     """,
-                    {'hl': half_life, 'days': days}
+                    {
+                        'hl': half_life,
+                        'days': days,
+                        'min_mentions': min_mentions,
+                        'ticker': ticker_filter,
+                        'tickerlike': f'%{ticker_filter}%',
+                    }
                 )
                 for ticker, kpi, last_seen, mentions in cursor.fetchall():
                     rows.append({
@@ -355,11 +377,17 @@ def public_dashboard():
         logger.error(f"Error building public dashboard: {str(e)}", exc_info=True)
         error = str(e)
 
+    # Apply sentiment-direction filter (kpi sign).
+    if direction == 'bullish':
+        rows = [r for r in rows if r['kpi'] is not None and r['kpi'] > 0]
+    elif direction == 'bearish':
+        rows = [r for r in rows if r['kpi'] is not None and r['kpi'] < 0]
+
+    stats['tickers_in_window'] = len(rows)
     # "Best sentiment" = ordered by KPI (already from SQL).
     by_sentiment = [r for r in rows if r['kpi'] is not None][:20]
     # "Most cited" = same data re-sorted by number of mentions.
     by_mentions = sorted(rows, key=lambda r: r['mentions'], reverse=True)[:20]
-    stats['tickers_in_window'] = len(rows)
 
     return render_template(
         'dashboard.html',
@@ -368,6 +396,9 @@ def public_dashboard():
         stats=stats,
         days=days,
         half_life=half_life,
+        min_mentions=min_mentions,
+        ticker_filter=ticker_filter,
+        direction=direction,
         error=error,
         is_admin=is_admin(),
         auth_enabled=AUTH_ENABLED,
@@ -2449,7 +2480,7 @@ def view_article_detail(article_id):
     logger.info(f"Article detail page accessed for ID: {article_id}")
     
     try:
-        db_manager = get_db_manager()
+        db_manager = get_db_manager(readonly=True)
         with db_manager:
             if not db_manager.conn:
                 raise ConnectionError("Database connection not established")
@@ -2540,7 +2571,7 @@ def view_articles():
                 f"sentiment={sentiment_filter}, ticker={ticker_filter}, search={search_query}")
     
     try:
-        db_manager = get_db_manager()
+        db_manager = get_db_manager(readonly=True)
         with db_manager:
             articles, total, stats = get_articles_paginated(
                 db_manager, page, per_page, sentiment_filter, ticker_filter, search_query
@@ -2742,7 +2773,7 @@ def api_articles():
     ticker_filter = request.args.get('ticker', '')
     
     try:
-        db_manager = get_db_manager()
+        db_manager = get_db_manager(readonly=True)
         with db_manager:
             articles, total, _ = get_articles_paginated(
                 db_manager, page, per_page, sentiment_filter, ticker_filter, ''

@@ -76,7 +76,24 @@
         <input type="number" min="0.5" max="365" step="0.5" class="form-control" id="half_life" name="half_life" value="{{ half_life }}">
     </div>
     <div class="col-auto">
-        <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-repeat"></i> Update</button>
+        <label class="form-label mb-1" for="min_mentions">Min mentions</label>
+        <input type="number" min="1" max="100000" class="form-control" id="min_mentions" name="min_mentions" value="{{ min_mentions }}">
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1" for="ticker">Ticker</label>
+        <input type="text" class="form-control" id="ticker" name="ticker" placeholder="e.g. NVDA" value="{{ ticker_filter }}">
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1" for="direction">Sentiment</label>
+        <select class="form-select" id="direction" name="direction">
+            <option value="all" {% if direction == 'all' %}selected{% endif %}>All</option>
+            <option value="bullish" {% if direction == 'bullish' %}selected{% endif %}>Bullish (KPI &gt; 0)</option>
+            <option value="bearish" {% if direction == 'bearish' %}selected{% endif %}>Bearish (KPI &lt; 0)</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-funnel"></i> Apply</button>
+        <a href="{{ url_for('public_dashboard') }}" class="btn btn-outline-secondary">Reset</a>
     </div>
 </form>
 
