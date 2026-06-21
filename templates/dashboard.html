@@ -198,11 +198,14 @@
 (function () {
     const status = document.getElementById('stocksStatus');
     const container = document.getElementById('stocksCharts');
-    const days = {{ days }};
-    const halfLife = {{ half_life }};
-    const minMentions = {{ min_mentions }};
+    const chartTickers = {{ chart_tickers|tojson }};
 
-    fetch(`/api/dashboard/stocks?days=${days}&half_life=${halfLife}&min_mentions=${minMentions}&top=10`)
+    if (!chartTickers || chartTickers.length === 0) {
+        status.textContent = 'no tickers match the current filters';
+        return;
+    }
+
+    fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(chartTickers.join(','))}&top=10`)
         .then(r => r.json())
         .then(data => {
             if (data.error) { status.textContent = 'error: ' + data.error; return; }

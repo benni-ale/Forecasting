@@ -400,11 +400,14 @@ def public_dashboard():
     by_sentiment = [r for r in rows if r['kpi'] is not None][:20]
     # "Most cited" = same data re-sorted by number of mentions.
     by_mentions = sorted(rows, key=lambda r: r['mentions'], reverse=True)[:20]
+    # Charts plot the top-10 tickers of the (already filtered) sentiment table.
+    chart_tickers = [r['ticker'] for r in by_sentiment][:10]
 
     return render_template(
         'dashboard.html',
         by_sentiment=by_sentiment,
         by_mentions=by_mentions,
+        chart_tickers=chart_tickers,
         stats=stats,
         days=days,
         half_life=half_life,
@@ -510,6 +513,13 @@ def api_dashboard_stocks():
     except (TypeError, ValueError):
         top = 10
     top = max(1, min(top, 10))
+
+    # Explicit ticker list (from the filtered dashboard table) takes precedence.
+    explicit = (request.args.get('tickers', '') or '').strip()
+    if explicit:
+        tickers = [t.strip().upper() for t in explicit.split(',') if t.strip()][:top]
+        series = [_fetch_av_daily(t) for t in tickers]
+        return jsonify({'tickers': tickers, 'series': series})
 
     tickers = []
     try:
