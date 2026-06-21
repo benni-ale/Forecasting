@@ -489,7 +489,33 @@ def index():
     # Get statistics
     stats = get_statistics()
     logger.debug(f"Statistics retrieved: {stats.get('total_articles', 0)} articles")
-    return render_template('index.html', stats=stats)
+    retention_days = int(os.getenv('RETENTION_DAYS', '30'))
+    return render_template('index.html', stats=stats, retention_days=retention_days)
+
+
+@app.route('/admin/prune-old-news', methods=['POST'])
+def prune_old_news_route():
+    """Admin-only: delete articles older than RETENTION_DAYS (manual trigger)."""
+    days = int(os.getenv('RETENTION_DAYS', '30'))
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            cursor = db_manager.conn.cursor()
+            try:
+                cursor.execute(
+                    "DELETE FROM articles WHERE time_published < (now() - make_interval(days => %s))",
+                    (days,)
+                )
+                deleted = cursor.rowcount
+                db_manager.conn.commit()
+            finally:
+                cursor.close()
+        logger.info(f"Manual prune: deleted {deleted} articles older than {days} days")
+        flash(f'Deleted {deleted} articles older than {days} days.', 'success')
+    except Exception as e:
+        logger.error(f"Manual prune failed: {str(e)}", exc_info=True)
+        flash(f'Prune failed: {str(e)}', 'error')
+    return redirect(url_for('index'))
 
 
 @app.route('/collect', methods=['POST'])

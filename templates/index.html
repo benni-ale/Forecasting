@@ -488,6 +488,25 @@
                 </a>
             </div>
         </div>
+
+        <div class="card mt-3 border-secondary">
+            <div class="card-header">
+                <h5><i class="bi bi-trash"></i> Data Retention</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-2">
+                    Delete articles older than <strong>{{ retention_days }} days</strong> to keep the
+                    database under its storage limit. This also runs automatically if you set up
+                    Heroku Scheduler with <code>python prune_old_news.py</code>.
+                </p>
+                <form method="POST" action="/admin/prune-old-news"
+                      onsubmit="return confirm('Delete all articles older than {{ retention_days }} days?');">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">
+                        <i class="bi bi-trash"></i> Prune now (&gt; {{ retention_days }} days)
+                    </button>
+                </form>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
