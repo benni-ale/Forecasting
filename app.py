@@ -68,7 +68,7 @@ AUTH_ENABLED = bool(ADMIN_PASSWORD)
 # Endpoints reachable without an admin session (everything else is admin-only
 # when AUTH_ENABLED). 'static' is needed for assets; the others are the public
 # dashboard and the login/logout flow.
-PUBLIC_ENDPOINTS = {'public_dashboard', 'login', 'logout', 'static'}
+PUBLIC_ENDPOINTS = {'public_dashboard', 'api_dashboard_stocks', 'login', 'logout', 'static'}
 
 
 def is_admin():
@@ -300,6 +300,7 @@ def public_dashboard():
     half_life = max(0.5, min(half_life, 365.0))
 
     rows = []
+    stats = {}
     error = None
     try:
         db_manager = get_db_manager(readonly=True)
@@ -332,6 +333,22 @@ def public_dashboard():
                         'last_seen': last_seen.isoformat() if last_seen else None,
                         'mentions': int(mentions),
                     })
+
+                # Overall + window statistics (same read-only cursor).
+                stats = get_statistics_from_db(cursor)
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS articles_in_window,
+                        COUNT(DISTINCT source) AS sources_in_window
+                    FROM articles
+                    WHERE time_published > (CURRENT_DATE - make_interval(days => %(days)s))
+                    """,
+                    {'days': days}
+                )
+                win = cursor.fetchone()
+                stats['articles_in_window'] = int(win[0]) if win else 0
+                stats['sources_in_window'] = int(win[1]) if win else 0
             finally:
                 cursor.close()
     except Exception as e:
@@ -342,17 +359,127 @@ def public_dashboard():
     by_sentiment = [r for r in rows if r['kpi'] is not None][:20]
     # "Most cited" = same data re-sorted by number of mentions.
     by_mentions = sorted(rows, key=lambda r: r['mentions'], reverse=True)[:20]
+    stats['tickers_in_window'] = len(rows)
 
     return render_template(
         'dashboard.html',
         by_sentiment=by_sentiment,
         by_mentions=by_mentions,
+        stats=stats,
         days=days,
         half_life=half_life,
         error=error,
         is_admin=is_admin(),
         auth_enabled=AUTH_ENABLED,
     )
+
+
+# Simple in-memory cache for Alpha Vantage daily series (price + volume).
+# Avoids hammering the API on every public dashboard load. TTL configurable.
+_av_price_cache = {}
+_av_price_cache_lock = threading.Lock()
+AV_PRICE_CACHE_TTL = int(os.getenv('AV_PRICE_CACHE_TTL', '3600'))  # seconds
+
+
+def _fetch_av_daily(ticker, points=60):
+    """Fetch daily close + volume for a ticker from Alpha Vantage, with caching.
+
+    Returns dict {ticker, dates, closes, volumes} or {ticker, error}.
+    """
+    ticker = ticker.upper()
+    now = time.time()
+    with _av_price_cache_lock:
+        cached = _av_price_cache.get(ticker)
+        if cached and (now - cached[0] < AV_PRICE_CACHE_TTL):
+            return cached[1]
+
+    api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        return {'ticker': ticker, 'error': 'API key not configured'}
+
+    try:
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": ticker,
+            "apikey": api_key,
+            "outputsize": "compact",  # last 100 days
+        }
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if "Error Message" in data:
+            return {'ticker': ticker, 'error': data['Error Message']}
+        # Rate-limit / info messages come back under these keys.
+        if "Note" in data or "Information" in data:
+            return {'ticker': ticker, 'error': data.get('Note') or data.get('Information')}
+
+        series = data.get("Time Series (Daily)")
+        if not series:
+            return {'ticker': ticker, 'error': 'No daily data available'}
+
+        dates = sorted(series.keys())[-points:]
+        result = {
+            'ticker': ticker,
+            'dates': dates,
+            'closes': [float(series[d]['4. close']) for d in dates],
+            'volumes': [int(float(series[d]['5. volume'])) for d in dates],
+        }
+    except Exception as e:
+        logger.error(f"Error fetching Alpha Vantage daily for {ticker}: {str(e)}", exc_info=True)
+        return {'ticker': ticker, 'error': str(e)}
+
+    with _av_price_cache_lock:
+        _av_price_cache[ticker] = (now, result)
+    return result
+
+
+@app.route('/api/dashboard/stocks')
+def api_dashboard_stocks():
+    """Public endpoint: daily close + volume for the top-N most-cited tickers.
+
+    Top tickers come from the read-only DB; prices come from Alpha Vantage
+    (cached in memory). Used by the public dashboard chart section.
+    """
+    try:
+        days = int(request.args.get('days', 14))
+    except (TypeError, ValueError):
+        days = 14
+    days = max(1, min(days, 365))
+
+    try:
+        top = int(request.args.get('top', 5))
+    except (TypeError, ValueError):
+        top = 5
+    top = max(1, min(top, 10))
+
+    tickers = []
+    try:
+        db_manager = get_db_manager(readonly=True)
+        with db_manager:
+            cursor = db_manager.conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT ticker, COUNT(*) AS mentions
+                    FROM article_ticker_sentiment_view
+                    WHERE article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
+                    GROUP BY ticker
+                    ORDER BY mentions DESC
+                    LIMIT %(top)s
+                    """,
+                    {'days': days, 'top': top}
+                )
+                tickers = [r[0] for r in cursor.fetchall()]
+            finally:
+                cursor.close()
+    except Exception as e:
+        logger.error(f"Error fetching top tickers for stocks chart: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+    series = [_fetch_av_daily(t) for t in tickers]
+    return jsonify({'tickers': tickers, 'series': series})
 
 
 @app.route('/')

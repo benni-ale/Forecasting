@@ -15,6 +15,57 @@
     </div>
 </div>
 
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-2">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small"><i class="bi bi-file-text"></i> Total articles</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.total_articles or 0) }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small"><i class="bi bi-clock-history"></i> In last {{ days }}d</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.articles_in_window or 0) }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small"><i class="bi bi-tags"></i> Tickers ({{ days }}d)</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.tickers_in_window or 0) }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small sentiment-bullish"><i class="bi bi-arrow-up-circle"></i> Bullish</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.by_sentiment.get('Bullish', 0) if stats.by_sentiment else 0) }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small sentiment-bearish"><i class="bi bi-arrow-down-circle"></i> Bearish</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.by_sentiment.get('Bearish', 0) if stats.by_sentiment else 0) }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small"><i class="bi bi-newspaper"></i> Sources ({{ days }}d)</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.sources_in_window or 0) }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <form method="get" action="{{ url_for('public_dashboard') }}" class="row g-2 align-items-end mb-4">
     <div class="col-auto">
         <label class="form-label mb-1" for="days">Window (days)</label>
@@ -109,4 +160,92 @@
         </div>
     </div>
 </div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-bar-chart-line"></i> Top 5 most-cited stocks &middot; price &amp; volume (daily, Alpha Vantage)</span>
+        <span class="small text-muted" id="stocksStatus">loading...</span>
+    </div>
+    <div class="card-body">
+        <div class="row" id="stocksCharts"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const status = document.getElementById('stocksStatus');
+    const container = document.getElementById('stocksCharts');
+    const days = {{ days }};
+
+    fetch(`/api/dashboard/stocks?days=${days}&top=5`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { status.textContent = 'error: ' + data.error; return; }
+            const series = data.series || [];
+            if (series.length === 0) { status.textContent = 'no tickers in this window'; return; }
+            status.textContent = '';
+
+            series.forEach((s, i) => {
+                const col = document.createElement('div');
+                col.className = 'col-lg-6 col-xl-4 mb-4';
+                const canvasId = 'stockChart' + i;
+                if (s.error) {
+                    col.innerHTML = `<div class="card h-100"><div class="card-header py-2">
+                        <span class="badge bg-secondary">${s.ticker}</span></div>
+                        <div class="card-body text-muted small">No price data: ${s.error}</div></div>`;
+                    container.appendChild(col);
+                    return;
+                }
+                col.innerHTML = `<div class="card h-100"><div class="card-header py-2">
+                    <span class="badge bg-secondary">${s.ticker}</span>
+                    <span class="text-muted small ms-2">last ${s.dates.length} days</span></div>
+                    <div class="card-body"><canvas id="${canvasId}" height="180"></canvas></div></div>`;
+                container.appendChild(col);
+
+                new Chart(document.getElementById(canvasId).getContext('2d'), {
+                    data: {
+                        labels: s.dates,
+                        datasets: [
+                            {
+                                type: 'bar',
+                                label: 'Volume',
+                                data: s.volumes,
+                                yAxisID: 'yVol',
+                                backgroundColor: 'rgba(102, 217, 239, 0.35)',
+                                borderWidth: 0,
+                                order: 2
+                            },
+                            {
+                                type: 'line',
+                                label: 'Close',
+                                data: s.closes,
+                                yAxisID: 'yPrice',
+                                borderColor: '#a6e22e',
+                                backgroundColor: 'rgba(166, 226, 46, 0.1)',
+                                borderWidth: 2,
+                                pointRadius: 0,
+                                tension: 0.2,
+                                order: 1
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: { legend: { display: true, labels: { boxWidth: 12 } } },
+                        scales: {
+                            x: { ticks: { maxTicksLimit: 6, autoSkip: true } },
+                            yPrice: { position: 'left', title: { display: true, text: 'Close ($)' } },
+                            yVol: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Volume' } }
+                        }
+                    }
+                });
+            });
+        })
+        .catch(err => { status.textContent = 'error loading stock data'; console.error(err); });
+})();
+</script>
 {% endblock %}
