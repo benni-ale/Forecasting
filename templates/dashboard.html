@@ -92,6 +92,10 @@
         </select>
     </div>
     <div class="col-auto">
+        <label class="form-label mb-1" for="last_seen_from">Last seen on/after</label>
+        <input type="date" class="form-control" id="last_seen_from" name="last_seen_from" value="{{ last_seen_from }}">
+    </div>
+    <div class="col-auto">
         <button type="submit" class="btn btn-primary"><i class="bi bi-funnel"></i> Apply</button>
         <a href="{{ url_for('public_dashboard') }}" class="btn btn-outline-secondary">Reset</a>
     </div>
@@ -180,7 +184,7 @@
 
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-bar-chart-line"></i> Top 5 most-cited stocks &middot; price &amp; volume (daily, Alpha Vantage)</span>
+        <span><i class="bi bi-bar-chart-line"></i> Top 10 stocks by sentiment &middot; price &amp; volume (daily, Alpha Vantage)</span>
         <span class="small text-muted" id="stocksStatus">loading...</span>
     </div>
     <div class="card-body">
@@ -195,8 +199,10 @@
     const status = document.getElementById('stocksStatus');
     const container = document.getElementById('stocksCharts');
     const days = {{ days }};
+    const halfLife = {{ half_life }};
+    const minMentions = {{ min_mentions }};
 
-    fetch(`/api/dashboard/stocks?days=${days}&top=5`)
+    fetch(`/api/dashboard/stocks?days=${days}&half_life=${halfLife}&min_mentions=${minMentions}&top=10`)
         .then(r => r.json())
         .then(data => {
             if (data.error) { status.textContent = 'error: ' + data.error; return; }

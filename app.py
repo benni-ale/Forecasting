@@ -314,6 +314,14 @@ def public_dashboard():
     if direction not in ('all', 'bullish', 'bearish'):
         direction = 'all'
 
+    # "Last seen on/after" date filter (YYYY-MM-DD from the calendar picker).
+    last_seen_from = (request.args.get('last_seen_from', '') or '').strip()
+    try:
+        if last_seen_from:
+            datetime.strptime(last_seen_from, '%Y-%m-%d')
+    except ValueError:
+        last_seen_from = ''
+
     rows = []
     stats = {}
     error = None
@@ -383,6 +391,10 @@ def public_dashboard():
     elif direction == 'bearish':
         rows = [r for r in rows if r['kpi'] is not None and r['kpi'] < 0]
 
+    # Apply "last seen on/after" filter (ISO date strings compare lexicographically).
+    if last_seen_from:
+        rows = [r for r in rows if r['last_seen'] and r['last_seen'] >= last_seen_from]
+
     stats['tickers_in_window'] = len(rows)
     # "Best sentiment" = ordered by KPI (already from SQL).
     by_sentiment = [r for r in rows if r['kpi'] is not None][:20]
@@ -399,6 +411,7 @@ def public_dashboard():
         min_mentions=min_mentions,
         ticker_filter=ticker_filter,
         direction=direction,
+        last_seen_from=last_seen_from,
         error=error,
         is_admin=is_admin(),
         auth_enabled=AUTH_ENABLED,
@@ -468,9 +481,10 @@ def _fetch_av_daily(ticker, points=60):
 
 @app.route('/api/dashboard/stocks')
 def api_dashboard_stocks():
-    """Public endpoint: daily close + volume for the top-N most-cited tickers.
+    """Public endpoint: daily close + volume for the top-N tickers by sentiment KPI.
 
-    Top tickers come from the read-only DB; prices come from Alpha Vantage
+    Top tickers are ranked by the relevance-weighted, time-decayed sentiment KPI
+    (same as the dashboard) from the read-only DB; prices come from Alpha Vantage
     (cached in memory). Used by the public dashboard chart section.
     """
     try:
@@ -480,9 +494,21 @@ def api_dashboard_stocks():
     days = max(1, min(days, 365))
 
     try:
-        top = int(request.args.get('top', 5))
+        half_life = float(request.args.get('half_life', 7.0))
     except (TypeError, ValueError):
-        top = 5
+        half_life = 7.0
+    half_life = max(0.5, min(half_life, 365.0))
+
+    try:
+        min_mentions = int(request.args.get('min_mentions', 1))
+    except (TypeError, ValueError):
+        min_mentions = 1
+    min_mentions = max(1, min(min_mentions, 100000))
+
+    try:
+        top = int(request.args.get('top', 10))
+    except (TypeError, ValueError):
+        top = 10
     top = max(1, min(top, 10))
 
     tickers = []
@@ -493,14 +519,21 @@ def api_dashboard_stocks():
             try:
                 cursor.execute(
                     """
-                    SELECT ticker, COUNT(*) AS mentions
+                    SELECT
+                        ticker,
+                        SUM(ticker_sentiment_score * relevance_score
+                            * POWER(0.5, (CURRENT_DATE - article_time_published::date) / %(hl)s))
+                          / NULLIF(SUM(relevance_score
+                            * POWER(0.5, (CURRENT_DATE - article_time_published::date) / %(hl)s)), 0)
+                            AS kpi
                     FROM article_ticker_sentiment_view
                     WHERE article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
                     GROUP BY ticker
-                    ORDER BY mentions DESC
+                    HAVING COUNT(*) >= %(min_mentions)s
+                    ORDER BY kpi DESC NULLS LAST
                     LIMIT %(top)s
                     """,
-                    {'days': days, 'top': top}
+                    {'hl': half_life, 'days': days, 'min_mentions': min_mentions, 'top': top}
                 )
                 tickers = [r[0] for r in cursor.fetchall()]
             finally:
