@@ -1,31 +1,161 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="it" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Financial News Collector Dashboard{% endblock %}</title>
+    <title>{% block title %}DollarPunk{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        .sentiment-bullish { color: #28a745; font-weight: bold; }
-        .sentiment-bearish { color: #dc3545; font-weight: bold; }
-        .sentiment-neutral { color: #6c757d; font-weight: bold; }
-        .sentiment-somewhat-bullish { color: #5cb85c; }
-        .sentiment-somewhat-bearish { color: #d9534f; }
+        /* ===== DollarPunk: Monokai theme (warm dark bg, vibrant accents, soft borders) ===== */
+        :root {
+            --mk-bg: #272822;
+            --mk-bg-elev: #2f302a;
+            --mk-bg-header: #3a3b32;
+            --mk-bg-input: #1e1f1a;
+            --mk-fg: #f8f8f2;
+            --mk-muted: #9a9682;
+            --mk-border: #41423b;
+            --mk-pink: #f92672;
+            --mk-orange: #fd971f;
+            --mk-yellow: #e6db74;
+            --mk-green: #a6e22e;
+            --mk-cyan: #66d9ef;
+            --mk-purple: #ae81ff;
+            --mk-dark: #1d1e19;
+            --mk-radius: 0.5rem;
+        }
+        body { background-color: var(--mk-bg); color: var(--mk-fg); }
+        a { color: var(--mk-cyan); }
+        a:hover { color: var(--mk-green); }
+
+        /* Soft rounded borders */
+        .card, .alert, .btn, .form-control, .form-select, .badge,
+        .modal-content, .list-group-item, .table, .dropdown-menu {
+            border-radius: var(--mk-radius) !important;
+        }
+
+        /* Navbar (handled standalone, not via bg-primary) */
+        .navbar { background-color: var(--mk-dark) !important; border-bottom: 2px solid var(--mk-pink); }
+        .navbar .navbar-brand { color: var(--mk-green) !important; font-weight: bold; }
+        .navbar .nav-link { color: var(--mk-fg) !important; }
+        .navbar .nav-link:hover { color: var(--mk-cyan) !important; }
+
+        /* Cards */
+        .card { background-color: var(--mk-bg-elev); color: var(--mk-fg); border: 1px solid var(--mk-border); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
+        .card-header { background-color: var(--mk-bg-header); color: var(--mk-fg); border-bottom: 1px solid var(--mk-border); }
+        .card-footer { background-color: var(--mk-bg-header); border-top: 1px solid var(--mk-border); }
+
+        /* Background utilities -> Monokai accents */
+        .bg-primary { background-color: var(--mk-cyan) !important; }
+        .bg-success { background-color: var(--mk-green) !important; }
+        .bg-danger  { background-color: var(--mk-pink) !important; }
+        .bg-warning { background-color: var(--mk-yellow) !important; }
+        .bg-info    { background-color: var(--mk-cyan) !important; }
+        .bg-secondary { background-color: var(--mk-muted) !important; }
+        .bg-light   { background-color: var(--mk-bg-header) !important; }
+        .bg-dark    { background-color: var(--mk-dark) !important; }
+
+        /* Text utilities */
+        .text-muted { color: var(--mk-muted) !important; }
+        .text-white { color: var(--mk-fg) !important; }
+        .text-primary { color: var(--mk-cyan) !important; }
+        .text-success { color: var(--mk-green) !important; }
+        .text-danger  { color: var(--mk-pink) !important; }
+        .text-warning { color: var(--mk-yellow) !important; }
+        .text-info    { color: var(--mk-cyan) !important; }
+
+        /* Readable text on bright accent backgrounds (overrides .text-white etc.) */
+        .bg-primary, .bg-primary *, .bg-success, .bg-success *,
+        .bg-warning, .bg-warning *, .bg-info, .bg-info *,
+        .bg-secondary, .bg-secondary * { color: var(--mk-dark) !important; }
+        .bg-danger, .bg-danger *, .bg-dark, .bg-dark *,
+        .bg-light, .bg-light * { color: var(--mk-fg) !important; }
+
+        /* Borders */
+        .border-primary { border-color: var(--mk-cyan) !important; }
+        .border-success { border-color: var(--mk-green) !important; }
+        .border-danger  { border-color: var(--mk-pink) !important; }
+        .border-warning { border-color: var(--mk-yellow) !important; }
+        .border-info    { border-color: var(--mk-cyan) !important; }
+        .border-dark    { border-color: var(--mk-border) !important; }
+
+        /* Buttons */
+        .btn-primary { background-color: var(--mk-cyan) !important; border-color: var(--mk-cyan) !important; color: var(--mk-dark) !important; }
+        .btn-success { background-color: var(--mk-green) !important; border-color: var(--mk-green) !important; color: var(--mk-dark) !important; }
+        .btn-danger  { background-color: var(--mk-pink) !important; border-color: var(--mk-pink) !important; color: var(--mk-fg) !important; }
+        .btn-warning { background-color: var(--mk-yellow) !important; border-color: var(--mk-yellow) !important; color: var(--mk-dark) !important; }
+        .btn-info    { background-color: var(--mk-cyan) !important; border-color: var(--mk-cyan) !important; color: var(--mk-dark) !important; }
+        .btn-dark    { background-color: var(--mk-dark) !important; border-color: var(--mk-border) !important; color: var(--mk-fg) !important; }
+        .btn-secondary { background-color: var(--mk-muted) !important; border-color: var(--mk-muted) !important; color: var(--mk-dark) !important; }
+        .btn:hover { filter: brightness(1.12); }
+        .btn-outline-secondary, .btn-outline-light { color: var(--mk-fg) !important; border-color: var(--mk-border) !important; }
+        .btn-outline-secondary:hover, .btn-outline-light:hover { background-color: var(--mk-border) !important; color: var(--mk-fg) !important; }
+
+        /* Forms */
+        .form-control, .form-select, textarea, input, select {
+            background-color: var(--mk-bg-input) !important; color: var(--mk-fg) !important; border: 1px solid var(--mk-border) !important;
+        }
+        .form-control::placeholder { color: var(--mk-muted) !important; }
+        .form-control:focus, .form-select:focus, textarea:focus, input:focus {
+            background-color: var(--mk-bg-input) !important; color: var(--mk-fg) !important;
+            border-color: var(--mk-cyan) !important; box-shadow: 0 0 0 0.2rem rgba(102, 217, 239, 0.25) !important;
+        }
+        .form-label, label { color: var(--mk-fg) !important; }
+        .form-text { color: var(--mk-muted) !important; }
+
+        /* Tables */
+        .table { color: var(--mk-fg) !important; border-color: var(--mk-border) !important; }
+        .table > :not(caption) > * > * { background-color: transparent !important; color: var(--mk-fg) !important; border-color: var(--mk-border) !important; }
+        .table-striped > tbody > tr:nth-of-type(odd) > * { background-color: rgba(255, 255, 255, 0.03) !important; }
+        .table-secondary > *, .table-active > * { background-color: var(--mk-bg-header) !important; color: var(--mk-fg) !important; }
+        .table thead th { color: var(--mk-yellow) !important; }
+
+        /* Alerts (tinted) */
+        .alert-success { background-color: rgba(166, 226, 46, 0.12) !important; border-color: var(--mk-green) !important; color: var(--mk-fg) !important; }
+        .alert-danger, .alert-error { background-color: rgba(249, 38, 114, 0.12) !important; border-color: var(--mk-pink) !important; color: var(--mk-fg) !important; }
+        .alert-warning { background-color: rgba(230, 219, 116, 0.12) !important; border-color: var(--mk-yellow) !important; color: var(--mk-fg) !important; }
+        .alert-info { background-color: rgba(102, 217, 239, 0.12) !important; border-color: var(--mk-cyan) !important; color: var(--mk-fg) !important; }
+        .alert-dark { background-color: rgba(255, 255, 255, 0.05) !important; border-color: var(--mk-border) !important; color: var(--mk-fg) !important; }
+
+        /* Dropdowns, modals, list groups */
+        .dropdown-menu, .modal-content, .list-group-item {
+            background-color: var(--mk-bg-elev) !important; color: var(--mk-fg) !important; border-color: var(--mk-border) !important;
+        }
+        .dropdown-item { color: var(--mk-fg) !important; }
+        .dropdown-item:hover { background-color: var(--mk-bg-header) !important; color: var(--mk-cyan) !important; }
+        .modal-header, .modal-footer { border-color: var(--mk-border) !important; }
+
+        /* Code / pre */
+        code, .font-monospace { color: var(--mk-orange); }
+        pre { background-color: var(--mk-bg-input); color: var(--mk-fg); padding: 0.5rem; border-radius: var(--mk-radius); border: 1px solid var(--mk-border); }
+
+        /* Sentiment (Monokai accents) */
+        .sentiment-bullish { color: var(--mk-green) !important; font-weight: bold; }
+        .sentiment-bearish { color: var(--mk-pink) !important; font-weight: bold; }
+        .sentiment-neutral { color: var(--mk-muted) !important; font-weight: bold; }
+        .sentiment-somewhat-bullish { color: #b6e655 !important; }
+        .sentiment-somewhat-bearish { color: #fa5a8c !important; }
         .article-card { margin-bottom: 1rem; }
         .ticker-badge { margin-right: 0.25rem; }
         .status-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
-        .status-running { background-color: #ffc107; animation: pulse 1.5s infinite; }
-        .status-idle { background-color: #6c757d; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .status-running { background-color: var(--mk-yellow); animation: pulse 1.5s infinite; }
+        .status-idle { background-color: var(--mk-muted); }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: var(--mk-bg); }
+        ::-webkit-scrollbar-thumb { background: var(--mk-border); border-radius: 5px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--mk-muted); }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+    <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">
-                <i class="bi bi-newspaper"></i> News Collector
+                <i class="bi bi-currency-dollar"></i> DollarPunk
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -70,6 +200,13 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+    <script>
+        // Monokai: make Chart.js text/grid readable on the dark background
+        if (window.Chart) {
+            Chart.defaults.color = '#f8f8f2';
+            Chart.defaults.borderColor = '#41423b';
+        }
+    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

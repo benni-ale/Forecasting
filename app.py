@@ -94,7 +94,10 @@ deep_ingestion_status = {
     'total_skipped': 0,
     'current_topic': None,
     'topics_completed': 0,
-    'topics_total': 0
+    'topics_total': 0,
+    'current_day': None,
+    'day_index': 0,
+    'days_total': 0
 }
 
 stock_ingestion_status = {
@@ -107,6 +110,43 @@ stock_ingestion_status = {
     'current_ticker': None,
     'tickers_completed': 0,
     'tickers_total': 0
+}
+
+# Separate status for the multi-day variant of deep research, so it can run
+# (and be tracked) independently from the classic deep research.
+stock_ingestion_multiday_status = {
+    'running': False,
+    'message': 'Idle',
+    'started_at': None,
+    'total_articles': 0,
+    'total_inserted': 0,
+    'total_skipped': 0,
+    'current_ticker': None,
+    'tickers_completed': 0,
+    'tickers_total': 0,
+    'current_day': None,
+    'day_index': 0,
+    'days_total': 0
+}
+
+# Status for the exhaustive "Coverage Ingestion": maximizes article coverage of
+# the last N days by querying every topic and every ticker with limit=1000,
+# both LATEST and EARLIEST sort, recursively subdividing saturated windows.
+# Tracks how many articles are found vs newly inserted, broken down by date.
+coverage_ingestion_status = {
+    'running': False,
+    'message': 'Idle',
+    'started_at': None,
+    'phase': None,             # 'topics' | 'tickers'
+    'current_target': None,    # current topic or ticker
+    'targets_completed': 0,
+    'targets_total': 0,
+    'num_days': 0,
+    'total_found': 0,
+    'total_inserted': 0,
+    'total_skipped': 0,
+    'per_date_found': {},      # 'YYYY-MM-DD' -> articles seen from the API
+    'per_date_inserted': {}    # 'YYYY-MM-DD' -> new articles actually saved
 }
 
 
@@ -327,8 +367,22 @@ def deep_ingestion():
             duration_minutes = 1440
     except (ValueError, TypeError):
         duration_minutes = 60
-    
-    logger.info(f"Deep ingestion requested: {duration_minutes} minutes duration")
+
+    # Number of previous days to loop over. The deep ingestion will be
+    # repeated for each of the last `num_days` days (D-1 ... D-num_days).
+    try:
+        num_days = int(request.form.get('num_days', 1))
+        if num_days < 1:
+            num_days = 1
+        elif num_days > 30:
+            num_days = 30
+    except (ValueError, TypeError):
+        num_days = 1
+
+    logger.info(
+        f"Deep ingestion requested: {duration_minutes} minutes/day x {num_days} day(s) "
+        f"(total ~{duration_minutes * num_days} minutes)"
+    )
     
     # Get API key
     form_api_key = request.form.get('api_key', '').strip()
@@ -371,136 +425,171 @@ def deep_ingestion():
         deep_ingestion_status['topics_completed'] = 0
         deep_ingestion_status['topics_total'] = len(all_topics)
         deep_ingestion_status['current_topic'] = None
-        
-        logger.info(f"Starting deep ingestion: {duration_minutes} minutes duration, {len(all_topics)} topics")
-        
+        deep_ingestion_status['current_day'] = None
+        deep_ingestion_status['day_index'] = 0
+        deep_ingestion_status['days_total'] = num_days
+
+        logger.info(
+            f"Starting deep ingestion: {duration_minutes} minutes/day x {num_days} day(s), "
+            f"{len(all_topics)} topics"
+        )
+
+        total_inserted = 0
+        total_skipped = 0
+        # Deduplication is shared across the whole multi-day run so that the
+        # same article is not re-inserted if it appears in multiple topics/days.
+        seen_urls = set()
+
         try:
             rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
             collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
             db_manager = get_db_manager()
-            
-            # Calculate end time
-            start_time = datetime.now()
-            end_time = start_time + timedelta(minutes=duration_minutes)
-            
-            logger.info(f"Deep ingestion: Running for {duration_minutes} minutes (until {end_time.strftime('%Y-%m-%d %H:%M:%S')})")
-            deep_ingestion_status['message'] = f'Running for {duration_minutes} minutes, collecting from all topics...'
-            
-            total_inserted = 0
-            total_skipped = 0
-            seen_urls = set()  # Global deduplication across all topics
-            
-            # Start from NOW and go backwards in time
-            current_end = datetime.now()
-            # Go back up to 1 year initially, will continue going back as time allows
-            initial_start = current_end - timedelta(days=365)
-            current_start = initial_start
-            
-            topic_index = 0
-            chunk_num = 0
-            round_num = 0  # Track how many complete rounds through all topics
-            
-            # Keep running until time expires
-            while datetime.now() < end_time and deep_ingestion_status['running']:
-                # Cycle through topics - priority to new topics over older news
-                topic = all_topics[topic_index % len(all_topics)]
-                
-                # Check if we've completed a full round through all topics
-                if topic_index > 0 and (topic_index % len(all_topics)) == 0:
-                    round_num += 1
-                    # After completing a round, go backwards in time for next round
-                    current_end = current_end - timedelta(days=30)
-                    # If we've gone too far back, reset to now and start fresh
-                    if current_end < current_start:
-                        current_end = datetime.now()
-                        current_start = current_end - timedelta(days=365)
-                        round_num = 0
-                    logger.info(f"Deep ingestion: Completed round {round_num}, moving back in time. Next range: {current_end.strftime('%Y%m%dT%H%M')}")
-                
-                topic_index += 1
-                
-                deep_ingestion_status['current_topic'] = topic
-                deep_ingestion_status['topics_completed'] = round_num
-                # Calculate remaining time
-                remaining_seconds = (end_time - datetime.now()).total_seconds()
-                remaining_minutes = int(remaining_seconds / 60)
-                remaining_secs = int(remaining_seconds % 60)
-                deep_ingestion_status['message'] = f'Topic: {topic} (Round {round_num + 1}) | Time remaining: {remaining_minutes}m {remaining_secs}s'
-                
-                chunk_num += 1
-                chunk_days = 30
-                
-                # Go backwards: chunk_end is more recent, chunk_start is older
-                chunk_start = max(current_end - timedelta(days=chunk_days), current_start)
-                chunk_from = chunk_start.strftime('%Y%m%dT%H%M')
-                chunk_to = current_end.strftime('%Y%m%dT%H%M')
-                
-                logger.info(f"Deep ingestion: Topic {topic}, round {round_num + 1}, chunk {chunk_num}: {chunk_from} to {chunk_to}")
-                
-                try:
-                    # Fetch articles for this chunk
-                    chunk_data = collector._single_request(
-                        tickers=None,
-                        topics=topic,
-                        time_from=chunk_from,
-                        time_to=chunk_to,
-                        limit=50,
-                        sort="LATEST"
+
+            today_midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Outer loop: one full deep ingestion per previous day (D-1 ... D-num_days)
+            for day_offset in range(1, num_days + 1):
+                if not deep_ingestion_status['running']:
+                    logger.info("Deep ingestion stopped by user before starting next day")
+                    break
+
+                day_start = today_midnight - timedelta(days=day_offset)
+                day_end = day_start + timedelta(days=1) - timedelta(minutes=1)
+                day_label = day_start.strftime('%Y-%m-%d')
+
+                day_from = day_start.strftime('%Y%m%dT%H%M')
+                day_to = day_end.strftime('%Y%m%dT%H%M')
+
+                # Each day gets its own duration budget, like a standalone deep ingestion
+                day_deadline = datetime.now() + timedelta(minutes=duration_minutes)
+
+                deep_ingestion_status['current_day'] = day_label
+                deep_ingestion_status['day_index'] = day_offset
+                deep_ingestion_status['topics_completed'] = 0
+                logger.info(
+                    f"Deep ingestion: Day {day_offset}/{num_days} ({day_label}) "
+                    f"running for {duration_minutes} minutes, range {day_from} -> {day_to}"
+                )
+
+                topic_index = 0
+                round_num = 0
+                chunk_num = 0
+
+                # Inner loop: cycle through topics for this day until its budget is over
+                while datetime.now() < day_deadline and deep_ingestion_status['running']:
+                    topic = all_topics[topic_index % len(all_topics)]
+
+                    # Track full rounds through all topics within this day
+                    if topic_index > 0 and (topic_index % len(all_topics)) == 0:
+                        round_num += 1
+                        logger.info(
+                            f"Deep ingestion: Day {day_offset}/{num_days} ({day_label}) "
+                            f"completed round {round_num}"
+                        )
+
+                    topic_index += 1
+                    chunk_num += 1
+
+                    deep_ingestion_status['current_topic'] = topic
+                    deep_ingestion_status['topics_completed'] = round_num
+
+                    remaining_seconds = (day_deadline - datetime.now()).total_seconds()
+                    remaining_minutes = int(remaining_seconds / 60)
+                    remaining_secs = int(remaining_seconds % 60)
+                    deep_ingestion_status['message'] = (
+                        f'Day {day_offset}/{num_days} ({day_label}) | '
+                        f'Topic: {topic} (Round {round_num + 1}) | '
+                        f'Time left on day: {remaining_minutes}m {remaining_secs}s'
                     )
-                    
-                    chunk_articles = chunk_data.get('feed', [])
-                    
-                    # Deduplicate globally
-                    new_articles = []
-                    for article in chunk_articles:
-                        url = article.get('url')
-                        if url and url not in seen_urls:
-                            seen_urls.add(url)
-                            new_articles.append(article)
-                    
-                    logger.info(f"Deep ingestion: Topic {topic}, round {round_num + 1}, chunk {chunk_num}: {len(new_articles)} new articles")
-                    
-                    # Save to DB after each chunk (not waiting for all chunks)
-                    if new_articles:
-                        with db_manager:
-                            result = db_manager.save_articles(new_articles)
-                            total_inserted += result['inserted']
-                            total_skipped += result['skipped']
-                            deep_ingestion_status['total_inserted'] = total_inserted
-                            deep_ingestion_status['total_skipped'] = total_skipped
-                            deep_ingestion_status['total_articles'] = total_inserted + total_skipped
-                            logger.info(f"Deep ingestion: Saved chunk - {result['inserted']} inserted, {result['skipped']} skipped")
-                    
-                except Exception as e:
-                    logger.error(f"Error in deep ingestion chunk for topic {topic}: {str(e)}", exc_info=True)
-                    # Continue with next request
-                
-                # Rate limit delay (only if we have time left)
-                if datetime.now() < end_time:
-                    time.sleep(collector.request_delay)
-            
+
+                    logger.info(
+                        f"Deep ingestion: Day {day_offset}/{num_days} ({day_label}), "
+                        f"topic {topic}, round {round_num + 1}, chunk {chunk_num}: "
+                        f"{day_from} to {day_to}"
+                    )
+
+                    try:
+                        chunk_data = collector._single_request(
+                            tickers=None,
+                            topics=topic,
+                            time_from=day_from,
+                            time_to=day_to,
+                            limit=50,
+                            sort="LATEST"
+                        )
+
+                        chunk_articles = chunk_data.get('feed', [])
+
+                        # Deduplicate globally across all days/topics
+                        new_articles = []
+                        for article in chunk_articles:
+                            url = article.get('url')
+                            if url and url not in seen_urls:
+                                seen_urls.add(url)
+                                new_articles.append(article)
+
+                        logger.info(
+                            f"Deep ingestion: Day {day_offset}/{num_days} ({day_label}), "
+                            f"topic {topic}, round {round_num + 1}, chunk {chunk_num}: "
+                            f"{len(new_articles)} new articles"
+                        )
+
+                        if new_articles:
+                            with db_manager:
+                                result = db_manager.save_articles(new_articles)
+                                total_inserted += result['inserted']
+                                total_skipped += result['skipped']
+                                deep_ingestion_status['total_inserted'] = total_inserted
+                                deep_ingestion_status['total_skipped'] = total_skipped
+                                deep_ingestion_status['total_articles'] = total_inserted + total_skipped
+                                logger.info(
+                                    f"Deep ingestion: Saved chunk - "
+                                    f"{result['inserted']} inserted, {result['skipped']} skipped"
+                                )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error in deep ingestion chunk for topic {topic} "
+                            f"on day {day_label}: {str(e)}",
+                            exc_info=True
+                        )
+                        # Continue with next request
+
+                    # Rate limit delay (only if we still have time on this day)
+                    if datetime.now() < day_deadline:
+                        time.sleep(collector.request_delay)
+
             # Final status
             deep_ingestion_status['message'] = (
                 f'✓ Deep ingestion complete! '
-                f'Processed {len(all_topics)} topics, '
+                f'Processed {num_days} day(s) x {len(all_topics)} topics, '
                 f'{total_inserted} new articles inserted, '
                 f'{total_skipped} duplicates skipped'
             )
-            logger.info(f"Deep ingestion completed: {total_inserted} inserted, {total_skipped} skipped")
-            
+            logger.info(
+                f"Deep ingestion completed: {num_days} day(s), "
+                f"{total_inserted} inserted, {total_skipped} skipped"
+            )
+
         except Exception as e:
             logger.error(f"Error in deep ingestion thread: {str(e)}", exc_info=True)
             deep_ingestion_status['message'] = f'Error: {str(e)}'
         finally:
             deep_ingestion_status['running'] = False
             deep_ingestion_status['current_topic'] = None
+            deep_ingestion_status['current_day'] = None
             logger.info("Deep ingestion thread finished")
-    
+
     thread = threading.Thread(target=deep_ingestion_thread)
     thread.daemon = True
     thread.start()
-    
-    flash(f'Deep ingestion started: running for {duration_minutes} minutes, collecting from all topics.', 'info')
+
+    total_minutes = duration_minutes * num_days
+    flash(
+        f'Deep ingestion started: {duration_minutes} min/day x {num_days} day(s) '
+        f'(~{total_minutes} min totali), collecting from all topics.',
+        'info'
+    )
     return redirect(url_for('index'))
 
 
@@ -540,7 +629,7 @@ def deep_research():
             duration_minutes = 1440
     except (ValueError, TypeError):
         duration_minutes = 120
-    
+
     logger.info(f"Deep research requested: {duration_minutes} minutes duration")
     
     # Get API key
@@ -839,6 +928,819 @@ def stop_deep_research():
         logger.info("Deep research stop requested")
         return jsonify({'status': 'stopping'})
     return jsonify({'status': 'not_running'})
+
+
+@app.route('/deep-research-multiday', methods=['POST'])
+def deep_research_multiday():
+    """
+    Start a multi-day deep research: same logic as the classic deep research
+    (chunks of 30 days going backwards in time, cycling through all stocks)
+    but executed N times, one per previous day. For each of the last `num_days`
+    days the full deep research is repeated for `duration_minutes` minutes,
+    so the total runtime is approximately `duration_minutes * num_days`.
+    """
+    global stock_ingestion_multiday_status
+
+    if stock_ingestion_multiday_status['running']:
+        logger.warning("Multi-day deep research already in progress")
+        flash('Multi-day deep research already in progress. Please wait.', 'warning')
+        return redirect(url_for('index'))
+
+    # Duration per day (in minutes)
+    try:
+        duration_minutes = int(request.form.get('duration_minutes', 120))
+        if duration_minutes < 1:
+            duration_minutes = 1
+        elif duration_minutes > 1440:
+            duration_minutes = 1440
+    except (ValueError, TypeError):
+        duration_minutes = 120
+
+    # Number of previous days to iterate over (D-1 ... D-num_days)
+    try:
+        num_days = int(request.form.get('num_days', 7))
+        if num_days < 1:
+            num_days = 1
+        elif num_days > 30:
+            num_days = 30
+    except (ValueError, TypeError):
+        num_days = 7
+
+    logger.info(
+        f"Multi-day deep research requested: {duration_minutes} min/day x {num_days} day(s) "
+        f"(total ~{duration_minutes * num_days} minutes)"
+    )
+
+    form_api_key = request.form.get('api_key', '').strip()
+    env_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    api_key = form_api_key if form_api_key else env_api_key
+
+    if not api_key:
+        logger.error("API key not provided for multi-day deep research")
+        flash('API key is required for multi-day deep research.', 'error')
+        return redirect(url_for('index'))
+
+    def deep_research_multiday_thread():
+        global stock_ingestion_multiday_status
+        stock_ingestion_multiday_status['running'] = True
+        stock_ingestion_multiday_status['started_at'] = datetime.now().isoformat()
+        stock_ingestion_multiday_status['total_articles'] = 0
+        stock_ingestion_multiday_status['total_inserted'] = 0
+        stock_ingestion_multiday_status['total_skipped'] = 0
+        stock_ingestion_multiday_status['tickers_completed'] = 0
+        stock_ingestion_multiday_status['tickers_total'] = 0
+        stock_ingestion_multiday_status['current_ticker'] = None
+        stock_ingestion_multiday_status['current_day'] = None
+        stock_ingestion_multiday_status['day_index'] = 0
+        stock_ingestion_multiday_status['days_total'] = num_days
+
+        logger.info(
+            f"Starting multi-day deep research: {duration_minutes} min/day x {num_days} day(s)"
+        )
+
+        try:
+            import requests
+            import csv
+            import io
+            rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
+            collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
+            db_manager = get_db_manager()
+
+            overall_start = datetime.now()
+
+            stock_ingestion_multiday_status['message'] = 'Fetching list of all stocks from Alpha Vantage...'
+
+            # Fetch the list of active stocks once (shared across all days)
+            listing_url = "https://www.alphavantage.co/query"
+            listing_params = {
+                "function": "LISTING_STATUS",
+                "apikey": api_key,
+                "datatype": "csv"
+            }
+
+            try:
+                listing_response = requests.get(listing_url, params=listing_params, timeout=120)
+                listing_response.raise_for_status()
+                stocks = []
+                response_text = listing_response.text.strip()
+
+                if ',' in response_text and ('symbol' in response_text.lower() or response_text.count(',') > 5):
+                    try:
+                        csv_reader = csv.DictReader(io.StringIO(response_text))
+                        for row in csv_reader:
+                            symbol = row.get('symbol', '').strip().upper()
+                            status = row.get('status', '').strip().lower()
+                            if symbol and status == 'active':
+                                stocks.append(symbol)
+                    except Exception as csv_error:
+                        logger.warning(f"Failed to parse listing as CSV: {csv_error}, trying JSON...")
+
+                if not stocks:
+                    try:
+                        listing_data = listing_response.json()
+                        if "Error Message" in listing_data:
+                            raise ValueError(f"API Error: {listing_data['Error Message']}")
+                        if "Note" in listing_data:
+                            raise ValueError(f"API Note: {listing_data['Note']}")
+                        if isinstance(listing_data, list):
+                            stocks = [entry.get('symbol', '').upper().strip() for entry in listing_data
+                                      if entry.get('symbol') and entry.get('status', '').lower() == 'active']
+                        elif 'data' in listing_data:
+                            stocks = [entry.get('symbol', '').upper().strip() for entry in listing_data['data']
+                                      if entry.get('symbol') and entry.get('status', '').lower() == 'active']
+                    except (ValueError, json.JSONDecodeError) as json_error:
+                        logger.error(f"Failed to parse LISTING_STATUS. Preview: {response_text[:500]}")
+                        raise ValueError(f"Could not parse LISTING_STATUS response: {json_error}")
+
+                stocks = list(set([s for s in stocks if s and len(s) > 0]))
+                if not stocks:
+                    raise ValueError("No active stocks found in LISTING_STATUS response")
+
+                logger.info(f"Multi-day deep research: retrieved {len(stocks)} active stocks")
+                stock_ingestion_multiday_status['tickers_total'] = len(stocks)
+                stock_ingestion_multiday_status['message'] = (
+                    f'Found {len(stocks)} active stocks. Starting multi-day ingestion '
+                    f'({num_days} days x {duration_minutes} min)...'
+                )
+
+            except Exception as e:
+                logger.error(f"Error fetching stock list (multi-day): {e}", exc_info=True)
+                stock_ingestion_multiday_status['message'] = f'Error fetching stock list: {e}'
+                return
+
+            total_inserted = 0
+            total_skipped = 0
+            # Deduplication is shared across the whole multi-day run so that
+            # the same article is not re-inserted if it appears multiple times.
+            seen_urls = set()
+            total_chunks = 0
+
+            today_midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Outer loop: one full deep research per previous day
+            for day_offset in range(1, num_days + 1):
+                if not stock_ingestion_multiday_status['running']:
+                    logger.info("Multi-day deep research stopped by user before next day")
+                    break
+
+                # Anchor of the day we are processing (D-day_offset)
+                day_anchor = today_midnight - timedelta(days=day_offset - 1)
+                day_label = (today_midnight - timedelta(days=day_offset)).strftime('%Y-%m-%d')
+
+                # Each day gets its own time budget
+                day_deadline = datetime.now() + timedelta(minutes=duration_minutes)
+
+                stock_ingestion_multiday_status['current_day'] = day_label
+                stock_ingestion_multiday_status['day_index'] = day_offset
+                stock_ingestion_multiday_status['tickers_completed'] = 0
+                stock_ingestion_multiday_status['current_ticker'] = None
+                logger.info(
+                    f"Multi-day deep research: Day {day_offset}/{num_days} (anchor {day_label}) "
+                    f"running for {duration_minutes} minutes"
+                )
+
+                # Same chunking strategy as classic deep research, but starting
+                # from the day anchor instead of "now". Chunks of 30 days going
+                # backwards from `day_anchor` to up to ~1 year before it.
+                current_end = day_anchor
+                initial_start = current_end - timedelta(days=365)
+                current_start = initial_start
+
+                ticker_index = 0
+                chunk_num = 0
+                round_num = 0
+
+                while (datetime.now() < day_deadline
+                       and stock_ingestion_multiday_status['running']
+                       and ticker_index < len(stocks)):
+                    ticker = stocks[ticker_index]
+
+                    if ticker_index > 0 and (ticker_index % len(stocks)) == 0:
+                        round_num += 1
+                        current_end = current_end - timedelta(days=30)
+                        if current_end < current_start:
+                            current_end = day_anchor
+                            current_start = current_end - timedelta(days=365)
+                            round_num = 0
+                        logger.info(
+                            f"Multi-day deep research: Day {day_offset}/{num_days} "
+                            f"completed round {round_num}, next range ends "
+                            f"{current_end.strftime('%Y%m%dT%H%M')}"
+                        )
+
+                    ticker_index += 1
+
+                    stock_ingestion_multiday_status['current_ticker'] = ticker
+                    stock_ingestion_multiday_status['tickers_completed'] = round_num
+
+                    remaining_seconds = (day_deadline - datetime.now()).total_seconds()
+                    remaining_minutes = int(remaining_seconds / 60)
+                    remaining_secs = int(remaining_seconds % 60)
+                    stock_ingestion_multiday_status['message'] = (
+                        f'Day {day_offset}/{num_days} ({day_label}) | '
+                        f'Ticker: {ticker} ({ticker_index}/{len(stocks)}, '
+                        f'Round {round_num + 1}) | '
+                        f'Time left on day: {remaining_minutes}m {remaining_secs}s'
+                    )
+
+                    chunk_num += 1
+                    chunk_days = 30
+                    chunk_start = max(current_end - timedelta(days=chunk_days), current_start)
+                    chunk_from = chunk_start.strftime('%Y%m%dT%H%M')
+                    chunk_to = current_end.strftime('%Y%m%dT%H%M')
+
+                    logger.info(
+                        f"Multi-day deep research: Day {day_offset}/{num_days}, "
+                        f"ticker {ticker}, round {round_num + 1}, chunk {chunk_num}: "
+                        f"{chunk_from} to {chunk_to}"
+                    )
+
+                    try:
+                        ticker_to_use = ticker
+                        chunk_data = None
+
+                        try:
+                            chunk_data = collector._single_request(
+                                tickers=ticker_to_use,
+                                topics=None,
+                                time_from=chunk_from,
+                                time_to=chunk_to,
+                                limit=50,
+                                sort="LATEST"
+                            )
+                        except ValueError as e:
+                            error_msg = str(e)
+                            if "Invalid ticker format" in error_msg:
+                                if "-" in ticker:
+                                    ticker_to_use = ticker.replace("-", "_")
+                                    logger.info(
+                                        f"Ticker {ticker} invalid format, trying variant: {ticker_to_use}"
+                                    )
+                                    try:
+                                        chunk_data = collector._single_request(
+                                            tickers=ticker_to_use,
+                                            topics=None,
+                                            time_from=chunk_from,
+                                            time_to=chunk_to,
+                                            limit=50,
+                                            sort="LATEST"
+                                        )
+                                    except ValueError as e2:
+                                        logger.warning(
+                                            f"Ticker {ticker} and variant {ticker_to_use} both failed: {e2}"
+                                        )
+                                        current_end = day_anchor
+                                        current_start = current_end - timedelta(days=365)
+                                        continue
+                                else:
+                                    logger.warning(
+                                        f"Ticker {ticker} invalid format: {error_msg}"
+                                    )
+                                    current_end = day_anchor
+                                    current_start = current_end - timedelta(days=365)
+                                    continue
+                            else:
+                                raise
+
+                        if not chunk_data:
+                            current_end = day_anchor
+                            current_start = current_end - timedelta(days=365)
+                            continue
+
+                        chunk_articles = chunk_data.get('feed', [])
+
+                        new_articles = []
+                        for article in chunk_articles:
+                            url = article.get('url')
+                            if url and url not in seen_urls:
+                                seen_urls.add(url)
+                                new_articles.append(article)
+
+                        logger.info(
+                            f"Multi-day deep research: Day {day_offset}/{num_days}, "
+                            f"ticker {ticker}, round {round_num + 1}, chunk {chunk_num}: "
+                            f"{len(new_articles)} new articles"
+                        )
+
+                        if new_articles:
+                            with db_manager:
+                                result = db_manager.save_articles(new_articles)
+                                total_inserted += result['inserted']
+                                total_skipped += result['skipped']
+                                stock_ingestion_multiday_status['total_inserted'] = total_inserted
+                                stock_ingestion_multiday_status['total_skipped'] = total_skipped
+                                stock_ingestion_multiday_status['total_articles'] = total_inserted + total_skipped
+                                logger.info(
+                                    f"Multi-day deep research: Saved chunk - "
+                                    f"{result['inserted']} inserted, {result['skipped']} skipped"
+                                )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error in multi-day deep research chunk for ticker {ticker} "
+                            f"(day {day_offset}/{num_days}): {e}",
+                            exc_info=True
+                        )
+                        current_end = day_anchor
+                        current_start = current_end - timedelta(days=365)
+
+                    if datetime.now() < day_deadline:
+                        time.sleep(collector.request_delay)
+
+                total_chunks += chunk_num
+
+            elapsed_minutes = int((datetime.now() - overall_start).total_seconds() / 60)
+            elapsed_seconds = int((datetime.now() - overall_start).total_seconds() % 60)
+            stock_ingestion_multiday_status['message'] = (
+                f'✓ Multi-day deep research complete! '
+                f'Ran for {elapsed_minutes}m {elapsed_seconds}s, '
+                f'Processed {num_days} day(s) x up to {len(stocks)} stocks, '
+                f'{total_chunks} chunks, '
+                f'{total_inserted} new articles inserted, '
+                f'{total_skipped} duplicates skipped'
+            )
+            logger.info(
+                f"Multi-day deep research completed: {elapsed_minutes}m {elapsed_seconds}s, "
+                f"{num_days} day(s), {total_chunks} chunks, "
+                f"{total_inserted} inserted, {total_skipped} skipped"
+            )
+
+        except Exception as e:
+            logger.error(f"Error in multi-day deep research thread: {e}", exc_info=True)
+            stock_ingestion_multiday_status['message'] = f'Error: {e}'
+        finally:
+            stock_ingestion_multiday_status['running'] = False
+            stock_ingestion_multiday_status['current_ticker'] = None
+            stock_ingestion_multiday_status['current_day'] = None
+            logger.info("Multi-day deep research thread finished")
+
+    thread = threading.Thread(target=deep_research_multiday_thread)
+    thread.daemon = True
+    thread.start()
+
+    total_minutes = duration_minutes * num_days
+    flash(
+        f'Multi-day deep research started: {duration_minutes} min/day x {num_days} day(s) '
+        f'(~{total_minutes} min totali), collecting from all available stocks.',
+        'info'
+    )
+    return redirect(url_for('index'))
+
+
+@app.route('/api/deep-research-multiday/status')
+def get_deep_research_multiday_status():
+    """Get multi-day deep research status (AJAX endpoint)."""
+    return jsonify(stock_ingestion_multiday_status)
+
+
+@app.route('/api/deep-research-multiday/stop', methods=['POST'])
+def stop_deep_research_multiday():
+    """Stop multi-day deep research."""
+    global stock_ingestion_multiday_status
+    if stock_ingestion_multiday_status['running']:
+        stock_ingestion_multiday_status['running'] = False
+        logger.info("Multi-day deep research stop requested")
+        return jsonify({'status': 'stopping'})
+    return jsonify({'status': 'not_running'})
+
+
+@app.route('/coverage-ingestion', methods=['POST'])
+def coverage_ingestion():
+    """
+    Exhaustive coverage ingestion of the last N days.
+
+    Maximizes how many articles are collected for a recent period by:
+      - querying with limit=1000 (instead of 50),
+      - using both LATEST and EARLIEST sort on each window (to capture both
+        ends of dense windows that the API truncates),
+      - recursively subdividing any window that comes back "saturated"
+        (>= 1000 results) down to single-day granularity,
+      - iterating over every topic (phase 1) and every active ticker (phase 2).
+
+    Produces a live "news per date" breakdown (found vs newly inserted).
+    """
+    global coverage_ingestion_status
+
+    if coverage_ingestion_status['running']:
+        logger.warning("Coverage ingestion already in progress")
+        flash('Coverage ingestion already in progress. Please wait.', 'warning')
+        return redirect(url_for('index'))
+
+    # Number of previous days to cover exhaustively
+    try:
+        num_days = int(request.form.get('num_days', 7))
+        if num_days < 1:
+            num_days = 1
+        elif num_days > 30:
+            num_days = 30
+    except (ValueError, TypeError):
+        num_days = 7
+
+    # Optional safety budget in minutes (0 = unlimited, stop manually)
+    try:
+        max_minutes = int(request.form.get('max_minutes', 0))
+        if max_minutes < 0:
+            max_minutes = 0
+        elif max_minutes > 1440:
+            max_minutes = 1440
+    except (ValueError, TypeError):
+        max_minutes = 0
+
+    form_api_key = request.form.get('api_key', '').strip()
+    env_api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    api_key = form_api_key if form_api_key else env_api_key
+
+    if not api_key:
+        logger.error("API key not provided for coverage ingestion")
+        flash('API key is required for coverage ingestion.', 'error')
+        return redirect(url_for('index'))
+
+    logger.info(
+        f"Coverage ingestion requested: last {num_days} day(s), "
+        f"max_minutes={max_minutes or 'unlimited'}"
+    )
+
+    all_topics = [
+        'blockchain', 'earnings', 'ipo', 'mergers_and_acquisitions',
+        'financial_markets', 'economy_fiscal', 'economy_monetary',
+        'economy_macro', 'energy_transportation', 'finance',
+        'life_sciences', 'manufacturing', 'real_estate',
+        'retail_wholesale', 'technology'
+    ]
+
+    def coverage_ingestion_thread():
+        global coverage_ingestion_status
+        coverage_ingestion_status['running'] = True
+        coverage_ingestion_status['started_at'] = datetime.now().isoformat()
+        coverage_ingestion_status['phase'] = None
+        coverage_ingestion_status['current_target'] = None
+        coverage_ingestion_status['targets_completed'] = 0
+        coverage_ingestion_status['targets_total'] = 0
+        coverage_ingestion_status['num_days'] = num_days
+        coverage_ingestion_status['total_found'] = 0
+        coverage_ingestion_status['total_inserted'] = 0
+        coverage_ingestion_status['total_skipped'] = 0
+        coverage_ingestion_status['per_date_found'] = {}
+        coverage_ingestion_status['per_date_inserted'] = {}
+        coverage_ingestion_status['message'] = 'Starting coverage ingestion...'
+
+        # Mutable counters shared with the inner helper
+        counters = {'found': 0, 'inserted': 0, 'skipped': 0}
+        seen_urls = set()
+
+        # Resume support: load previously completed targets from disk. Progress is
+        # only reused when the search parameters match (same num_days window).
+        progress = _load_coverage_progress()
+        if progress.get('num_days') == num_days:
+            completed_topics = set(progress.get('completed_topics', []))
+            completed_tickers = set(progress.get('completed_tickers', []))
+        else:
+            completed_topics = set()
+            completed_tickers = set()
+        coverage_ingestion_status['resumed'] = bool(completed_topics or completed_tickers)
+        coverage_ingestion_status['resumed_topics'] = len(completed_topics)
+        coverage_ingestion_status['resumed_tickers'] = len(completed_tickers)
+
+        def persist_progress():
+            _save_coverage_progress({
+                'num_days': num_days,
+                'completed_topics': sorted(completed_topics),
+                'completed_tickers': sorted(completed_tickers),
+                'updated_at': datetime.now().isoformat()
+            })
+
+        deadline = None
+        if max_minutes > 0:
+            deadline = datetime.now() + timedelta(minutes=max_minutes)
+
+        MAX_DEPTH = 6           # safety cap on recursive subdivision
+        SATURATION = 1000       # window is "full" when it returns this many
+
+        try:
+            rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
+            collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
+            db_manager = get_db_manager()
+
+            window_end = datetime.now()
+            window_start = window_end - timedelta(days=num_days)
+
+            def time_left():
+                return deadline is None or datetime.now() < deadline
+
+            def record_and_save(new_articles):
+                """Bucket new articles by date, save per date, update counters."""
+                if not new_articles:
+                    return
+                by_day = {}
+                for art in new_articles:
+                    day_raw = (art.get('time_published') or '')[:8]
+                    if len(day_raw) == 8:
+                        day = f"{day_raw[:4]}-{day_raw[4:6]}-{day_raw[6:8]}"
+                    else:
+                        day = 'unknown'
+                    by_day.setdefault(day, []).append(art)
+
+                for day, day_articles in by_day.items():
+                    coverage_ingestion_status['per_date_found'][day] = (
+                        coverage_ingestion_status['per_date_found'].get(day, 0)
+                        + len(day_articles)
+                    )
+                    counters['found'] += len(day_articles)
+                    try:
+                        with db_manager:
+                            result = db_manager.save_articles(day_articles)
+                        coverage_ingestion_status['per_date_inserted'][day] = (
+                            coverage_ingestion_status['per_date_inserted'].get(day, 0)
+                            + result['inserted']
+                        )
+                        counters['inserted'] += result['inserted']
+                        counters['skipped'] += result['skipped']
+                    except Exception as e:
+                        logger.error(f"Coverage ingestion: error saving {day}: {e}", exc_info=True)
+
+                coverage_ingestion_status['total_found'] = counters['found']
+                coverage_ingestion_status['total_inserted'] = counters['inserted']
+                coverage_ingestion_status['total_skipped'] = counters['skipped']
+
+            def fetch_window(tickers, topics, win_from, win_to, depth):
+                """Fetch a window with dual sort; subdivide if saturated."""
+                if not coverage_ingestion_status['running'] or not time_left():
+                    return
+                saturated = False
+                win_from_str = win_from.strftime('%Y%m%dT%H%M')
+                win_to_str = win_to.strftime('%Y%m%dT%H%M')
+
+                for sort_order in ('LATEST', 'EARLIEST'):
+                    if not coverage_ingestion_status['running'] or not time_left():
+                        return
+                    try:
+                        ticker_to_use = tickers
+                        try:
+                            data = collector._single_request(
+                                tickers=ticker_to_use, topics=topics,
+                                time_from=win_from_str, time_to=win_to_str,
+                                limit=SATURATION, sort=sort_order
+                            )
+                        except ValueError as e:
+                            # Handle invalid ticker format (dash -> underscore)
+                            if tickers and "Invalid ticker format" in str(e) and "-" in tickers:
+                                ticker_to_use = tickers.replace("-", "_")
+                                data = collector._single_request(
+                                    tickers=ticker_to_use, topics=topics,
+                                    time_from=win_from_str, time_to=win_to_str,
+                                    limit=SATURATION, sort=sort_order
+                                )
+                            else:
+                                raise
+
+                        articles = data.get('feed', []) if data else []
+                        if len(articles) >= SATURATION:
+                            saturated = True
+
+                        new_articles = []
+                        for art in articles:
+                            url = art.get('url')
+                            if url and url not in seen_urls:
+                                seen_urls.add(url)
+                                new_articles.append(art)
+
+                        record_and_save(new_articles)
+
+                    except Exception as e:
+                        logger.error(
+                            f"Coverage ingestion: error on window {win_from_str}-{win_to_str} "
+                            f"(tickers={tickers}, topics={topics}, sort={sort_order}): {e}",
+                            exc_info=True
+                        )
+
+                    if time_left():
+                        time.sleep(collector.request_delay)
+
+                # Recursively subdivide saturated windows down to 1-day granularity
+                if (saturated and depth < MAX_DEPTH
+                        and (win_to - win_from) > timedelta(days=1)
+                        and coverage_ingestion_status['running'] and time_left()):
+                    mid = win_from + (win_to - win_from) / 2
+                    fetch_window(tickers, topics, win_from, mid, depth + 1)
+                    fetch_window(tickers, topics, mid, win_to, depth + 1)
+
+            # ---- Phase 1: topics ----
+            coverage_ingestion_status['phase'] = 'topics'
+            coverage_ingestion_status['targets_total'] = len(all_topics)
+            coverage_ingestion_status['targets_completed'] = len(
+                [t for t in all_topics if t in completed_topics]
+            )
+            for i, topic in enumerate(all_topics):
+                if not coverage_ingestion_status['running'] or not time_left():
+                    break
+                if topic in completed_topics:
+                    continue  # already processed in a previous (stopped) run
+                coverage_ingestion_status['current_target'] = topic
+                coverage_ingestion_status['message'] = (
+                    f'Phase 1/2 (topics): {topic} ({i + 1}/{len(all_topics)})'
+                )
+                fetch_window(None, topic, window_start, window_end, 0)
+                # Only mark complete if the topic was fully processed (not interrupted)
+                if coverage_ingestion_status['running'] and time_left():
+                    completed_topics.add(topic)
+                    persist_progress()
+                coverage_ingestion_status['targets_completed'] = len(completed_topics)
+
+            # ---- Phase 2: tickers ----
+            if coverage_ingestion_status['running'] and time_left():
+                coverage_ingestion_status['phase'] = 'tickers'
+                coverage_ingestion_status['message'] = 'Fetching list of all stocks from Alpha Vantage...'
+                stocks = _fetch_active_stocks(api_key)
+
+                if not stocks:
+                    coverage_ingestion_status['message'] = (
+                        'Topics done. Could not fetch ticker list; skipping ticker phase.'
+                    )
+                    logger.warning("Coverage ingestion: no tickers available, skipping phase 2")
+                else:
+                    coverage_ingestion_status['targets_total'] = len(stocks)
+                    coverage_ingestion_status['targets_completed'] = len(
+                        [s for s in stocks if s in completed_tickers]
+                    )
+                    for i, ticker in enumerate(stocks):
+                        if not coverage_ingestion_status['running'] or not time_left():
+                            break
+                        if ticker in completed_tickers:
+                            continue  # already processed in a previous (stopped) run
+                        coverage_ingestion_status['current_target'] = ticker
+                        coverage_ingestion_status['message'] = (
+                            f'Phase 2/2 (tickers): {ticker} ({i + 1}/{len(stocks)})'
+                        )
+                        fetch_window(ticker, None, window_start, window_end, 0)
+                        # Only mark complete if fully processed (not interrupted)
+                        if coverage_ingestion_status['running'] and time_left():
+                            completed_tickers.add(ticker)
+                            # Persist periodically to limit disk writes on huge lists
+                            if len(completed_tickers) % 10 == 0:
+                                persist_progress()
+                        coverage_ingestion_status['targets_completed'] = len(completed_tickers)
+                    # Persist final ticker progress for this run segment
+                    persist_progress()
+
+            stopped = not coverage_ingestion_status['running']
+            timed_out = deadline is not None and datetime.now() >= deadline
+            fully_complete = not stopped and not timed_out
+            prefix = 'Stopped' if stopped else ('Time budget reached' if timed_out else '✓ Complete')
+
+            if fully_complete:
+                # Whole run finished: clear saved progress so the next run is fresh
+                _clear_coverage_progress()
+                resume_note = ''
+            else:
+                # Partial run: progress is kept on disk for the next resume
+                persist_progress()
+                resume_note = ' | Progress saved — restart to resume from here'
+
+            coverage_ingestion_status['message'] = (
+                f'{prefix}! Coverage of last {num_days} day(s): '
+                f'{counters["found"]} articles found, '
+                f'{counters["inserted"]} new inserted, '
+                f'{counters["skipped"]} duplicates skipped'
+                f'{resume_note}'
+            )
+            logger.info(
+                f"Coverage ingestion finished ({prefix}): "
+                f"{counters['found']} found, {counters['inserted']} inserted, "
+                f"{counters['skipped']} skipped, "
+                f"completed topics={len(completed_topics)}, tickers={len(completed_tickers)}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error in coverage ingestion thread: {e}", exc_info=True)
+            coverage_ingestion_status['message'] = f'Error: {e}'
+        finally:
+            coverage_ingestion_status['running'] = False
+            coverage_ingestion_status['current_target'] = None
+            logger.info("Coverage ingestion thread finished")
+
+    thread = threading.Thread(target=coverage_ingestion_thread)
+    thread.daemon = True
+    thread.start()
+
+    flash(
+        f'Coverage ingestion started: exhaustive coverage of the last {num_days} day(s) '
+        f'across all topics and tickers.',
+        'info'
+    )
+    return redirect(url_for('index'))
+
+
+COVERAGE_PROGRESS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'coverage_progress.json'
+)
+
+
+def _load_coverage_progress():
+    """Load the persisted coverage ingestion progress (completed targets)."""
+    try:
+        if os.path.exists(COVERAGE_PROGRESS_FILE):
+            with open(COVERAGE_PROGRESS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Coverage ingestion: could not load progress file: {e}")
+    return {}
+
+
+def _save_coverage_progress(data):
+    """Persist coverage ingestion progress so a stopped run can resume later."""
+    try:
+        with open(COVERAGE_PROGRESS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning(f"Coverage ingestion: could not save progress file: {e}")
+
+
+def _clear_coverage_progress():
+    """Remove the persisted coverage ingestion progress (fresh start)."""
+    try:
+        if os.path.exists(COVERAGE_PROGRESS_FILE):
+            os.remove(COVERAGE_PROGRESS_FILE)
+    except Exception as e:
+        logger.warning(f"Coverage ingestion: could not clear progress file: {e}")
+
+
+def _fetch_active_stocks(api_key):
+    """Fetch the list of active stock symbols from Alpha Vantage LISTING_STATUS."""
+    import csv
+    import io
+    listing_url = "https://www.alphavantage.co/query"
+    listing_params = {"function": "LISTING_STATUS", "apikey": api_key, "datatype": "csv"}
+    try:
+        resp = requests.get(listing_url, params=listing_params, timeout=120)
+        resp.raise_for_status()
+        text = resp.text.strip()
+        stocks = []
+        if ',' in text and ('symbol' in text.lower() or text.count(',') > 5):
+            try:
+                reader = csv.DictReader(io.StringIO(text))
+                for row in reader:
+                    symbol = row.get('symbol', '').strip().upper()
+                    status = row.get('status', '').strip().lower()
+                    if symbol and status == 'active':
+                        stocks.append(symbol)
+            except Exception as csv_error:
+                logger.warning(f"Coverage ingestion: failed to parse listing CSV: {csv_error}")
+        if not stocks:
+            try:
+                data = resp.json()
+                if isinstance(data, list):
+                    stocks = [e.get('symbol', '').upper().strip() for e in data
+                              if e.get('symbol') and e.get('status', '').lower() == 'active']
+                elif 'data' in data:
+                    stocks = [e.get('symbol', '').upper().strip() for e in data['data']
+                              if e.get('symbol') and e.get('status', '').lower() == 'active']
+            except (ValueError, json.JSONDecodeError):
+                logger.error(f"Coverage ingestion: could not parse LISTING_STATUS. Preview: {text[:300]}")
+        return list(set([s for s in stocks if s]))
+    except Exception as e:
+        logger.error(f"Coverage ingestion: error fetching stock list: {e}", exc_info=True)
+        return []
+
+
+@app.route('/api/coverage-ingestion/status')
+def get_coverage_ingestion_status():
+    """Get coverage ingestion status (AJAX endpoint), including saved progress."""
+    payload = dict(coverage_ingestion_status)
+    progress = _load_coverage_progress()
+    if progress:
+        payload['saved_progress'] = {
+            'num_days': progress.get('num_days'),
+            'completed_topics': len(progress.get('completed_topics', [])),
+            'completed_tickers': len(progress.get('completed_tickers', [])),
+            'updated_at': progress.get('updated_at')
+        }
+    else:
+        payload['saved_progress'] = None
+    return jsonify(payload)
+
+
+@app.route('/api/coverage-ingestion/stop', methods=['POST'])
+def stop_coverage_ingestion():
+    """Stop coverage ingestion."""
+    global coverage_ingestion_status
+    if coverage_ingestion_status['running']:
+        coverage_ingestion_status['running'] = False
+        logger.info("Coverage ingestion stop requested")
+        return jsonify({'status': 'stopping'})
+    return jsonify({'status': 'not_running'})
+
+
+@app.route('/api/coverage-ingestion/reset', methods=['POST'])
+def reset_coverage_ingestion():
+    """Clear the saved coverage ingestion progress so the next run starts fresh."""
+    if coverage_ingestion_status['running']:
+        return jsonify({'status': 'running', 'error': 'Stop the run before resetting progress.'}), 409
+    _clear_coverage_progress()
+    coverage_ingestion_status['resumed'] = False
+    coverage_ingestion_status['resumed_topics'] = 0
+    coverage_ingestion_status['resumed_tickers'] = 0
+    logger.info("Coverage ingestion progress reset")
+    return jsonify({'status': 'reset'})
 
 
 @app.route('/portfolio')
@@ -2839,6 +3741,34 @@ def sql_query():
         error_msg = str(e)
         logger.error(f"SQL query error: {error_msg}", exc_info=True)
         return render_template('sql_query.html', query=query, error=error_msg, tables=tables, views=views)
+
+
+@app.route('/api/sql-query/view-definition/<view_name>')
+def get_view_definition(view_name):
+    """Return the SQL definition of a view for the SQL Query GUI."""
+    import re
+    if not view_name or not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', view_name):
+        return jsonify({'error': 'Invalid view name'}), 400
+    try:
+        db_manager = get_db_manager()
+        with db_manager:
+            if not db_manager.conn:
+                return jsonify({'error': 'Database connection not established'}), 500
+            cursor = db_manager.conn.cursor()
+            # pg_views.definition contains the full view definition in PostgreSQL
+            cursor.execute("""
+                SELECT definition 
+                FROM pg_views 
+                WHERE schemaname = 'public' AND viewname = %s
+            """, (view_name,))
+            row = cursor.fetchone()
+            cursor.close()
+            if not row:
+                return jsonify({'error': f'View "{view_name}" not found'}), 404
+            return jsonify({'view_name': view_name, 'definition': row[0]})
+    except Exception as e:
+        logger.error(f"Error fetching view definition for {view_name}: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 def ensure_companies_table_exists():

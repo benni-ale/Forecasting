@@ -191,10 +191,20 @@
                                placeholder="Leave empty to use .env">
                     </div>
                     <div class="mb-3">
-                        <label for="duration_minutes" class="form-label">Duration (minutes)</label>
+                        <label for="duration_minutes" class="form-label">Duration per day (minutes)</label>
                         <input type="number" class="form-control" id="duration_minutes" name="duration_minutes" 
                                value="60" min="1" max="1440" required>
-                        <small class="form-text text-muted">How long to run the ingestion (max 1440 = 24 hours)</small>
+                        <small class="form-text text-muted">How long to run the ingestion for each day (max 1440 = 24 hours)</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="num_days" class="form-label">Number of previous days</label>
+                        <input type="number" class="form-control" id="num_days" name="num_days"
+                               value="1" min="1" max="30" required>
+                        <small class="form-text text-muted">
+                            The deep ingestion will be repeated for each of the last N days
+                            (D-1 ... D-N). Total estimated time:
+                            <strong><span id="deepIngestionTotalHint">60</span> minutes</strong>.
+                        </small>
                     </div>
                     <button type="submit" class="btn btn-warning w-100" id="deepIngestionBtn">
                         <i class="bi bi-magic"></i> Start Deep Ingestion
@@ -260,6 +270,143 @@
                                 <i class="bi bi-stop-circle"></i> Stop
                             </button>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deep Research Multi-Day Section -->
+        <div class="card mt-3 border-dark">
+            <div class="card-header bg-dark text-white">
+                <h5><i class="bi bi-calendar-week"></i> Deep Research (Multi-Day)</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    <strong>Multi-Day Button:</strong> Runs the <em>same</em> Deep Research logic
+                    (all stocks, chunks of 30 days going backwards in time) but repeats it N times,
+                    one per previous day. Each day uses its own anchor (D-1, D-2, ...) so older news
+                    are progressively explored. Useful when a single Deep Research run is not enough
+                    to cover the desired history.
+                </p>
+                <form method="POST" action="/deep-research-multiday" id="deepResearchMultidayForm">
+                    <div class="mb-3">
+                        <label for="deep_research_md_api_key" class="form-label">API Key (optional)</label>
+                        <input type="text" class="form-control" id="deep_research_md_api_key" name="api_key"
+                               placeholder="Leave empty to use .env">
+                    </div>
+                    <div class="mb-3">
+                        <label for="deep_research_md_duration_minutes" class="form-label">Duration per day (minutes)</label>
+                        <input type="number" class="form-control" id="deep_research_md_duration_minutes" name="duration_minutes"
+                               value="120" min="1" max="1440" required>
+                        <small class="form-text text-muted">How long to run for each day (max 1440 = 24 hours)</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="deep_research_md_num_days" class="form-label">Number of previous days</label>
+                        <input type="number" class="form-control" id="deep_research_md_num_days" name="num_days"
+                               value="7" min="1" max="30" required>
+                        <small class="form-text text-muted">
+                            Repeats Deep Research for each of the last N days. Total estimated time:
+                            <strong><span id="deepResearchMultidayTotalHint">840</span> minutes</strong>.
+                        </small>
+                    </div>
+                    <button type="submit" class="btn btn-dark w-100" id="deepResearchMultidayBtn">
+                        <i class="bi bi-calendar-week"></i> Start Multi-Day Deep Research
+                    </button>
+                </form>
+
+                <!-- Deep Research Multi-Day Status -->
+                <div class="mt-3" id="deepResearchMultidayStatus" style="display: none;">
+                    <div class="alert alert-dark">
+                        <p class="mb-1">
+                            <span class="status-indicator" id="deepResearchMultidayStatusIndicator"></span>
+                            <strong id="deepResearchMultidayStatusMessage">Starting...</strong>
+                        </p>
+                        <small class="text-muted" id="deepResearchMultidayStatusDetails"></small>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-danger" onclick="stopDeepResearchMultiday()">
+                                <i class="bi bi-stop-circle"></i> Stop
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Coverage Ingestion Section -->
+        <div class="card mt-3 border-success">
+            <div class="card-header bg-success text-white">
+                <h5><i class="bi bi-bullseye"></i> Coverage Ingestion</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    <strong>Max Coverage:</strong> Exhaustively collects news for the last N days.
+                    Queries every topic (phase 1) and every active ticker (phase 2) with the maximum
+                    page size (1000), using both newest-first and oldest-first ordering, and recursively
+                    splits any "full" time window down to single days so nothing dense is missed.
+                    Shows a live <strong>news-per-date</strong> breakdown (found vs newly inserted).
+                </p>
+                <form method="POST" action="/coverage-ingestion" id="coverageIngestionForm">
+                    <div class="mb-3">
+                        <label for="coverage_api_key" class="form-label">API Key (optional)</label>
+                        <input type="text" class="form-control" id="coverage_api_key" name="api_key"
+                               placeholder="Leave empty to use .env">
+                    </div>
+                    <div class="mb-3">
+                        <label for="coverage_num_days" class="form-label">Last N days to cover</label>
+                        <input type="number" class="form-control" id="coverage_num_days" name="num_days"
+                               value="7" min="1" max="30" required>
+                        <small class="form-text text-muted">Exhaustively cover the most recent N days (max 30).</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="coverage_max_minutes" class="form-label">Time budget (minutes, optional)</label>
+                        <input type="number" class="form-control" id="coverage_max_minutes" name="max_minutes"
+                               value="0" min="0" max="1440">
+                        <small class="form-text text-muted">Safety limit. 0 = unlimited (stop manually). The ticker phase can take a long time.</small>
+                    </div>
+                    <button type="submit" class="btn btn-success w-100" id="coverageIngestionBtn">
+                        <i class="bi bi-bullseye"></i> Start Coverage Ingestion
+                    </button>
+                </form>
+                <div class="mt-2 d-flex align-items-center justify-content-between">
+                    <small class="text-muted" id="coverageResumeNote"></small>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="coverageResetBtn"
+                            onclick="resetCoverageProgress()" style="display: none;">
+                        <i class="bi bi-trash"></i> Reset progress
+                    </button>
+                </div>
+
+                <!-- Coverage Ingestion Status -->
+                <div class="mt-3" id="coverageIngestionStatus" style="display: none;">
+                    <div class="alert alert-success">
+                        <p class="mb-1">
+                            <span class="status-indicator" id="coverageStatusIndicator"></span>
+                            <strong id="coverageStatusMessage">Starting...</strong>
+                        </p>
+                        <small class="text-muted" id="coverageStatusDetails"></small>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-danger" onclick="stopCoverageIngestion()">
+                                <i class="bi bi-stop-circle"></i> Stop
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-responsive" id="coveragePerDateWrap" style="display: none; max-height: 320px; overflow-y: auto;">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th class="text-end">Found</th>
+                                    <th class="text-end">Inserted (new)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="coveragePerDateBody"></tbody>
+                            <tfoot>
+                                <tr class="table-secondary fw-bold">
+                                    <td>Total</td>
+                                    <td class="text-end" id="coverageTotalFound">0</td>
+                                    <td class="text-end" id="coverageTotalInserted">0</td>
+                                </tr>
+                            </tfoot>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -437,11 +584,15 @@
                     statusMessage.textContent = data.message || 'Running...';
                     
                     let details = [];
+                    if (data.days_total > 0) {
+                        const dayLabel = data.current_day ? ` (${data.current_day})` : '';
+                        details.push(`Day: ${data.day_index}/${data.days_total}${dayLabel}`);
+                    }
                     if (data.current_topic) {
                         details.push(`Current topic: ${data.current_topic}`);
                     }
                     if (data.topics_total > 0) {
-                        details.push(`Topics: ${data.topics_completed}/${data.topics_total}`);
+                        details.push(`Round: ${data.topics_completed} (topics/round: ${data.topics_total})`);
                     }
                     if (data.total_inserted > 0 || data.total_skipped > 0) {
                         details.push(`Inserted: ${data.total_inserted}, Skipped: ${data.total_skipped}`);
@@ -487,6 +638,22 @@
     // Update deep ingestion status every 3 seconds
     setInterval(updateDeepIngestionStatus, 3000);
     updateDeepIngestionStatus();
+
+    // Dynamic total-duration hint for Deep Ingestion form
+    function updateDeepIngestionTotalHint() {
+        const durationInput = document.getElementById('duration_minutes');
+        const daysInput = document.getElementById('num_days');
+        const hint = document.getElementById('deepIngestionTotalHint');
+        if (!durationInput || !daysInput || !hint) return;
+        const duration = parseInt(durationInput.value, 10) || 0;
+        const days = parseInt(daysInput.value, 10) || 0;
+        hint.textContent = (duration * days).toString();
+    }
+    ['duration_minutes', 'num_days'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateDeepIngestionTotalHint);
+    });
+    updateDeepIngestionTotalHint();
     
     // Deep Research Status Updates
     function updateDeepResearchStatus() {
@@ -556,6 +723,221 @@
     // Update deep research status every 3 seconds
     setInterval(updateDeepResearchStatus, 3000);
     updateDeepResearchStatus();
+
+    // ===== Deep Research Multi-Day =====
+    function updateDeepResearchMultidayStatus() {
+        fetch('/api/deep-research-multiday/status')
+            .then(response => response.json())
+            .then(data => {
+                const statusContainer = document.getElementById('deepResearchMultidayStatus');
+                const statusIndicator = document.getElementById('deepResearchMultidayStatusIndicator');
+                const statusMessage = document.getElementById('deepResearchMultidayStatusMessage');
+                const statusDetails = document.getElementById('deepResearchMultidayStatusDetails');
+                const btn = document.getElementById('deepResearchMultidayBtn');
+
+                if (data.running) {
+                    statusContainer.style.display = 'block';
+                    statusIndicator.className = 'status-indicator status-running';
+                    statusMessage.textContent = data.message || 'Running...';
+
+                    let details = [];
+                    if (data.days_total > 0) {
+                        const dayLabel = data.current_day ? ` (${data.current_day})` : '';
+                        details.push(`Day: ${data.day_index}/${data.days_total}${dayLabel}`);
+                    }
+                    if (data.current_ticker) {
+                        details.push(`Current ticker: ${data.current_ticker}`);
+                    }
+                    if (data.tickers_total > 0) {
+                        details.push(`Round: ${data.tickers_completed} (tickers/round: ${data.tickers_total})`);
+                    }
+                    if (data.total_inserted > 0 || data.total_skipped > 0) {
+                        details.push(`Inserted: ${data.total_inserted}, Skipped: ${data.total_skipped}`);
+                    }
+                    if (data.started_at) {
+                        const startTime = new Date(data.started_at);
+                        const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000 / 60);
+                        const elapsedSeconds = Math.floor((Date.now() - startTime.getTime()) / 1000) % 60;
+                        details.push(`Running: ${elapsed}m ${elapsedSeconds}s`);
+                    }
+
+                    statusDetails.textContent = details.join(' | ');
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="bi bi-calendar-week"></i> Multi-Day Deep Research Running...';
+                } else {
+                    if (data.message && data.message !== 'Idle') {
+                        statusContainer.style.display = 'block';
+                        statusIndicator.className = 'status-indicator status-idle';
+                        statusMessage.textContent = data.message;
+                        statusDetails.textContent = '';
+                    } else {
+                        statusContainer.style.display = 'none';
+                    }
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-calendar-week"></i> Start Multi-Day Deep Research';
+                }
+            })
+            .catch(error => console.error('Error fetching multi-day deep research status:', error));
+    }
+
+    function stopDeepResearchMultiday() {
+        if (confirm('Are you sure you want to stop the multi-day deep research?')) {
+            fetch('/api/deep-research-multiday/stop', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'stopping') {
+                        alert('Multi-day deep research will stop after the current chunk completes.');
+                    }
+                })
+                .catch(error => console.error('Error stopping multi-day deep research:', error));
+        }
+    }
+
+    // Dynamic total-duration hint for Multi-Day Deep Research form
+    function updateDeepResearchMultidayTotalHint() {
+        const durationInput = document.getElementById('deep_research_md_duration_minutes');
+        const daysInput = document.getElementById('deep_research_md_num_days');
+        const hint = document.getElementById('deepResearchMultidayTotalHint');
+        if (!durationInput || !daysInput || !hint) return;
+        const duration = parseInt(durationInput.value, 10) || 0;
+        const days = parseInt(daysInput.value, 10) || 0;
+        hint.textContent = (duration * days).toString();
+    }
+    ['deep_research_md_duration_minutes', 'deep_research_md_num_days'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateDeepResearchMultidayTotalHint);
+    });
+    updateDeepResearchMultidayTotalHint();
+
+    setInterval(updateDeepResearchMultidayStatus, 3000);
+    updateDeepResearchMultidayStatus();
+
+    // ===== Coverage Ingestion =====
+    function updateCoverageIngestionStatus() {
+        fetch('/api/coverage-ingestion/status')
+            .then(response => response.json())
+            .then(data => {
+                const statusContainer = document.getElementById('coverageIngestionStatus');
+                const statusIndicator = document.getElementById('coverageStatusIndicator');
+                const statusMessage = document.getElementById('coverageStatusMessage');
+                const statusDetails = document.getElementById('coverageStatusDetails');
+                const btn = document.getElementById('coverageIngestionBtn');
+                const tableWrap = document.getElementById('coveragePerDateWrap');
+
+                if (data.running) {
+                    statusContainer.style.display = 'block';
+                    statusIndicator.className = 'status-indicator status-running';
+                    statusMessage.textContent = data.message || 'Running...';
+
+                    let details = [];
+                    if (data.phase) {
+                        details.push(`Phase: ${data.phase}`);
+                    }
+                    if (data.targets_total > 0) {
+                        details.push(`Progress: ${data.targets_completed}/${data.targets_total}`);
+                    }
+                    if (data.total_found > 0) {
+                        details.push(`Found: ${data.total_found}, Inserted: ${data.total_inserted}, Skipped: ${data.total_skipped}`);
+                    }
+                    if (data.started_at) {
+                        const startTime = new Date(data.started_at);
+                        const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000 / 60);
+                        details.push(`Running for: ${elapsed} minutes`);
+                    }
+                    statusDetails.textContent = details.join(' | ');
+
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="bi bi-bullseye"></i> Coverage Ingestion Running...';
+                } else {
+                    if (data.message && data.message !== 'Idle') {
+                        statusContainer.style.display = 'block';
+                        statusIndicator.className = 'status-indicator status-idle';
+                        statusMessage.textContent = data.message;
+                        statusDetails.textContent = '';
+                    } else {
+                        statusContainer.style.display = 'none';
+                    }
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-bullseye"></i> Start Coverage Ingestion';
+                }
+
+                // Render the per-date breakdown table
+                renderCoveragePerDate(data, tableWrap);
+
+                // Saved-progress note + reset button (resume support)
+                const resumeNote = document.getElementById('coverageResumeNote');
+                const resetBtn = document.getElementById('coverageResetBtn');
+                const sp = data.saved_progress;
+                if (sp && (sp.completed_topics > 0 || sp.completed_tickers > 0)) {
+                    resumeNote.textContent =
+                        `Saved progress: ${sp.completed_topics} topics, ${sp.completed_tickers} tickers done `
+                        + `(last ${sp.num_days} days). Restart to resume.`;
+                    resetBtn.style.display = data.running ? 'none' : 'inline-block';
+                } else {
+                    resumeNote.textContent = '';
+                    resetBtn.style.display = 'none';
+                }
+            })
+            .catch(error => console.error('Error fetching coverage ingestion status:', error));
+    }
+
+    function resetCoverageProgress() {
+        if (!confirm('Clear saved coverage progress? The next run will start from scratch.')) return;
+        fetch('/api/coverage-ingestion/reset', { method: 'POST' })
+            .then(response => response.json().then(data => ({ ok: response.ok, data })))
+            .then(result => {
+                if (result.ok && result.data.status === 'reset') {
+                    updateCoverageIngestionStatus();
+                } else {
+                    alert(result.data.error || 'Could not reset progress.');
+                }
+            })
+            .catch(error => console.error('Error resetting coverage progress:', error));
+    }
+
+    function renderCoveragePerDate(data, tableWrap) {
+        const found = data.per_date_found || {};
+        const inserted = data.per_date_inserted || {};
+        const dates = Object.keys(found);
+        if (dates.length === 0) {
+            tableWrap.style.display = 'none';
+            return;
+        }
+        tableWrap.style.display = 'block';
+        // Sort dates descending (most recent first)
+        dates.sort((a, b) => b.localeCompare(a));
+
+        const body = document.getElementById('coveragePerDateBody');
+        let rows = '';
+        let totalFound = 0;
+        let totalInserted = 0;
+        dates.forEach(d => {
+            const f = found[d] || 0;
+            const ins = inserted[d] || 0;
+            totalFound += f;
+            totalInserted += ins;
+            rows += `<tr><td>${d}</td><td class="text-end">${f}</td><td class="text-end">${ins}</td></tr>`;
+        });
+        body.innerHTML = rows;
+        document.getElementById('coverageTotalFound').textContent = totalFound;
+        document.getElementById('coverageTotalInserted').textContent = totalInserted;
+    }
+
+    function stopCoverageIngestion() {
+        if (confirm('Are you sure you want to stop coverage ingestion?')) {
+            fetch('/api/coverage-ingestion/stop', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'stopping') {
+                        alert('Coverage ingestion will stop after the current request completes.');
+                    }
+                })
+                .catch(error => console.error('Error stopping coverage ingestion:', error));
+        }
+    }
+
+    setInterval(updateCoverageIngestionStatus, 3000);
+    updateCoverageIngestionStatus();
 
     // Convert date inputs to YYYYMMDDTHHMM format before form submission
     function formatDateForAPI(dateInput) {

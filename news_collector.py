@@ -72,7 +72,7 @@ class AlphaVantageNewsCollector:
         params = {
             "function": "NEWS_SENTIMENT",
             "apikey": self.api_key,
-            "limit": min(limit, 50),  # Alpha Vantage max is 50 per request
+            "limit": min(limit, 1000),  # Alpha Vantage NEWS_SENTIMENT max is 1000 per request
             "sort": sort
         }
         

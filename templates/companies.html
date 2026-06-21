@@ -1200,18 +1200,25 @@ async function loadCorrelationMatrix() {
         };
         
         const layout = {
+            paper_bgcolor: '#272822',
+            plot_bgcolor: '#272822',
+            font: { color: '#f8f8f2' },
             title: {
                 text: `Company Embedding Correlation Matrix (${modelName})<br><sub>Cosine Similarity between ${size} companies</sub>`,
-                font: { size: 16 }
+                font: { size: 16, color: '#f8f8f2' }
             },
             xaxis: {
                 title: 'Company',
                 tickangle: -45,
-                tickfont: { size: 9 }
+                tickfont: { size: 9, color: '#f8f8f2' },
+                gridcolor: '#41423b',
+                color: '#f8f8f2'
             },
             yaxis: {
                 title: 'Company',
-                tickfont: { size: 9 }
+                tickfont: { size: 9, color: '#f8f8f2' },
+                gridcolor: '#41423b',
+                color: '#f8f8f2'
             },
             width: Math.max(1000, size * 12),
             height: Math.max(800, size * 12),

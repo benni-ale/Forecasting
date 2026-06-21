@@ -1,34 +1,36 @@
 {% extends "base.html" %}
 
-{% block title %}SQL Query - News Collector{% endblock %}
+{% block title %}SQL Query - DollarPunk{% endblock %}
 
 {% block extra_css %}
 <style>
     .sidebar {
-        background-color: #f8f9fa;
-        border-right: 1px solid #dee2e6;
+        background-color: var(--mk-bg-elev, #2f302a);
+        border-right: 1px solid var(--mk-border, #41423b);
         min-height: calc(100vh - 100px);
         padding: 1rem;
+        border-radius: var(--mk-radius, 0.5rem);
     }
     .catalog-item {
         padding: 0.5rem;
         cursor: pointer;
         border-radius: 4px;
         margin-bottom: 0.25rem;
+        color: var(--mk-fg, #f8f8f2);
     }
     .catalog-item:hover {
-        background-color: #e9ecef;
+        background-color: var(--mk-bg-header, #3a3b32);
     }
     .catalog-item.active {
-        background-color: #0d6efd;
-        color: white;
+        background-color: var(--mk-cyan, #66d9ef);
+        color: var(--mk-dark, #1d1e19);
     }
     .catalog-section {
         margin-bottom: 1.5rem;
     }
     .catalog-section-title {
         font-weight: bold;
-        color: #495057;
+        color: var(--mk-yellow, #e6db74);
         margin-bottom: 0.5rem;
         font-size: 0.9rem;
         text-transform: uppercase;
@@ -37,10 +39,10 @@
         min-height: 300px;
     }
     .table-icon {
-        color: #0d6efd;
+        color: var(--mk-cyan, #66d9ef);
     }
     .view-icon {
-        color: #198754;
+        color: var(--mk-green, #a6e22e);
     }
 </style>
 {% endblock %}
@@ -80,13 +82,40 @@
             </div>
             {% if views %}
                 {% for view in views %}
-                <div class="catalog-item" onclick="insertTableName('{{ view }}')" title="Click to insert view name">
+                <div class="catalog-item view-item" data-view-name="{{ view }}" title="Click to show view definition">
                     <i class="bi bi-eye view-icon"></i> {{ view }}
                 </div>
                 {% endfor %}
             {% else %}
                 <div class="text-muted small">No views found</div>
             {% endif %}
+        </div>
+    </div>
+
+    <!-- Modal: View definition -->
+    <div class="modal fade" id="viewDefinitionModal" tabindex="-1" aria-labelledby="viewDefinitionModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="viewDefinitionModalLabel">
+                        <i class="bi bi-eye view-icon"></i> <span id="viewDefinitionModalTitle">View definition</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="viewDefinitionLoading" class="text-center py-4" style="display: none;">
+                        <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+                    </div>
+                    <div id="viewDefinitionError" class="alert alert-danger" style="display: none;"></div>
+                    <pre id="viewDefinitionContent" class="bg-light p-3 rounded font-monospace small mb-0" style="white-space: pre-wrap; word-break: break-all; max-height: 70vh; overflow: auto;"></pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="viewDefinitionInsertBtn">
+                        <i class="bi bi-code-square"></i> Insert name in query
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -220,5 +249,57 @@ function insertTableName(tableName) {
     const newPos = cursorPos + tableName.length;
     textarea.setSelectionRange(newPos, newPos);
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+    const modal = new bootstrap.Modal(document.getElementById('viewDefinitionModal'));
+    const titleEl = document.getElementById('viewDefinitionModalTitle');
+    const contentEl = document.getElementById('viewDefinitionContent');
+    const loadingEl = document.getElementById('viewDefinitionLoading');
+    const errorEl = document.getElementById('viewDefinitionError');
+    const insertBtn = document.getElementById('viewDefinitionInsertBtn');
+
+    document.querySelectorAll('.view-item').forEach(function(el) {
+        el.addEventListener('click', function() {
+            const viewName = this.getAttribute('data-view-name');
+            if (!viewName) return;
+
+            titleEl.textContent = viewName;
+            contentEl.textContent = '';
+            contentEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            loadingEl.style.display = 'block';
+            insertBtn.disabled = true;
+            insertBtn.dataset.viewName = viewName;
+            modal.show();
+
+            fetch('/api/sql-query/view-definition/' + encodeURIComponent(viewName))
+                .then(function(res) { return res.json().then(function(data) { return { ok: res.ok, data: data }; }); })
+                .then(function(result) {
+                    loadingEl.style.display = 'none';
+                    if (result.ok) {
+                        contentEl.textContent = result.data.definition || '';
+                        contentEl.style.display = 'block';
+                        insertBtn.disabled = false;
+                    } else {
+                        errorEl.textContent = result.data.error || 'Failed to load view definition';
+                        errorEl.style.display = 'block';
+                    }
+                })
+                .catch(function(err) {
+                    loadingEl.style.display = 'none';
+                    errorEl.textContent = 'Error: ' + (err.message || 'Failed to load');
+                    errorEl.style.display = 'block';
+                });
+        });
+    });
+
+    insertBtn.addEventListener('click', function() {
+        const viewName = this.dataset.viewName;
+        if (viewName) {
+            insertTableName(viewName);
+            modal.hide();
+        }
+    });
+});
 </script>
 {% endblock %}
