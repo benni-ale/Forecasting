@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}Tickers - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-building"></i> Companies &amp; Ticker descriptions</h2>
+    <span class="small text-muted" id="companiesStatus">loading...</span>
+</div>
+
+<form id="companiesFilters" class="row g-2 align-items-end mb-4" onsubmit="return false;">
+    <div class="col-md-4">
+        <label class="form-label mb-1" for="search">Search</label>
+        <input type="text" class="form-control" id="search" placeholder="Ticker or company name...">
+    </div>
+    <div class="col-md-3">
+        <label class="form-label mb-1" for="sector">Sector</label>
+        <select class="form-select" id="sector">
+            <option value="">All sectors</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <button type="submit" class="btn btn-primary" id="searchBtn"><i class="bi bi-search"></i> Search</button>
+    </div>
+</form>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-striped mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Ticker</th>
+                        <th>Name</th>
+                        <th>Sector</th>
+                        <th>Industry</th>
+                        <th>Description</th>
+                        <th>Website</th>
+                    </tr>
+                </thead>
+                <tbody id="companiesBody">
+                    <tr><td colspan="6" class="text-center text-muted py-4">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <span class="small text-muted" id="pageInfo"></span>
+        <div>
+            <button class="btn btn-sm btn-outline-secondary" id="prevBtn" disabled><i class="bi bi-chevron-left"></i> Prev</button>
+            <button class="btn btn-sm btn-outline-secondary" id="nextBtn" disabled>Next <i class="bi bi-chevron-right"></i></button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const PER_PAGE = 50;
+    let offset = 0;
+    let total = 0;
+    let sectorsLoaded = false;
+
+    const statusEl = document.getElementById('companiesStatus');
+    const bodyEl = document.getElementById('companiesBody');
+    const searchEl = document.getElementById('search');
+    const sectorEl = document.getElementById('sector');
+    const pageInfo = document.getElementById('pageInfo');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+
+    function esc(s) {
+        return (s == null ? '' : String(s)).replace(/[&<>"]/g, c => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+        ));
+    }
+
+    function render(companies) {
+        if (!companies || companies.length === 0) {
+            bodyEl.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No companies found.</td></tr>';
+            return;
+        }
+        bodyEl.innerHTML = companies.map(c => {
+            const desc = c.business_description || '';
+            const website = c.website
+                ? `<a href="${esc(c.website)}" target="_blank" rel="noopener">link</a>` : '-';
+            return `<tr>
+                <td><span class="badge bg-secondary">${esc(c.ticker)}</span></td>
+                <td>${esc(c.name) || '-'}</td>
+                <td>${esc(c.sector) || '-'}</td>
+                <td>${esc(c.industry) || '-'}</td>
+                <td style="min-width:320px;">${esc(desc) || '<span class="text-muted">No description</span>'}</td>
+                <td>${website}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function populateSectors(sectors) {
+        if (sectorsLoaded || !sectors) return;
+        const current = sectorEl.value;
+        sectors.forEach(s => {
+            const o = document.createElement('option');
+            o.value = s; o.textContent = s;
+            if (s === current) o.selected = true;
+            sectorEl.appendChild(o);
+        });
+        sectorsLoaded = true;
+    }
+
+    function load() {
+        statusEl.textContent = 'loading...';
+        const params = new URLSearchParams({ limit: PER_PAGE, offset: offset });
+        const s = searchEl.value.trim();
+        const sec = sectorEl.value;
+        if (s) params.append('search', s);
+        if (sec) params.append('sector', sec);
+
+        fetch(`/api/companies?${params}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { statusEl.textContent = 'error: ' + data.error; return; }
+                total = data.total || 0;
+                render(data.companies);
+                populateSectors(data.sectors);
+                const from = total === 0 ? 0 : offset + 1;
+                const to = Math.min(offset + PER_PAGE, total);
+                pageInfo.textContent = `${from}-${to} of ${total.toLocaleString()} companies`;
+                prevBtn.disabled = offset <= 0;
+                nextBtn.disabled = offset + PER_PAGE >= total;
+                statusEl.textContent = '';
+            })
+            .catch(err => { statusEl.textContent = 'error loading companies'; console.error(err); });
+    }
+
+    document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
+    searchEl.addEventListener('keypress', e => { if (e.key === 'Enter') { offset = 0; load(); } });
+    sectorEl.addEventListener('change', () => { offset = 0; load(); });
+    prevBtn.addEventListener('click', () => { if (offset > 0) { offset = Math.max(0, offset - PER_PAGE); load(); } });
+    nextBtn.addEventListener('click', () => { if (offset + PER_PAGE < total) { offset += PER_PAGE; load(); } });
+
+    load();
+})();
+</script>
+{% endblock %}

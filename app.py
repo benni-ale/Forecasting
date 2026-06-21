@@ -71,6 +71,7 @@ AUTH_ENABLED = bool(ADMIN_PASSWORD)
 PUBLIC_ENDPOINTS = {
     'public_dashboard', 'api_dashboard_stocks',
     'view_articles', 'api_articles', 'view_article_detail',
+    'public_companies', 'get_companies',
     'login', 'logout', 'static',
 }
 
@@ -554,6 +555,13 @@ def api_dashboard_stocks():
 
     series = [_fetch_av_daily(t) for t in tickers]
     return jsonify({'tickers': tickers, 'series': series})
+
+
+@app.route('/tickers')
+def public_companies():
+    """Public, read-only page to browse company/ticker descriptions."""
+    logger.info("Public companies page accessed")
+    return render_template('companies_public.html')
 
 
 @app.route('/')
@@ -3220,7 +3228,7 @@ def get_companies():
     logger.info("API /api/companies called")
     
     try:
-        db_manager = get_db_manager()
+        db_manager = get_db_manager(readonly=True)
         with db_manager:
             if not db_manager.conn:
                 raise ConnectionError("Database connection not established")
