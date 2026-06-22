@@ -59,7 +59,9 @@
                 <span class="small text-muted" id="stockStatus">loading...</span>
             </div>
             <div class="card-body">
-                <canvas id="stockChart" height="260"></canvas>
+                <div class="chart-wrap" style="height: 220px; position: relative;">
+                    <canvas id="stockChart"></canvas>
+                </div>
             </div>
         </div>
     </div>
@@ -96,14 +98,14 @@
         <span><i class="bi bi-activity"></i> Sentiment KPI over time ({{ default_kpi_window }}d window, {{ default_kpi_half_life|int }}d half-life)</span>
         <span class="small text-muted" id="sentimentStatus">loading...</span>
     </div>
-    <div class="card-body">
+    <div class="card-body py-2">
         <p class="small text-muted mb-2">
-            Same KPI as the daily dashboard
-            (<code>SUM(s&times;rel&times;decay) / SUM(rel&times;decay)</code>).
-            Last point = dashboard KPI at default filters ({{ default_kpi_window }}d window, {{ default_kpi_half_life|int }}d half-life).
-            <span id="currentKpiLabel" class="ms-1"></span>
+            Dashboard KPI (<code>SUM(s&times;rel&times;decay)/SUM(rel&times;decay)</code>).
+            <span id="currentKpiLabel"></span>
         </p>
-        <canvas id="sentimentChart" height="220"></canvas>
+        <div class="chart-wrap" style="height: 180px; position: relative;">
+            <canvas id="sentimentChart"></canvas>
+        </div>
     </div>
 </div>
 
