@@ -595,10 +595,80 @@ def public_companies():
     return render_template('companies_public.html')
 
 
+# Throttle on-demand (lazy) company-info fetches triggered by viewer page
+# loads, so repeated views of a ticker without a description don't burn through
+# the Alpha Vantage rate limit (free tier is ~25 requests/day).
+_company_fetch_attempts = {}
+_company_fetch_lock = threading.Lock()
+COMPANY_FETCH_RETRY_TTL = int(os.getenv('COMPANY_FETCH_RETRY_TTL', '21600'))  # 6h
+
+
+def _load_company(cursor, ticker):
+    """Load a single company row (or None) into a plain dict using the given cursor."""
+    cursor.execute(
+        """
+        SELECT ticker, name, business_description, sector, industry,
+               exchange, market_cap, website, ceo, employees,
+               city, state, country
+        FROM companies
+        WHERE ticker = %s
+        """,
+        (ticker,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        'ticker': row[0], 'name': row[1], 'business_description': row[2],
+        'sector': row[3], 'industry': row[4], 'exchange': row[5],
+        'market_cap': float(row[6]) if row[6] else None,
+        'website': row[7], 'ceo': row[8], 'employees': row[9],
+        'city': row[10], 'state': row[11], 'country': row[12],
+    }
+
+
+def _maybe_fetch_company(ticker):
+    """Lazily fetch + save a company profile when it's missing.
+
+    Tries Alpha Vantage first, then FMP, and upserts via save_company_to_db.
+    Throttled per ticker (COMPANY_FETCH_RETRY_TTL) to respect API rate limits.
+    Returns True if a profile was fetched and saved.
+    """
+    av_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+    fmp_key = os.getenv('FMP_API_KEY', '')
+    if not av_key and not fmp_key:
+        return False
+
+    now = time.time()
+    with _company_fetch_lock:
+        last = _company_fetch_attempts.get(ticker)
+        if last and (now - last) < COMPANY_FETCH_RETRY_TTL:
+            return False
+        _company_fetch_attempts[ticker] = now
+
+    try:
+        data = None
+        if av_key:
+            data = get_alpha_vantage_company_overview(ticker, av_key)
+        if not data and fmp_key:
+            data = get_fmp_company_profile(ticker, fmp_key)
+        if data and save_company_to_db(ticker, data):
+            logger.info(f"On-demand company fetch succeeded for {ticker}")
+            return True
+        logger.info(f"On-demand company fetch found no profile for {ticker}")
+    except Exception as e:
+        logger.warning(f"On-demand company fetch failed for {ticker}: {e}")
+    return False
+
+
 @app.route('/tickers/<ticker>')
 def public_ticker_detail(ticker):
     """Public, read-only detail page for a single ticker: company info,
-    price/volume chart (via the public stocks API) and latest related news."""
+    price/volume chart (via the public stocks API) and latest related news.
+
+    If no usable company description is on file, a small on-demand fetch is
+    triggered (throttled) to try to fill it in from the APIs.
+    """
     ticker = (ticker or '').strip().upper()
     logger.info(f"Public ticker detail accessed: {ticker}")
 
@@ -611,25 +681,13 @@ def public_ticker_detail(ticker):
         with db_manager:
             cursor = db_manager.conn.cursor()
             try:
-                cursor.execute(
-                    """
-                    SELECT ticker, name, business_description, sector, industry,
-                           exchange, market_cap, website, ceo, employees,
-                           city, state, country
-                    FROM companies
-                    WHERE ticker = %s
-                    """,
-                    (ticker,)
-                )
-                row = cursor.fetchone()
-                if row:
-                    company = {
-                        'ticker': row[0], 'name': row[1], 'business_description': row[2],
-                        'sector': row[3], 'industry': row[4], 'exchange': row[5],
-                        'market_cap': float(row[6]) if row[6] else None,
-                        'website': row[7], 'ceo': row[8], 'employees': row[9],
-                        'city': row[10], 'state': row[11], 'country': row[12],
-                    }
+                company = _load_company(cursor, ticker)
+
+                # Lazy fill: if a viewer opens a ticker without a usable
+                # description, try to fetch it once (throttled) and reload.
+                if company is None or not (company.get('business_description') or '').strip():
+                    if _maybe_fetch_company(ticker):
+                        company = _load_company(cursor, ticker) or company
 
                 # Latest news mentioning this ticker.
                 cursor.execute(
