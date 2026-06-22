@@ -316,16 +316,23 @@ def public_dashboard():
         direction = 'all'
 
     # "Last seen on/after" date filter (YYYY-MM-DD from the calendar picker).
-    last_seen_from = (request.args.get('last_seen_from', '') or '').strip()
+    # When the param is absent (first visit, user hasn't touched it) we default
+    # it later to the penultimate available date in the DB. An explicitly empty
+    # value means the user cleared the filter and wants to see everything.
+    last_seen_param = request.args.get('last_seen_from', None)
+    last_seen_explicit = last_seen_param is not None
+    last_seen_from = (last_seen_param or '').strip()
     try:
         if last_seen_from:
             datetime.strptime(last_seen_from, '%Y-%m-%d')
     except ValueError:
         last_seen_from = ''
+        last_seen_explicit = True  # invalid value: don't override with default
 
     rows = []
     stats = {}
     error = None
+    penultimate_last_seen = ''
     try:
         db_manager = get_db_manager(readonly=True)
         with db_manager:
@@ -380,11 +387,35 @@ def public_dashboard():
                 win = cursor.fetchone()
                 stats['articles_in_window'] = int(win[0]) if win else 0
                 stats['sources_in_window'] = int(win[1]) if win else 0
+
+                # Two most recent distinct dates on which any ticker was seen,
+                # to default the "last seen" filter to the penultimate one.
+                cursor.execute(
+                    """
+                    SELECT DISTINCT article_time_published::date AS d
+                    FROM article_ticker_sentiment_view
+                    WHERE article_time_published::date
+                          > (CURRENT_DATE - make_interval(days => %(days)s))
+                    ORDER BY d DESC
+                    LIMIT 2
+                    """,
+                    {'days': days}
+                )
+                date_rows = [r[0] for r in cursor.fetchall()]
+                if len(date_rows) >= 2:
+                    penultimate_last_seen = date_rows[1].isoformat()
+                elif date_rows:
+                    penultimate_last_seen = date_rows[0].isoformat()
             finally:
                 cursor.close()
     except Exception as e:
         logger.error(f"Error building public dashboard: {str(e)}", exc_info=True)
         error = str(e)
+
+    # Default the "last seen" filter to the penultimate available date when the
+    # user hasn't explicitly chosen one.
+    if not last_seen_explicit and penultimate_last_seen:
+        last_seen_from = penultimate_last_seen
 
     # Apply sentiment-direction filter (kpi sign).
     if direction == 'bullish':
