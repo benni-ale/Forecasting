@@ -79,6 +79,7 @@ PUBLIC_ENDPOINTS = {
 # Shared defaults for the public sentiment KPI (daily dashboard + ticker chart).
 DEFAULT_KPI_WINDOW_DAYS = 14
 DEFAULT_KPI_HALF_LIFE = 7.0
+DEFAULT_MIN_MENTIONS = 10
 
 
 def is_admin():
@@ -310,9 +311,9 @@ def public_dashboard():
     half_life = max(0.5, min(half_life, 365.0))
 
     try:
-        min_mentions = int(request.args.get('min_mentions', 1))
+        min_mentions = int(request.args.get('min_mentions', DEFAULT_MIN_MENTIONS))
     except (TypeError, ValueError):
-        min_mentions = 1
+        min_mentions = DEFAULT_MIN_MENTIONS
     min_mentions = max(1, min(min_mentions, 100000))
 
     ticker_filter = (request.args.get('ticker', '') or '').strip().upper()
@@ -623,9 +624,9 @@ def api_dashboard_stocks():
     half_life = max(0.5, min(half_life, 365.0))
 
     try:
-        min_mentions = int(request.args.get('min_mentions', 1))
+        min_mentions = int(request.args.get('min_mentions', DEFAULT_MIN_MENTIONS))
     except (TypeError, ValueError):
-        min_mentions = 1
+        min_mentions = DEFAULT_MIN_MENTIONS
     min_mentions = max(1, min(min_mentions, 100000))
 
     try:
