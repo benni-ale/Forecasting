@@ -192,6 +192,18 @@ WHERE a.ticker_sentiment IS NOT NULL
     AND (t->>'ticker_sentiment_score') IS NOT NULL
     AND (t->>'relevance_score') IS NOT NULL;
 
+-- Daily stock prices (close + volume) fetched lazily from Alpha Vantage and
+-- persisted so the dashboard/charts don't have to hit the API every time.
+CREATE TABLE IF NOT EXISTS stock_prices (
+    ticker TEXT NOT NULL,
+    price_date DATE NOT NULL,
+    close NUMERIC,
+    volume BIGINT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ticker, price_date)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_prices_ticker_date ON stock_prices(ticker, price_date DESC);
+
 -- Create table for company descriptions (for semantic similarity)
 CREATE TABLE IF NOT EXISTS companies (
     ticker TEXT PRIMARY KEY,

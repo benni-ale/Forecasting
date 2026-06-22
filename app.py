@@ -428,18 +428,18 @@ def public_dashboard():
         rows = [r for r in rows if r['last_seen'] and r['last_seen'] >= last_seen_from]
 
     stats['tickers_in_window'] = len(rows)
+    # The dashboard shows one chart per ticker; both orderings carry the same
+    # per-ticker info (kpi, mentions, last_seen) so the front-end can switch
+    # between them without refetching.
     # "Best sentiment" = ordered by KPI (already from SQL).
-    by_sentiment = [r for r in rows if r['kpi'] is not None][:20]
+    by_sentiment = [r for r in rows if r['kpi'] is not None][:10]
     # "Most cited" = same data re-sorted by number of mentions.
-    by_mentions = sorted(rows, key=lambda r: r['mentions'], reverse=True)[:20]
-    # Charts plot the top-10 tickers of the (already filtered) sentiment table.
-    chart_tickers = [r['ticker'] for r in by_sentiment][:10]
+    by_mentions = sorted(rows, key=lambda r: r['mentions'], reverse=True)[:10]
 
     return render_template(
         'dashboard.html',
         by_sentiment=by_sentiment,
         by_mentions=by_mentions,
-        chart_tickers=chart_tickers,
         stats=stats,
         days=days,
         half_life=half_life,
@@ -453,28 +453,80 @@ def public_dashboard():
     )
 
 
-# Simple in-memory cache for Alpha Vantage daily series (price + volume).
-# Avoids hammering the API on every public dashboard load. TTL configurable.
-_av_price_cache = {}
-_av_price_cache_lock = threading.Lock()
-AV_PRICE_CACHE_TTL = int(os.getenv('AV_PRICE_CACHE_TTL', '3600'))  # seconds
+# Daily prices (close + volume) are fetched lazily from Alpha Vantage and
+# persisted in the stock_prices table. A per-ticker throttle avoids hitting the
+# API more than once per refresh window (free tier is ~25 requests/day).
+_price_fetch_attempts = {}
+_price_fetch_lock = threading.Lock()
+STOCK_PRICE_REFRESH_TTL = int(os.getenv('STOCK_PRICE_REFRESH_TTL', '3600'))  # seconds
 
 
-def _fetch_av_daily(ticker, points=60):
-    """Fetch daily close + volume for a ticker from Alpha Vantage, with caching.
+def _ensure_price_table(cursor):
+    """Create the stock_prices table if it doesn't exist (write cursor)."""
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stock_prices (
+            ticker TEXT NOT NULL,
+            price_date DATE NOT NULL,
+            close NUMERIC,
+            volume BIGINT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ticker, price_date)
+        )
+        """
+    )
 
-    Returns dict {ticker, dates, closes, volumes} or {ticker, error}.
+
+def _load_prices_from_db(ticker, points):
+    """Return {ticker, dates, closes, volumes} from stock_prices, or None."""
+    try:
+        db = get_db_manager(readonly=True)
+        with db:
+            cur = db.conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT price_date, close, volume
+                    FROM stock_prices
+                    WHERE ticker = %s
+                    ORDER BY price_date DESC
+                    LIMIT %s
+                    """,
+                    (ticker, points)
+                )
+                rows = cur.fetchall()
+            finally:
+                cur.close()
+    except Exception as e:
+        logger.warning(f"Could not read stored prices for {ticker}: {e}")
+        return None
+    if not rows:
+        return None
+    rows = list(reversed(rows))  # ascending by date for charting
+    return {
+        'ticker': ticker,
+        'dates': [r[0].isoformat() for r in rows],
+        'closes': [float(r[1]) if r[1] is not None else None for r in rows],
+        'volumes': [int(r[2]) if r[2] is not None else 0 for r in rows],
+    }
+
+
+def _maybe_refresh_prices(ticker):
+    """Fetch fresh daily prices from Alpha Vantage and upsert into stock_prices.
+
+    Throttled per ticker (STOCK_PRICE_REFRESH_TTL) so repeated page loads don't
+    burn the API quota. Safe to call on every request.
     """
-    ticker = ticker.upper()
-    now = time.time()
-    with _av_price_cache_lock:
-        cached = _av_price_cache.get(ticker)
-        if cached and (now - cached[0] < AV_PRICE_CACHE_TTL):
-            return cached[1]
-
     api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:
-        return {'ticker': ticker, 'error': 'API key not configured'}
+        return
+
+    now = time.time()
+    with _price_fetch_lock:
+        last = _price_fetch_attempts.get(ticker)
+        if last and (now - last) < STOCK_PRICE_REFRESH_TTL:
+            return
+        _price_fetch_attempts[ticker] = now
 
     try:
         url = "https://www.alphavantage.co/query"
@@ -488,30 +540,61 @@ def _fetch_av_daily(ticker, points=60):
         response.raise_for_status()
         data = response.json()
 
-        if "Error Message" in data:
-            return {'ticker': ticker, 'error': data['Error Message']}
-        # Rate-limit / info messages come back under these keys.
-        if "Note" in data or "Information" in data:
-            return {'ticker': ticker, 'error': data.get('Note') or data.get('Information')}
+        if "Error Message" in data or "Note" in data or "Information" in data:
+            logger.info(
+                f"AV price refresh for {ticker} returned no data: "
+                f"{data.get('Error Message') or data.get('Note') or data.get('Information')}"
+            )
+            return
 
         series = data.get("Time Series (Daily)")
         if not series:
-            return {'ticker': ticker, 'error': 'No daily data available'}
+            return
 
-        dates = sorted(series.keys())[-points:]
-        result = {
-            'ticker': ticker,
-            'dates': dates,
-            'closes': [float(series[d]['4. close']) for d in dates],
-            'volumes': [int(float(series[d]['5. volume'])) for d in dates],
-        }
+        rows = [
+            (ticker, d, float(v['4. close']), int(float(v['5. volume'])))
+            for d, v in series.items()
+        ]
+        db = get_db_manager()
+        with db:
+            if not db.conn:
+                return
+            cur = db.conn.cursor()
+            try:
+                _ensure_price_table(cur)
+                cur.executemany(
+                    """
+                    INSERT INTO stock_prices (ticker, price_date, close, volume)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (ticker, price_date) DO UPDATE SET
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    rows
+                )
+                db.conn.commit()
+                logger.info(f"Stored {len(rows)} price rows for {ticker}")
+            finally:
+                cur.close()
     except Exception as e:
-        logger.error(f"Error fetching Alpha Vantage daily for {ticker}: {str(e)}", exc_info=True)
-        return {'ticker': ticker, 'error': str(e)}
+        logger.warning(f"Price refresh failed for {ticker}: {e}")
 
-    with _av_price_cache_lock:
-        _av_price_cache[ticker] = (now, result)
-    return result
+
+def _fetch_av_daily(ticker, points=60):
+    """Return daily close + volume for a ticker, persisted in the DB.
+
+    Refreshes from Alpha Vantage when stale (throttled), then serves from the
+    stock_prices table. Returns {ticker, dates, closes, volumes} or {ticker, error}.
+    """
+    ticker = ticker.upper()
+    _maybe_refresh_prices(ticker)
+    result = _load_prices_from_db(ticker, points)
+    if result and result.get('dates'):
+        return result
+    if not os.getenv('ALPHA_VANTAGE_API_KEY', ''):
+        return {'ticker': ticker, 'error': 'API key not configured'}
+    return {'ticker': ticker, 'error': 'No daily data available'}
 
 
 @app.route('/api/dashboard/stocks')

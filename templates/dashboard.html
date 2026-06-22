@@ -112,85 +112,17 @@
     (half-life {{ half_life }} days), over the last {{ days }} days.
 </p>
 
-<div class="row">
-    <div class="col-lg-6 mb-4">
-        <div class="card h-100">
-            <div class="card-header"><i class="bi bi-emoji-smile"></i> Best sentiment</div>
-            <div class="card-body p-0">
-                <table class="table table-striped mb-0">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Ticker</th>
-                            <th class="text-end">KPI</th>
-                            <th class="text-end">Mentions</th>
-                            <th class="text-end">Last seen</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for r in by_sentiment %}
-                        <tr>
-                            <td class="text-muted">{{ loop.index }}</td>
-                            <td><a href="{{ url_for('public_ticker_detail', ticker=r.ticker) }}" class="text-decoration-none"><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></a></td>
-                            <td class="text-end {% if r.kpi is not none and r.kpi > 0 %}sentiment-bullish{% elif r.kpi is not none and r.kpi < 0 %}sentiment-bearish{% else %}sentiment-neutral{% endif %}">
-                                {{ '%.4f'|format(r.kpi) if r.kpi is not none else '-' }}
-                            </td>
-                            <td class="text-end">{{ r.mentions }}</td>
-                            <td class="text-end text-muted">{{ r.last_seen }}</td>
-                        </tr>
-                        {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-4">No data in this window.</td></tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div class="btn-group" role="group" aria-label="View mode">
+        <input type="radio" class="btn-check" name="chartView" id="viewSentiment" value="sentiment" checked>
+        <label class="btn btn-outline-primary" for="viewSentiment"><i class="bi bi-emoji-smile"></i> Best sentiment</label>
+        <input type="radio" class="btn-check" name="chartView" id="viewMentions" value="mentions">
+        <label class="btn btn-outline-primary" for="viewMentions"><i class="bi bi-megaphone"></i> Most cited</label>
     </div>
-
-    <div class="col-lg-6 mb-4">
-        <div class="card h-100">
-            <div class="card-header"><i class="bi bi-megaphone"></i> Most cited</div>
-            <div class="card-body p-0">
-                <table class="table table-striped mb-0">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Ticker</th>
-                            <th class="text-end">Mentions</th>
-                            <th class="text-end">KPI</th>
-                            <th class="text-end">Last seen</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for r in by_mentions %}
-                        <tr>
-                            <td class="text-muted">{{ loop.index }}</td>
-                            <td><a href="{{ url_for('public_ticker_detail', ticker=r.ticker) }}" class="text-decoration-none"><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></a></td>
-                            <td class="text-end">{{ r.mentions }}</td>
-                            <td class="text-end {% if r.kpi is not none and r.kpi > 0 %}sentiment-bullish{% elif r.kpi is not none and r.kpi < 0 %}sentiment-bearish{% else %}sentiment-neutral{% endif %}">
-                                {{ '%.4f'|format(r.kpi) if r.kpi is not none else '-' }}
-                            </td>
-                            <td class="text-end text-muted">{{ r.last_seen }}</td>
-                        </tr>
-                        {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-4">No data in this window.</td></tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    <span class="small text-muted" id="stocksStatus">loading...</span>
 </div>
 
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-bar-chart-line"></i> Top 10 stocks by sentiment &middot; price &amp; volume (daily, Alpha Vantage)</span>
-        <span class="small text-muted" id="stocksStatus">loading...</span>
-    </div>
-    <div class="card-body">
-        <div class="row" id="stocksCharts"></div>
-    </div>
-</div>
+<div class="row" id="stocksCharts"></div>
 {% endblock %}
 
 {% block extra_js %}
@@ -198,83 +130,120 @@
 (function () {
     const status = document.getElementById('stocksStatus');
     const container = document.getElementById('stocksCharts');
-    const chartTickers = {{ chart_tickers|tojson }};
 
-    if (!chartTickers || chartTickers.length === 0) {
-        status.textContent = 'no tickers match the current filters';
-        return;
+    const views = {
+        sentiment: {{ by_sentiment|tojson }},
+        mentions: {{ by_mentions|tojson }}
+    };
+    const seriesCache = {};   // ticker -> series {dates, closes, volumes} | {error}
+    let charts = [];          // live Chart instances (destroyed on re-render)
+    let activeView = 'sentiment';
+    let renderToken = 0;
+
+    function fmtKpi(v) { return (v === null || v === undefined) ? '-' : Number(v).toFixed(4); }
+    function kpiClass(v) {
+        if (v === null || v === undefined) return 'sentiment-neutral';
+        return v > 0 ? 'sentiment-bullish' : (v < 0 ? 'sentiment-bearish' : 'sentiment-neutral');
     }
 
-    fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(chartTickers.join(','))}&top=10`)
-        .then(r => r.json())
-        .then(data => {
-            if (data.error) { status.textContent = 'error: ' + data.error; return; }
-            const series = data.series || [];
-            if (series.length === 0) { status.textContent = 'no tickers in this window'; return; }
-            status.textContent = '';
+    async function ensureSeries(tickers) {
+        const missing = tickers.filter(t => !(t in seriesCache));
+        if (missing.length === 0) return;
+        try {
+            const resp = await fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(missing.join(','))}&top=10`);
+            const data = await resp.json();
+            (data.series || []).forEach(s => { seriesCache[s.ticker] = s; });
+        } catch (e) {
+            console.error('Error loading stock data', e);
+        }
+        missing.forEach(t => { if (!(t in seriesCache)) seriesCache[t] = { ticker: t, error: 'no data' }; });
+    }
 
-            series.forEach((s, i) => {
-                const col = document.createElement('div');
-                col.className = 'col-lg-6 col-xl-4 mb-4';
-                const canvasId = 'stockChart' + i;
-                const tickerUrl = '/tickers/' + encodeURIComponent(s.ticker);
-                if (s.error) {
-                    col.innerHTML = `<div class="card h-100"><div class="card-header py-2">
-                        <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${s.ticker}</span></a></div>
-                        <div class="card-body text-muted small">No price data: ${s.error}</div></div>`;
-                    container.appendChild(col);
-                    return;
+    function buildCard(row, idx) {
+        const ticker = row.ticker;
+        const tickerUrl = '/tickers/' + encodeURIComponent(ticker);
+        const s = seriesCache[ticker] || { ticker: ticker, error: 'no data' };
+        const canvasId = 'stockChart' + idx;
+
+        const col = document.createElement('div');
+        col.className = 'col-lg-6 col-xl-4 mb-4';
+
+        const infoRow = `<div class="px-3 pt-2 d-flex justify-content-between small flex-wrap gap-2">
+            <span>KPI <span class="${kpiClass(row.kpi)}">${fmtKpi(row.kpi)}</span></span>
+            <span class="text-muted">Mentions <strong>${row.mentions}</strong></span>
+            <span class="text-muted">Last seen ${row.last_seen || '-'}</span>
+        </div>`;
+
+        const header = `<div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${ticker}</span></a>
+            <a href="${tickerUrl}" class="small text-muted text-decoration-none">details <i class="bi bi-arrow-right-short"></i></a>
+        </div>`;
+
+        if (s.error) {
+            col.innerHTML = `<div class="card h-100">${header}${infoRow}
+                <div class="card-body text-muted small">No price data: ${s.error}</div></div>`;
+            container.appendChild(col);
+            return;
+        }
+
+        col.innerHTML = `<div class="card h-100">${header}${infoRow}
+            <div class="card-body"><canvas id="${canvasId}" style="cursor:pointer" height="180"></canvas></div></div>`;
+        container.appendChild(col);
+
+        const chart = new Chart(document.getElementById(canvasId).getContext('2d'), {
+            data: {
+                labels: s.dates,
+                datasets: [
+                    { type: 'bar', label: 'Volume', data: s.volumes, yAxisID: 'yVol',
+                      backgroundColor: 'rgba(102, 217, 239, 0.35)', borderWidth: 0, order: 2 },
+                    { type: 'line', label: 'Close', data: s.closes, yAxisID: 'yPrice',
+                      borderColor: '#a6e22e', backgroundColor: 'rgba(166, 226, 46, 0.1)',
+                      borderWidth: 2, pointRadius: 0, tension: 0.2, order: 1 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                onClick: () => { window.location.href = tickerUrl; },
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { display: true, labels: { boxWidth: 12 } } },
+                scales: {
+                    x: { ticks: { maxTicksLimit: 6, autoSkip: true } },
+                    yPrice: { position: 'left', title: { display: true, text: 'Close ($)' } },
+                    yVol: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Volume' } }
                 }
-                col.innerHTML = `<div class="card h-100"><div class="card-header py-2 d-flex justify-content-between align-items-center">
-                    <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${s.ticker}</span>
-                    <span class="text-muted small ms-2">last ${s.dates.length} days</span></a>
-                    <a href="${tickerUrl}" class="small text-muted text-decoration-none">details <i class="bi bi-arrow-right-short"></i></a></div>
-                    <div class="card-body"><canvas id="${canvasId}" style="cursor:pointer" height="180"></canvas></div></div>`;
-                container.appendChild(col);
+            }
+        });
+        charts.push(chart);
+    }
 
-                new Chart(document.getElementById(canvasId).getContext('2d'), {
-                    data: {
-                        labels: s.dates,
-                        datasets: [
-                            {
-                                type: 'bar',
-                                label: 'Volume',
-                                data: s.volumes,
-                                yAxisID: 'yVol',
-                                backgroundColor: 'rgba(102, 217, 239, 0.35)',
-                                borderWidth: 0,
-                                order: 2
-                            },
-                            {
-                                type: 'line',
-                                label: 'Close',
-                                data: s.closes,
-                                yAxisID: 'yPrice',
-                                borderColor: '#a6e22e',
-                                backgroundColor: 'rgba(166, 226, 46, 0.1)',
-                                borderWidth: 2,
-                                pointRadius: 0,
-                                tension: 0.2,
-                                order: 1
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        onClick: () => { window.location.href = tickerUrl; },
-                        interaction: { mode: 'index', intersect: false },
-                        plugins: { legend: { display: true, labels: { boxWidth: 12 } } },
-                        scales: {
-                            x: { ticks: { maxTicksLimit: 6, autoSkip: true } },
-                            yPrice: { position: 'left', title: { display: true, text: 'Close ($)' } },
-                            yVol: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Volume' } }
-                        }
-                    }
-                });
-            });
-        })
-        .catch(err => { status.textContent = 'error loading stock data'; console.error(err); });
+    async function render() {
+        const token = ++renderToken;
+        const list = (views[activeView] || []).slice(0, 10);
+
+        charts.forEach(c => c.destroy());
+        charts = [];
+        container.innerHTML = '';
+
+        if (list.length === 0) {
+            status.textContent = 'no tickers match the current filters';
+            return;
+        }
+
+        status.textContent = 'loading...';
+        await ensureSeries(list.map(r => r.ticker));
+        if (token !== renderToken) return;  // a newer render started; abort
+        status.textContent = '';
+
+        list.forEach((row, i) => buildCard(row, i));
+    }
+
+    document.querySelectorAll('input[name="chartView"]').forEach(el => {
+        el.addEventListener('change', () => {
+            if (el.checked) { activeView = el.value; render(); }
+        });
+    });
+
+    render();
 })();
 </script>
 {% endblock %}
