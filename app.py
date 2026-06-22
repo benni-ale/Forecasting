@@ -71,7 +71,7 @@ AUTH_ENABLED = bool(ADMIN_PASSWORD)
 PUBLIC_ENDPOINTS = {
     'public_dashboard', 'api_dashboard_stocks',
     'view_articles', 'api_articles', 'view_article_detail',
-    'public_companies', 'get_companies',
+    'public_companies', 'public_ticker_detail', 'get_companies',
     'login', 'logout', 'static',
 }
 
@@ -593,6 +593,103 @@ def public_companies():
     """Public, read-only page to browse company/ticker descriptions."""
     logger.info("Public companies page accessed")
     return render_template('companies_public.html')
+
+
+@app.route('/tickers/<ticker>')
+def public_ticker_detail(ticker):
+    """Public, read-only detail page for a single ticker: company info,
+    price/volume chart (via the public stocks API) and latest related news."""
+    ticker = (ticker or '').strip().upper()
+    logger.info(f"Public ticker detail accessed: {ticker}")
+
+    company = None
+    news = []
+    summary = {'mentions': 0, 'avg_sentiment': None, 'last_seen': None, 'first_seen': None}
+    error = None
+    try:
+        db_manager = get_db_manager(readonly=True)
+        with db_manager:
+            cursor = db_manager.conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT ticker, name, business_description, sector, industry,
+                           exchange, market_cap, website, ceo, employees,
+                           city, state, country
+                    FROM companies
+                    WHERE ticker = %s
+                    """,
+                    (ticker,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    company = {
+                        'ticker': row[0], 'name': row[1], 'business_description': row[2],
+                        'sector': row[3], 'industry': row[4], 'exchange': row[5],
+                        'market_cap': float(row[6]) if row[6] else None,
+                        'website': row[7], 'ceo': row[8], 'employees': row[9],
+                        'city': row[10], 'state': row[11], 'country': row[12],
+                    }
+
+                # Latest news mentioning this ticker.
+                cursor.execute(
+                    """
+                    SELECT article_id, article_title, article_url, article_source,
+                           article_time_published, ticker_sentiment_score,
+                           ticker_sentiment_label, relevance_score
+                    FROM article_ticker_sentiment_view
+                    WHERE ticker = %s
+                    ORDER BY article_time_published DESC
+                    LIMIT 30
+                    """,
+                    (ticker,)
+                )
+                for n in cursor.fetchall():
+                    news.append({
+                        'id': n[0],
+                        'title': n[1],
+                        'url': n[2],
+                        'source': n[3],
+                        'time_published': n[4].isoformat(sep=' ', timespec='minutes') if n[4] else None,
+                        'sentiment_score': float(n[5]) if n[5] is not None else None,
+                        'sentiment_label': n[6],
+                        'relevance': float(n[7]) if n[7] is not None else None,
+                    })
+
+                # Quick aggregate summary over all stored news for the ticker.
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS mentions,
+                           AVG(ticker_sentiment_score) AS avg_sentiment,
+                           MAX(article_time_published::date) AS last_seen,
+                           MIN(article_time_published::date) AS first_seen
+                    FROM article_ticker_sentiment_view
+                    WHERE ticker = %s
+                    """,
+                    (ticker,)
+                )
+                agg = cursor.fetchone()
+                if agg:
+                    summary = {
+                        'mentions': int(agg[0] or 0),
+                        'avg_sentiment': float(agg[1]) if agg[1] is not None else None,
+                        'last_seen': agg[2].isoformat() if agg[2] else None,
+                        'first_seen': agg[3].isoformat() if agg[3] else None,
+                    }
+            finally:
+                cursor.close()
+    except Exception as e:
+        logger.error(f"Error building ticker detail for {ticker}: {str(e)}", exc_info=True)
+        error = str(e)
+
+    return render_template(
+        'ticker_detail.html',
+        ticker=ticker,
+        company=company,
+        news=news,
+        summary=summary,
+        error=error,
+    )
 
 
 @app.route('/')

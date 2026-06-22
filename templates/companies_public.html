@@ -86,8 +86,8 @@
             const website = c.website
                 ? `<a href="${esc(c.website)}" target="_blank" rel="noopener">link</a>` : '-';
             return `<tr>
-                <td><span class="badge bg-secondary">${esc(c.ticker)}</span></td>
-                <td>${esc(c.name) || '-'}</td>
+                <td><a href="/tickers/${encodeURIComponent(c.ticker)}" class="text-decoration-none"><span class="badge bg-secondary">${esc(c.ticker)}</span></a></td>
+                <td><a href="/tickers/${encodeURIComponent(c.ticker)}" class="text-decoration-none">${esc(c.name) || '-'}</a></td>
                 <td>${esc(c.sector) || '-'}</td>
                 <td>${esc(c.industry) || '-'}</td>
                 <td style="min-width:320px;">${esc(desc) || '<span class="text-muted">No description</span>'}</td>

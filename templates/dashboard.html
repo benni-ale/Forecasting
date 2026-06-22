@@ -131,7 +131,7 @@
                         {% for r in by_sentiment %}
                         <tr>
                             <td class="text-muted">{{ loop.index }}</td>
-                            <td><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></td>
+                            <td><a href="{{ url_for('public_ticker_detail', ticker=r.ticker) }}" class="text-decoration-none"><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></a></td>
                             <td class="text-end {% if r.kpi is not none and r.kpi > 0 %}sentiment-bullish{% elif r.kpi is not none and r.kpi < 0 %}sentiment-bearish{% else %}sentiment-neutral{% endif %}">
                                 {{ '%.4f'|format(r.kpi) if r.kpi is not none else '-' }}
                             </td>
@@ -165,7 +165,7 @@
                         {% for r in by_mentions %}
                         <tr>
                             <td class="text-muted">{{ loop.index }}</td>
-                            <td><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></td>
+                            <td><a href="{{ url_for('public_ticker_detail', ticker=r.ticker) }}" class="text-decoration-none"><span class="badge bg-secondary ticker-badge">{{ r.ticker }}</span></a></td>
                             <td class="text-end">{{ r.mentions }}</td>
                             <td class="text-end {% if r.kpi is not none and r.kpi > 0 %}sentiment-bullish{% elif r.kpi is not none and r.kpi < 0 %}sentiment-bearish{% else %}sentiment-neutral{% endif %}">
                                 {{ '%.4f'|format(r.kpi) if r.kpi is not none else '-' }}
@@ -217,17 +217,19 @@
                 const col = document.createElement('div');
                 col.className = 'col-lg-6 col-xl-4 mb-4';
                 const canvasId = 'stockChart' + i;
+                const tickerUrl = '/tickers/' + encodeURIComponent(s.ticker);
                 if (s.error) {
                     col.innerHTML = `<div class="card h-100"><div class="card-header py-2">
-                        <span class="badge bg-secondary">${s.ticker}</span></div>
+                        <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${s.ticker}</span></a></div>
                         <div class="card-body text-muted small">No price data: ${s.error}</div></div>`;
                     container.appendChild(col);
                     return;
                 }
-                col.innerHTML = `<div class="card h-100"><div class="card-header py-2">
-                    <span class="badge bg-secondary">${s.ticker}</span>
-                    <span class="text-muted small ms-2">last ${s.dates.length} days</span></div>
-                    <div class="card-body"><canvas id="${canvasId}" height="180"></canvas></div></div>`;
+                col.innerHTML = `<div class="card h-100"><div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${s.ticker}</span>
+                    <span class="text-muted small ms-2">last ${s.dates.length} days</span></a>
+                    <a href="${tickerUrl}" class="small text-muted text-decoration-none">details <i class="bi bi-arrow-right-short"></i></a></div>
+                    <div class="card-body"><canvas id="${canvasId}" style="cursor:pointer" height="180"></canvas></div></div>`;
                 container.appendChild(col);
 
                 new Chart(document.getElementById(canvasId).getContext('2d'), {
@@ -260,6 +262,7 @@
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        onClick: () => { window.location.href = tickerUrl; },
                         interaction: { mode: 'index', intersect: false },
                         plugins: { legend: { display: true, labels: { boxWidth: 12 } } },
                         scales: {

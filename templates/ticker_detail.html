@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ticker }} - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <a href="{{ url_for('public_companies') }}" class="text-decoration-none small text-muted">
+            <i class="bi bi-arrow-left"></i> All companies
+        </a>
+        <h2 class="mb-0 mt-1">
+            <span class="badge bg-secondary">{{ ticker }}</span>
+            {% if company and company.name %}<span class="ms-2">{{ company.name }}</span>{% endif %}
+        </h2>
+    </div>
+    <a href="{{ url_for('view_articles') }}?ticker={{ ticker }}" class="btn btn-sm btn-outline-light">
+        <i class="bi bi-newspaper"></i> All news for {{ ticker }}
+    </a>
+</div>
+
+{% if error %}
+    <div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> Could not load data: {{ error }}</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100"><div class="card-body py-3">
+            <div class="text-muted small"><i class="bi bi-megaphone"></i> Mentions</div>
+            <div class="h4 mb-0">{{ '{:,}'.format(summary.mentions or 0) }}</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100"><div class="card-body py-3">
+            <div class="text-muted small"><i class="bi bi-emoji-smile"></i> Avg sentiment</div>
+            <div class="h4 mb-0 {% if summary.avg_sentiment is not none and summary.avg_sentiment > 0 %}sentiment-bullish{% elif summary.avg_sentiment is not none and summary.avg_sentiment < 0 %}sentiment-bearish{% endif %}">
+                {{ '%.4f'|format(summary.avg_sentiment) if summary.avg_sentiment is not none else '-' }}
+            </div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100"><div class="card-body py-3">
+            <div class="text-muted small"><i class="bi bi-calendar-check"></i> Last seen</div>
+            <div class="h5 mb-0">{{ summary.last_seen or '-' }}</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100"><div class="card-body py-3">
+            <div class="text-muted small"><i class="bi bi-calendar-plus"></i> First seen</div>
+            <div class="h5 mb-0">{{ summary.first_seen or '-' }}</div>
+        </div></div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-7 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-bar-chart-line"></i> Price &amp; volume (daily, Alpha Vantage)</span>
+                <span class="small text-muted" id="stockStatus">loading...</span>
+            </div>
+            <div class="card-body">
+                <canvas id="stockChart" height="260"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5 mb-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-building"></i> Company info</div>
+            <div class="card-body">
+                {% if company %}
+                    <dl class="row mb-0 small">
+                        {% if company.sector %}<dt class="col-4 text-muted">Sector</dt><dd class="col-8">{{ company.sector }}</dd>{% endif %}
+                        {% if company.industry %}<dt class="col-4 text-muted">Industry</dt><dd class="col-8">{{ company.industry }}</dd>{% endif %}
+                        {% if company.exchange %}<dt class="col-4 text-muted">Exchange</dt><dd class="col-8">{{ company.exchange }}</dd>{% endif %}
+                        {% if company.market_cap %}<dt class="col-4 text-muted">Market cap</dt><dd class="col-8">{{ '{:,.0f}'.format(company.market_cap) }}</dd>{% endif %}
+                        {% if company.ceo %}<dt class="col-4 text-muted">CEO</dt><dd class="col-8">{{ company.ceo }}</dd>{% endif %}
+                        {% if company.employees %}<dt class="col-4 text-muted">Employees</dt><dd class="col-8">{{ '{:,}'.format(company.employees) }}</dd>{% endif %}
+                        {% if company.city or company.country %}<dt class="col-4 text-muted">HQ</dt><dd class="col-8">{{ [company.city, company.state, company.country]|select|join(', ') }}</dd>{% endif %}
+                        {% if company.website %}<dt class="col-4 text-muted">Website</dt><dd class="col-8"><a href="{{ company.website }}" target="_blank" rel="noopener">{{ company.website }}</a></dd>{% endif %}
+                    </dl>
+                    {% if company.business_description %}
+                        <hr>
+                        <p class="small mb-0">{{ company.business_description }}</p>
+                    {% endif %}
+                {% else %}
+                    <p class="text-muted mb-0">No company description on file for {{ ticker }}.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-newspaper"></i> Latest news mentioning {{ ticker }}</div>
+    <div class="card-body p-0">
+        <div class="list-group list-group-flush">
+            {% for n in news %}
+            <a href="{{ url_for('view_article_detail', article_id=n.id) }}" class="list-group-item list-group-item-action">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                    <div>
+                        <div class="fw-semibold">{{ n.title }}</div>
+                        <div class="small text-muted">
+                            {{ n.source or 'Unknown source' }} &middot; {{ n.time_published or '' }}
+                            {% if n.relevance is not none %}&middot; relevance {{ '%.2f'|format(n.relevance) }}{% endif %}
+                        </div>
+                    </div>
+                    <span class="badge text-nowrap {% if n.sentiment_score is not none and n.sentiment_score > 0 %}bg-success{% elif n.sentiment_score is not none and n.sentiment_score < 0 %}bg-danger{% else %}bg-secondary{% endif %}">
+                        {{ n.sentiment_label or '-' }}
+                        {% if n.sentiment_score is not none %}({{ '%.2f'|format(n.sentiment_score) }}){% endif %}
+                    </span>
+                </div>
+            </a>
+            {% else %}
+            <div class="list-group-item text-center text-muted py-4">No news on file for {{ ticker }}.</div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const ticker = {{ ticker|tojson }};
+    const status = document.getElementById('stockStatus');
+
+    fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(ticker)}&top=1`)
+        .then(r => r.json())
+        .then(data => {
+            const s = (data.series || [])[0];
+            if (!s || s.error) {
+                status.textContent = s && s.error ? ('no price data: ' + s.error) : 'no price data';
+                return;
+            }
+            status.textContent = `last ${s.dates.length} days`;
+            new Chart(document.getElementById('stockChart').getContext('2d'), {
+                data: {
+                    labels: s.dates,
+                    datasets: [
+                        {
+                            type: 'bar', label: 'Volume', data: s.volumes, yAxisID: 'yVol',
+                            backgroundColor: 'rgba(102, 217, 239, 0.35)', borderWidth: 0, order: 2
+                        },
+                        {
+                            type: 'line', label: 'Close', data: s.closes, yAxisID: 'yPrice',
+                            borderColor: '#a6e22e', backgroundColor: 'rgba(166, 226, 46, 0.1)',
+                            borderWidth: 2, pointRadius: 0, tension: 0.2, order: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: { legend: { display: true, labels: { boxWidth: 12 } } },
+                    scales: {
+                        x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
+                        yPrice: { position: 'left', title: { display: true, text: 'Close ($)' } },
+                        yVol: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Volume' } }
+                    }
+                }
+            });
+        })
+        .catch(err => { status.textContent = 'error loading price data'; console.error(err); });
+})();
+</script>
+{% endblock %}
