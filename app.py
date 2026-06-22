@@ -71,9 +71,14 @@ AUTH_ENABLED = bool(ADMIN_PASSWORD)
 PUBLIC_ENDPOINTS = {
     'public_dashboard', 'api_dashboard_stocks',
     'view_articles', 'api_articles', 'view_article_detail',
-    'public_companies', 'public_ticker_detail', 'get_companies',
+    'public_companies', 'public_ticker_detail', 'api_ticker_sentiment_kpi', 'get_companies',
     'login', 'logout', 'static',
 }
+
+
+# Shared defaults for the public sentiment KPI (daily dashboard + ticker chart).
+DEFAULT_KPI_WINDOW_DAYS = 14
+DEFAULT_KPI_HALF_LIFE = 7.0
 
 
 def is_admin():
@@ -293,15 +298,15 @@ def public_dashboard():
     """
     # Parameters (with sane bounds).
     try:
-        days = int(request.args.get('days', 14))
+        days = int(request.args.get('days', DEFAULT_KPI_WINDOW_DAYS))
     except (TypeError, ValueError):
-        days = 14
+        days = DEFAULT_KPI_WINDOW_DAYS
     days = max(1, min(days, 365))
 
     try:
-        half_life = float(request.args.get('half_life', 7.0))
+        half_life = float(request.args.get('half_life', DEFAULT_KPI_HALF_LIFE))
     except (TypeError, ValueError):
-        half_life = 7.0
+        half_life = DEFAULT_KPI_HALF_LIFE
     half_life = max(0.5, min(half_life, 365.0))
 
     try:
@@ -606,15 +611,15 @@ def api_dashboard_stocks():
     (cached in memory). Used by the public dashboard chart section.
     """
     try:
-        days = int(request.args.get('days', 14))
+        days = int(request.args.get('days', DEFAULT_KPI_WINDOW_DAYS))
     except (TypeError, ValueError):
-        days = 14
+        days = DEFAULT_KPI_WINDOW_DAYS
     days = max(1, min(days, 365))
 
     try:
-        half_life = float(request.args.get('half_life', 7.0))
+        half_life = float(request.args.get('half_life', DEFAULT_KPI_HALF_LIFE))
     except (TypeError, ValueError):
-        half_life = 7.0
+        half_life = DEFAULT_KPI_HALF_LIFE
     half_life = max(0.5, min(half_life, 365.0))
 
     try:
@@ -669,6 +674,119 @@ def api_dashboard_stocks():
 
     series = [_fetch_av_daily(t) for t in tickers]
     return jsonify({'tickers': tickers, 'series': series})
+
+
+# Ticker-detail sentiment chart uses the same KPI defaults as the dashboard.
+def _compute_ticker_kpi_series(ticker, window_days=DEFAULT_KPI_WINDOW_DAYS,
+                               half_life=DEFAULT_KPI_HALF_LIFE,
+                               chart_days=DEFAULT_KPI_WINDOW_DAYS):
+    """Compute the dashboard KPI formula for one ticker on each calendar day.
+
+    For each target date T the KPI uses articles with
+        article_date > T - window_days  AND  article_date <= T
+    with decay POWER(0.5, (T - article_date) / half_life) — identical to the
+    public dashboard query when T = CURRENT_DATE.
+
+    Returns list of dicts {date, kpi, mentions} ordered ascending by date.
+    """
+    ticker = ticker.upper()
+    lookback = window_days + chart_days  # articles needed for the rolling window
+
+    db = get_db_manager(readonly=True)
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute(
+                """
+                WITH article_rows AS (
+                    SELECT
+                        article_time_published::date AS d,
+                        ticker_sentiment_score AS s,
+                        relevance_score AS rel
+                    FROM article_ticker_sentiment_view
+                    WHERE ticker = %(ticker)s
+                      AND article_time_published::date
+                          > (CURRENT_DATE - make_interval(days => %(lookback)s))
+                ),
+                days AS (
+                    SELECT generate_series(
+                        (CURRENT_DATE - make_interval(days => %(chart_days)s - 1))::date,
+                        CURRENT_DATE,
+                        INTERVAL '1 day'
+                    )::date AS target_date
+                ),
+                daily_counts AS (
+                    SELECT d, COUNT(*)::int AS cnt
+                    FROM article_rows
+                    GROUP BY d
+                )
+                SELECT
+                    days.target_date,
+                    k.kpi,
+                    COALESCE(dc.cnt, 0) AS mentions
+                FROM days
+                LEFT JOIN LATERAL (
+                    SELECT
+                        SUM(ar.s * ar.rel
+                            * POWER(0.5, (days.target_date - ar.d)::numeric / %(hl)s))
+                          / NULLIF(SUM(ar.rel
+                            * POWER(0.5, (days.target_date - ar.d)::numeric / %(hl)s)), 0)
+                            AS kpi
+                    FROM article_rows ar
+                    WHERE ar.d > (days.target_date - make_interval(days => %(window)s))
+                      AND ar.d <= days.target_date
+                ) k ON TRUE
+                LEFT JOIN daily_counts dc ON dc.d = days.target_date
+                ORDER BY days.target_date
+                """,
+                {
+                    'ticker': ticker,
+                    'lookback': lookback,
+                    'chart_days': chart_days,
+                    'window': window_days,
+                    'hl': half_life,
+                }
+            )
+            rows = []
+            for target_date, kpi, mentions in cur.fetchall():
+                rows.append({
+                    'date': target_date.isoformat(),
+                    'kpi': float(kpi) if kpi is not None else None,
+                    'mentions': int(mentions),
+                })
+            return rows
+        finally:
+            cur.close()
+
+
+@app.route('/api/tickers/<ticker>/sentiment-kpi')
+def api_ticker_sentiment_kpi(ticker):
+    """Public, lazy endpoint: dashboard KPI time series for one ticker.
+
+    Uses the same default window/half-life as the daily dashboard (14d / 7d).
+    The last point matches the dashboard KPI at default filter settings.
+    """
+    ticker = (ticker or '').strip().upper()
+    if not ticker:
+        return jsonify({'error': 'Ticker required'}), 400
+    try:
+        series = _compute_ticker_kpi_series(ticker)
+        dates = [p['date'] for p in series]
+        kpis = [p['kpi'] for p in series]
+        mentions = [p['mentions'] for p in series]
+        current_kpi = kpis[-1] if kpis else None
+        return jsonify({
+            'ticker': ticker,
+            'dates': dates,
+            'kpis': kpis,
+            'mentions': mentions,
+            'window_days': DEFAULT_KPI_WINDOW_DAYS,
+            'half_life': DEFAULT_KPI_HALF_LIFE,
+            'current_kpi': current_kpi,
+        })
+    except Exception as e:
+        logger.error(f"Error computing sentiment KPI series for {ticker}: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/tickers')
@@ -830,6 +948,8 @@ def public_ticker_detail(ticker):
         news=news,
         summary=summary,
         error=error,
+        default_kpi_window=DEFAULT_KPI_WINDOW_DAYS,
+        default_kpi_half_life=DEFAULT_KPI_HALF_LIFE,
     )
 
 

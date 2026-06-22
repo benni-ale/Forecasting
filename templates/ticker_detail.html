@@ -92,6 +92,22 @@
 </div>
 
 <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span><i class="bi bi-activity"></i> Sentiment KPI over time ({{ default_kpi_window }}d window, {{ default_kpi_half_life|int }}d half-life)</span>
+        <span class="small text-muted" id="sentimentStatus">loading...</span>
+    </div>
+    <div class="card-body">
+        <p class="small text-muted mb-2">
+            Same KPI as the daily dashboard
+            (<code>SUM(s&times;rel&times;decay) / SUM(rel&times;decay)</code>).
+            Last point = dashboard KPI at default filters ({{ default_kpi_window }}d window, {{ default_kpi_half_life|int }}d half-life).
+            <span id="currentKpiLabel" class="ms-1"></span>
+        </p>
+        <canvas id="sentimentChart" height="220"></canvas>
+    </div>
+</div>
+
+<div class="card mb-4">
     <div class="card-header"><i class="bi bi-newspaper"></i> Latest news mentioning {{ ticker }}</div>
     <div class="card-body p-0">
         <div class="list-group list-group-flush">
@@ -123,30 +139,27 @@
 <script>
 (function () {
     const ticker = {{ ticker|tojson }};
-    const status = document.getElementById('stockStatus');
 
+    // --- Price chart ---
+    const stockStatus = document.getElementById('stockStatus');
     fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(ticker)}&top=1`)
         .then(r => r.json())
         .then(data => {
             const s = (data.series || [])[0];
             if (!s || s.error) {
-                status.textContent = s && s.error ? ('no price data: ' + s.error) : 'no price data';
+                stockStatus.textContent = s && s.error ? ('no price data: ' + s.error) : 'no price data';
                 return;
             }
-            status.textContent = `last ${s.dates.length} days`;
+            stockStatus.textContent = `last ${s.dates.length} days`;
             new Chart(document.getElementById('stockChart').getContext('2d'), {
                 data: {
                     labels: s.dates,
                     datasets: [
-                        {
-                            type: 'bar', label: 'Volume', data: s.volumes, yAxisID: 'yVol',
-                            backgroundColor: 'rgba(102, 217, 239, 0.35)', borderWidth: 0, order: 2
-                        },
-                        {
-                            type: 'line', label: 'Close', data: s.closes, yAxisID: 'yPrice',
-                            borderColor: '#a6e22e', backgroundColor: 'rgba(166, 226, 46, 0.1)',
-                            borderWidth: 2, pointRadius: 0, tension: 0.2, order: 1
-                        }
+                        { type: 'bar', label: 'Volume', data: s.volumes, yAxisID: 'yVol',
+                          backgroundColor: 'rgba(102, 217, 239, 0.35)', borderWidth: 0, order: 2 },
+                        { type: 'line', label: 'Close', data: s.closes, yAxisID: 'yPrice',
+                          borderColor: '#a6e22e', backgroundColor: 'rgba(166, 226, 46, 0.1)',
+                          borderWidth: 2, pointRadius: 0, tension: 0.2, order: 1 }
                     ]
                 },
                 options: {
@@ -161,7 +174,98 @@
                 }
             });
         })
-        .catch(err => { status.textContent = 'error loading price data'; console.error(err); });
+        .catch(err => { stockStatus.textContent = 'error loading price data'; console.error(err); });
+
+    // --- Sentiment KPI chart (lazy fetch, same formula as daily dashboard) ---
+    const sentimentStatus = document.getElementById('sentimentStatus');
+    const currentKpiLabel = document.getElementById('currentKpiLabel');
+
+    function norm01(arr) {
+        const vals = arr.filter(v => v != null);
+        if (vals.length === 0) return arr.map(() => null);
+        const min = Math.min(...vals), max = Math.max(...vals);
+        if (max === min) return arr.map(v => (v == null ? null : 0.5));
+        return arr.map(v => (v == null ? null : (v - min) / (max - min)));
+    }
+
+    fetch(`/api/tickers/${encodeURIComponent(ticker)}/sentiment-kpi`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                sentimentStatus.textContent = 'error: ' + data.error;
+                return;
+            }
+            const dates = data.dates || [];
+            const kpis = data.kpis || [];
+            const mentions = data.mentions || [];
+            if (dates.length === 0) {
+                sentimentStatus.textContent = 'no sentiment data';
+                return;
+            }
+            sentimentStatus.textContent = '';
+            const lastKpi = data.current_kpi;
+            if (lastKpi != null) {
+                const cls = lastKpi > 0 ? 'sentiment-bullish' : (lastKpi < 0 ? 'sentiment-bearish' : '');
+                currentKpiLabel.innerHTML = `Current KPI: <strong class="${cls}">${Number(lastKpi).toFixed(4)}</strong>`;
+            }
+
+            const mentionsNorm = norm01(mentions);
+
+            new Chart(document.getElementById('sentimentChart').getContext('2d'), {
+                data: {
+                    labels: dates,
+                    datasets: [
+                        {
+                            type: 'bar', label: 'Mentions (norm.)', data: mentionsNorm,
+                            yAxisID: 'yCount', backgroundColor: 'rgba(102, 217, 239, 0.35)',
+                            borderWidth: 0, order: 2,
+                            _rawMentions: mentions
+                        },
+                        {
+                            type: 'line', label: 'KPI', data: kpis, yAxisID: 'yKpi',
+                            borderColor: '#fd971f', backgroundColor: 'rgba(253, 151, 31, 0.1)',
+                            borderWidth: 2, pointRadius: 2, tension: 0.2, order: 1,
+                            spanGaps: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: true, labels: { boxWidth: 12 } },
+                        tooltip: {
+                            callbacks: {
+                                label(ctx) {
+                                    if (ctx.dataset.label === 'Mentions (norm.)') {
+                                        const raw = ctx.dataset._rawMentions[ctx.dataIndex];
+                                        return `Mentions: ${raw}`;
+                                    }
+                                    const v = ctx.parsed.y;
+                                    return v == null ? 'KPI: -' : `KPI: ${v.toFixed(4)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { ticks: { maxTicksLimit: 10, autoSkip: true } },
+                        yKpi: {
+                            position: 'left',
+                            title: { display: true, text: 'KPI' },
+                            grid: { color: 'rgba(255,255,255,0.06)' }
+                        },
+                        yCount: {
+                            position: 'right',
+                            min: 0, max: 1,
+                            title: { display: true, text: 'Mentions (norm.)' },
+                            grid: { drawOnChartArea: false },
+                            ticks: { display: false }
+                        }
+                    }
+                }
+            });
+        })
+        .catch(err => { sentimentStatus.textContent = 'error loading sentiment'; console.error(err); });
 })();
 </script>
 {% endblock %}
