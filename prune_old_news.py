@@ -10,7 +10,11 @@ Connection:
 import os
 import logging
 
+from dotenv import load_dotenv
 from news_collector import DatabaseManager
+from job_logging import finish_execution, start_execution
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("prune_old_news")
@@ -25,25 +29,50 @@ def _dsn():
 
 def main():
     days = int(os.getenv("RETENTION_DAYS", "30"))
-    dsn = _dsn()
-    db = DatabaseManager(dsn=dsn) if dsn else DatabaseManager()
+    trigger = os.getenv("JOB_TRIGGER_SOURCE", "scheduler")
+    exec_id = start_execution(
+        "prune_old_news",
+        trigger,
+        extra_metrics={"retention_days": days},
+    )
+    deleted = 0
+    try:
+        dsn = _dsn()
+        db = DatabaseManager(dsn=dsn) if dsn else DatabaseManager()
 
-    with db:
-        cur = db.conn.cursor()
-        try:
-            cur.execute(
-                "DELETE FROM articles WHERE time_published < (now() - make_interval(days => %s))",
-                (days,),
-            )
-            deleted = cur.rowcount
-            db.conn.commit()
-            logger.info("Pruned %s articles older than %s days", deleted, days)
-        except Exception:
-            db.conn.rollback()
-            logger.exception("Prune failed; rolled back")
-            raise
-        finally:
-            cur.close()
+        with db:
+            cur = db.conn.cursor()
+            try:
+                cur.execute(
+                    "DELETE FROM articles WHERE time_published < (now() - make_interval(days => %s))",
+                    (days,),
+                )
+                deleted = cur.rowcount
+                db.conn.commit()
+                logger.info("Pruned %s articles older than %s days", deleted, days)
+            except Exception:
+                db.conn.rollback()
+                logger.exception("Prune failed; rolled back")
+                raise
+            finally:
+                cur.close()
+
+        finish_execution(
+            exec_id,
+            "completed",
+            articles_found=deleted,
+            summary_message=f"Deleted {deleted} articles older than {days} days",
+            extra_metrics={"retention_days": days, "articles_deleted": deleted},
+        )
+    except Exception as e:
+        finish_execution(
+            exec_id,
+            "error",
+            error_message=str(e),
+            summary_message=f"Prune failed: {e}",
+            extra_metrics={"retention_days": days, "articles_deleted": deleted},
+        )
+        raise
 
 
 if __name__ == "__main__":

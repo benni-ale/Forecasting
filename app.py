@@ -968,7 +968,13 @@ def index():
 @app.route('/admin/prune-old-news', methods=['POST'])
 def prune_old_news_route():
     """Admin-only: delete articles older than RETENTION_DAYS (manual trigger)."""
+    from job_logging import finish_execution, start_execution
+
     days = int(os.getenv('RETENTION_DAYS', '30'))
+    exec_id = start_execution(
+        'prune_old_news', 'manual', extra_metrics={'retention_days': days}
+    )
+    deleted = 0
     try:
         db_manager = get_db_manager()
         with db_manager:
@@ -976,17 +982,30 @@ def prune_old_news_route():
             try:
                 cursor.execute(
                     "DELETE FROM articles WHERE time_published < (now() - make_interval(days => %s))",
-                    (days,)
+                    (days,),
                 )
                 deleted = cursor.rowcount
                 db_manager.conn.commit()
             finally:
                 cursor.close()
-        logger.info(f"Manual prune: deleted {deleted} articles older than {days} days")
+        finish_execution(
+            exec_id,
+            'completed',
+            summary_message=f'Deleted {deleted} articles older than {days} days',
+            extra_metrics={'retention_days': days, 'articles_deleted': deleted},
+        )
+        logger.info("Manual prune: deleted %s articles older than %s days", deleted, days)
         flash(f'Deleted {deleted} articles older than {days} days.', 'success')
     except Exception as e:
-        logger.error(f"Manual prune failed: {str(e)}", exc_info=True)
-        flash(f'Prune failed: {str(e)}', 'error')
+        finish_execution(
+            exec_id,
+            'error',
+            error_message=str(e),
+            summary_message=f'Prune failed: {e}',
+            extra_metrics={'retention_days': days, 'articles_deleted': deleted},
+        )
+        logger.error("Manual prune failed: %s", e, exc_info=True)
+        flash(f'Prune failed: {e}', 'error')
     return redirect(url_for('index'))
 
 
@@ -2110,43 +2129,26 @@ def stop_deep_research_multiday():
 
 @app.route('/coverage-ingestion', methods=['POST'])
 def coverage_ingestion():
-    """
-    Exhaustive coverage ingestion of the last N days.
-
-    Maximizes how many articles are collected for a recent period by:
-      - querying with limit=1000 (instead of 50),
-      - using both LATEST and EARLIEST sort on each window (to capture both
-        ends of dense windows that the API truncates),
-      - recursively subdividing any window that comes back "saturated"
-        (>= 1000 results) down to single-day granularity,
-      - iterating over every topic (phase 1) and every active ticker (phase 2).
-
-    Produces a live "news per date" breakdown (found vs newly inserted).
-    """
+    """Start exhaustive coverage ingestion in a background thread (admin manual)."""
     global coverage_ingestion_status
 
-    if coverage_ingestion_status['running']:
+    from coverage_ingestion_job import run_coverage_ingestion
+    from job_logging import is_job_running
+
+    if coverage_ingestion_status.get('running') or is_job_running('coverage_ingestion'):
         logger.warning("Coverage ingestion already in progress")
-        flash('Coverage ingestion already in progress. Please wait.', 'warning')
+        flash('Coverage ingestion already in progress. See Job Executions.', 'warning')
         return redirect(url_for('index'))
 
-    # Number of previous days to cover exhaustively
     try:
         num_days = int(request.form.get('num_days', 7))
-        if num_days < 1:
-            num_days = 1
-        elif num_days > 30:
-            num_days = 30
+        num_days = max(1, min(num_days, 30))
     except (ValueError, TypeError):
         num_days = 7
 
-    # Optional safety budget in minutes (0 = unlimited, stop manually)
     try:
         max_minutes = int(request.form.get('max_minutes', 0))
-        if max_minutes < 0:
-            max_minutes = 0
-        elif max_minutes > 1440:
-            max_minutes = 1440
+        max_minutes = max(0, min(max_minutes, 1440))
     except (ValueError, TypeError):
         max_minutes = 0
 
@@ -2155,368 +2157,57 @@ def coverage_ingestion():
     api_key = form_api_key if form_api_key else env_api_key
 
     if not api_key:
-        logger.error("API key not provided for coverage ingestion")
         flash('API key is required for coverage ingestion.', 'error')
         return redirect(url_for('index'))
 
     logger.info(
-        f"Coverage ingestion requested: last {num_days} day(s), "
-        f"max_minutes={max_minutes or 'unlimited'}"
+        "Coverage ingestion requested (manual): last %s day(s), max_minutes=%s",
+        num_days, max_minutes or 'unlimited',
     )
 
-    all_topics = [
-        'blockchain', 'earnings', 'ipo', 'mergers_and_acquisitions',
-        'financial_markets', 'economy_fiscal', 'economy_monetary',
-        'economy_macro', 'energy_transportation', 'finance',
-        'life_sciences', 'manufacturing', 'real_estate',
-        'retail_wholesale', 'technology'
-    ]
+    coverage_ingestion_status['running'] = True
 
     def coverage_ingestion_thread():
         global coverage_ingestion_status
-        coverage_ingestion_status['running'] = True
-        coverage_ingestion_status['started_at'] = datetime.now().isoformat()
-        coverage_ingestion_status['phase'] = None
-        coverage_ingestion_status['current_target'] = None
-        coverage_ingestion_status['targets_completed'] = 0
-        coverage_ingestion_status['targets_total'] = 0
-        coverage_ingestion_status['num_days'] = num_days
-        coverage_ingestion_status['total_found'] = 0
-        coverage_ingestion_status['total_inserted'] = 0
-        coverage_ingestion_status['total_skipped'] = 0
-        coverage_ingestion_status['per_date_found'] = {}
-        coverage_ingestion_status['per_date_inserted'] = {}
-        coverage_ingestion_status['message'] = 'Starting coverage ingestion...'
-
-        # Mutable counters shared with the inner helper
-        counters = {'found': 0, 'inserted': 0, 'skipped': 0}
-        seen_urls = set()
-
-        # Resume support: load previously completed targets from disk. Progress is
-        # only reused when the search parameters match (same num_days window).
-        progress = _load_coverage_progress()
-        if progress.get('num_days') == num_days:
-            completed_topics = set(progress.get('completed_topics', []))
-            completed_tickers = set(progress.get('completed_tickers', []))
-        else:
-            completed_topics = set()
-            completed_tickers = set()
-        coverage_ingestion_status['resumed'] = bool(completed_topics or completed_tickers)
-        coverage_ingestion_status['resumed_topics'] = len(completed_topics)
-        coverage_ingestion_status['resumed_tickers'] = len(completed_tickers)
-
-        def persist_progress():
-            _save_coverage_progress({
-                'num_days': num_days,
-                'completed_topics': sorted(completed_topics),
-                'completed_tickers': sorted(completed_tickers),
-                'updated_at': datetime.now().isoformat()
-            })
-
-        deadline = None
-        if max_minutes > 0:
-            deadline = datetime.now() + timedelta(minutes=max_minutes)
-
-        MAX_DEPTH = 6           # safety cap on recursive subdivision
-        SATURATION = 1000       # window is "full" when it returns this many
-
         try:
-            rate_limit = int(os.getenv('ALPHA_VANTAGE_RATE_LIMIT', '75'))
-            collector = AlphaVantageNewsCollector(api_key, rate_limit_per_minute=rate_limit)
-            db_manager = get_db_manager()
-
-            window_end = datetime.now()
-            window_start = window_end - timedelta(days=num_days)
-
-            def time_left():
-                return deadline is None or datetime.now() < deadline
-
-            def record_and_save(new_articles):
-                """Bucket new articles by date, save per date, update counters."""
-                if not new_articles:
-                    return
-                by_day = {}
-                for art in new_articles:
-                    day_raw = (art.get('time_published') or '')[:8]
-                    if len(day_raw) == 8:
-                        day = f"{day_raw[:4]}-{day_raw[4:6]}-{day_raw[6:8]}"
-                    else:
-                        day = 'unknown'
-                    by_day.setdefault(day, []).append(art)
-
-                for day, day_articles in by_day.items():
-                    coverage_ingestion_status['per_date_found'][day] = (
-                        coverage_ingestion_status['per_date_found'].get(day, 0)
-                        + len(day_articles)
-                    )
-                    counters['found'] += len(day_articles)
-                    try:
-                        with db_manager:
-                            result = db_manager.save_articles(day_articles)
-                        coverage_ingestion_status['per_date_inserted'][day] = (
-                            coverage_ingestion_status['per_date_inserted'].get(day, 0)
-                            + result['inserted']
-                        )
-                        counters['inserted'] += result['inserted']
-                        counters['skipped'] += result['skipped']
-                    except Exception as e:
-                        logger.error(f"Coverage ingestion: error saving {day}: {e}", exc_info=True)
-
-                coverage_ingestion_status['total_found'] = counters['found']
-                coverage_ingestion_status['total_inserted'] = counters['inserted']
-                coverage_ingestion_status['total_skipped'] = counters['skipped']
-
-            def fetch_window(tickers, topics, win_from, win_to, depth):
-                """Fetch a window with dual sort; subdivide if saturated."""
-                if not coverage_ingestion_status['running'] or not time_left():
-                    return
-                saturated = False
-                win_from_str = win_from.strftime('%Y%m%dT%H%M')
-                win_to_str = win_to.strftime('%Y%m%dT%H%M')
-
-                for sort_order in ('LATEST', 'EARLIEST'):
-                    if not coverage_ingestion_status['running'] or not time_left():
-                        return
-                    try:
-                        ticker_to_use = tickers
-                        try:
-                            data = collector._single_request(
-                                tickers=ticker_to_use, topics=topics,
-                                time_from=win_from_str, time_to=win_to_str,
-                                limit=SATURATION, sort=sort_order
-                            )
-                        except ValueError as e:
-                            # Handle invalid ticker format (dash -> underscore)
-                            if tickers and "Invalid ticker format" in str(e) and "-" in tickers:
-                                ticker_to_use = tickers.replace("-", "_")
-                                data = collector._single_request(
-                                    tickers=ticker_to_use, topics=topics,
-                                    time_from=win_from_str, time_to=win_to_str,
-                                    limit=SATURATION, sort=sort_order
-                                )
-                            else:
-                                raise
-
-                        articles = data.get('feed', []) if data else []
-                        if len(articles) >= SATURATION:
-                            saturated = True
-
-                        new_articles = []
-                        for art in articles:
-                            url = art.get('url')
-                            if url and url not in seen_urls:
-                                seen_urls.add(url)
-                                new_articles.append(art)
-
-                        record_and_save(new_articles)
-
-                    except Exception as e:
-                        logger.error(
-                            f"Coverage ingestion: error on window {win_from_str}-{win_to_str} "
-                            f"(tickers={tickers}, topics={topics}, sort={sort_order}): {e}",
-                            exc_info=True
-                        )
-
-                    if time_left():
-                        time.sleep(collector.request_delay)
-
-                # Recursively subdivide saturated windows down to 1-day granularity
-                if (saturated and depth < MAX_DEPTH
-                        and (win_to - win_from) > timedelta(days=1)
-                        and coverage_ingestion_status['running'] and time_left()):
-                    mid = win_from + (win_to - win_from) / 2
-                    fetch_window(tickers, topics, win_from, mid, depth + 1)
-                    fetch_window(tickers, topics, mid, win_to, depth + 1)
-
-            # ---- Phase 1: topics ----
-            coverage_ingestion_status['phase'] = 'topics'
-            coverage_ingestion_status['targets_total'] = len(all_topics)
-            coverage_ingestion_status['targets_completed'] = len(
-                [t for t in all_topics if t in completed_topics]
+            run_coverage_ingestion(
+                num_days=num_days,
+                max_minutes=max_minutes,
+                api_key=api_key,
+                trigger_source='manual',
+                status_dict=coverage_ingestion_status,
+                should_continue=lambda: coverage_ingestion_status.get('running', False),
             )
-            for i, topic in enumerate(all_topics):
-                if not coverage_ingestion_status['running'] or not time_left():
-                    break
-                if topic in completed_topics:
-                    continue  # already processed in a previous (stopped) run
-                coverage_ingestion_status['current_target'] = topic
-                coverage_ingestion_status['message'] = (
-                    f'Phase 1/2 (topics): {topic} ({i + 1}/{len(all_topics)})'
-                )
-                fetch_window(None, topic, window_start, window_end, 0)
-                # Only mark complete if the topic was fully processed (not interrupted)
-                if coverage_ingestion_status['running'] and time_left():
-                    completed_topics.add(topic)
-                    persist_progress()
-                coverage_ingestion_status['targets_completed'] = len(completed_topics)
-
-            # ---- Phase 2: tickers ----
-            if coverage_ingestion_status['running'] and time_left():
-                coverage_ingestion_status['phase'] = 'tickers'
-                coverage_ingestion_status['message'] = 'Fetching list of all stocks from Alpha Vantage...'
-                stocks = _fetch_active_stocks(api_key)
-
-                if not stocks:
-                    coverage_ingestion_status['message'] = (
-                        'Topics done. Could not fetch ticker list; skipping ticker phase.'
-                    )
-                    logger.warning("Coverage ingestion: no tickers available, skipping phase 2")
-                else:
-                    coverage_ingestion_status['targets_total'] = len(stocks)
-                    coverage_ingestion_status['targets_completed'] = len(
-                        [s for s in stocks if s in completed_tickers]
-                    )
-                    for i, ticker in enumerate(stocks):
-                        if not coverage_ingestion_status['running'] or not time_left():
-                            break
-                        if ticker in completed_tickers:
-                            continue  # already processed in a previous (stopped) run
-                        coverage_ingestion_status['current_target'] = ticker
-                        coverage_ingestion_status['message'] = (
-                            f'Phase 2/2 (tickers): {ticker} ({i + 1}/{len(stocks)})'
-                        )
-                        fetch_window(ticker, None, window_start, window_end, 0)
-                        # Only mark complete if fully processed (not interrupted)
-                        if coverage_ingestion_status['running'] and time_left():
-                            completed_tickers.add(ticker)
-                            # Persist periodically to limit disk writes on huge lists
-                            if len(completed_tickers) % 10 == 0:
-                                persist_progress()
-                        coverage_ingestion_status['targets_completed'] = len(completed_tickers)
-                    # Persist final ticker progress for this run segment
-                    persist_progress()
-
-            stopped = not coverage_ingestion_status['running']
-            timed_out = deadline is not None and datetime.now() >= deadline
-            fully_complete = not stopped and not timed_out
-            prefix = 'Stopped' if stopped else ('Time budget reached' if timed_out else '✓ Complete')
-
-            if fully_complete:
-                # Whole run finished: clear saved progress so the next run is fresh
-                _clear_coverage_progress()
-                resume_note = ''
-            else:
-                # Partial run: progress is kept on disk for the next resume
-                persist_progress()
-                resume_note = ' | Progress saved — restart to resume from here'
-
-            coverage_ingestion_status['message'] = (
-                f'{prefix}! Coverage of last {num_days} day(s): '
-                f'{counters["found"]} articles found, '
-                f'{counters["inserted"]} new inserted, '
-                f'{counters["skipped"]} duplicates skipped'
-                f'{resume_note}'
-            )
-            logger.info(
-                f"Coverage ingestion finished ({prefix}): "
-                f"{counters['found']} found, {counters['inserted']} inserted, "
-                f"{counters['skipped']} skipped, "
-                f"completed topics={len(completed_topics)}, tickers={len(completed_tickers)}"
-            )
-
         except Exception as e:
-            logger.error(f"Error in coverage ingestion thread: {e}", exc_info=True)
+            logger.error("Coverage ingestion thread error: %s", e, exc_info=True)
             coverage_ingestion_status['message'] = f'Error: {e}'
-        finally:
             coverage_ingestion_status['running'] = False
-            coverage_ingestion_status['current_target'] = None
-            logger.info("Coverage ingestion thread finished")
 
     thread = threading.Thread(target=coverage_ingestion_thread)
     thread.daemon = True
     thread.start()
 
     flash(
-        f'Coverage ingestion started: exhaustive coverage of the last {num_days} day(s) '
-        f'across all topics and tickers.',
-        'info'
+        f'Coverage ingestion started (manual): last {num_days} day(s). '
+        f'Progress logged under Job Executions.',
+        'info',
     )
     return redirect(url_for('index'))
-
-
-COVERAGE_PROGRESS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), 'coverage_progress.json'
-)
-
-
-def _load_coverage_progress():
-    """Load the persisted coverage ingestion progress (completed targets)."""
-    try:
-        if os.path.exists(COVERAGE_PROGRESS_FILE):
-            with open(COVERAGE_PROGRESS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        logger.warning(f"Coverage ingestion: could not load progress file: {e}")
-    return {}
-
-
-def _save_coverage_progress(data):
-    """Persist coverage ingestion progress so a stopped run can resume later."""
-    try:
-        with open(COVERAGE_PROGRESS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
-    except Exception as e:
-        logger.warning(f"Coverage ingestion: could not save progress file: {e}")
-
-
-def _clear_coverage_progress():
-    """Remove the persisted coverage ingestion progress (fresh start)."""
-    try:
-        if os.path.exists(COVERAGE_PROGRESS_FILE):
-            os.remove(COVERAGE_PROGRESS_FILE)
-    except Exception as e:
-        logger.warning(f"Coverage ingestion: could not clear progress file: {e}")
-
-
-def _fetch_active_stocks(api_key):
-    """Fetch the list of active stock symbols from Alpha Vantage LISTING_STATUS."""
-    import csv
-    import io
-    listing_url = "https://www.alphavantage.co/query"
-    listing_params = {"function": "LISTING_STATUS", "apikey": api_key, "datatype": "csv"}
-    try:
-        resp = requests.get(listing_url, params=listing_params, timeout=120)
-        resp.raise_for_status()
-        text = resp.text.strip()
-        stocks = []
-        if ',' in text and ('symbol' in text.lower() or text.count(',') > 5):
-            try:
-                reader = csv.DictReader(io.StringIO(text))
-                for row in reader:
-                    symbol = row.get('symbol', '').strip().upper()
-                    status = row.get('status', '').strip().lower()
-                    if symbol and status == 'active':
-                        stocks.append(symbol)
-            except Exception as csv_error:
-                logger.warning(f"Coverage ingestion: failed to parse listing CSV: {csv_error}")
-        if not stocks:
-            try:
-                data = resp.json()
-                if isinstance(data, list):
-                    stocks = [e.get('symbol', '').upper().strip() for e in data
-                              if e.get('symbol') and e.get('status', '').lower() == 'active']
-                elif 'data' in data:
-                    stocks = [e.get('symbol', '').upper().strip() for e in data['data']
-                              if e.get('symbol') and e.get('status', '').lower() == 'active']
-            except (ValueError, json.JSONDecodeError):
-                logger.error(f"Coverage ingestion: could not parse LISTING_STATUS. Preview: {text[:300]}")
-        return list(set([s for s in stocks if s]))
-    except Exception as e:
-        logger.error(f"Coverage ingestion: error fetching stock list: {e}", exc_info=True)
-        return []
 
 
 @app.route('/api/coverage-ingestion/status')
 def get_coverage_ingestion_status():
     """Get coverage ingestion status (AJAX endpoint), including saved progress."""
+    from coverage_ingestion_job import load_coverage_progress
+
     payload = dict(coverage_ingestion_status)
-    progress = _load_coverage_progress()
+    progress = load_coverage_progress()
     if progress:
         payload['saved_progress'] = {
             'num_days': progress.get('num_days'),
             'completed_topics': len(progress.get('completed_topics', [])),
             'completed_tickers': len(progress.get('completed_tickers', [])),
-            'updated_at': progress.get('updated_at')
+            'updated_at': progress.get('updated_at'),
         }
     else:
         payload['saved_progress'] = None
@@ -2536,15 +2227,31 @@ def stop_coverage_ingestion():
 
 @app.route('/api/coverage-ingestion/reset', methods=['POST'])
 def reset_coverage_ingestion():
-    """Clear the saved coverage ingestion progress so the next run starts fresh."""
+    """Clear saved coverage progress so the next run starts fresh."""
+    from coverage_ingestion_job import clear_coverage_progress
+
     if coverage_ingestion_status['running']:
         return jsonify({'status': 'running', 'error': 'Stop the run before resetting progress.'}), 409
-    _clear_coverage_progress()
+    clear_coverage_progress()
     coverage_ingestion_status['resumed'] = False
     coverage_ingestion_status['resumed_topics'] = 0
     coverage_ingestion_status['resumed_tickers'] = 0
     logger.info("Coverage ingestion progress reset")
     return jsonify({'status': 'reset'})
+
+
+@app.route('/jobs')
+def job_executions_page():
+    """Admin page: history of scheduled and manual job runs."""
+    from job_logging import list_executions
+
+    job_filter = request.args.get('job', '').strip() or None
+    executions = list_executions(job_name=job_filter, limit=200)
+    return render_template(
+        'job_executions.html',
+        executions=executions,
+        job_filter=job_filter or '',
+    )
 
 
 @app.route('/portfolio')

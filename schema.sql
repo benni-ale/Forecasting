@@ -204,6 +204,29 @@ CREATE TABLE IF NOT EXISTS stock_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_prices_ticker_date ON stock_prices(ticker, price_date DESC);
 
+-- Job execution log (manual admin runs + Heroku Scheduler).
+CREATE TABLE IF NOT EXISTS job_executions (
+    id SERIAL PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    trigger_source TEXT NOT NULL,
+    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP,
+    duration_seconds NUMERIC,
+    status TEXT NOT NULL DEFAULT 'running',
+    num_days INT,
+    max_minutes INT,
+    articles_found INT DEFAULT 0,
+    articles_inserted INT DEFAULT 0,
+    articles_skipped INT DEFAULT 0,
+    topics_completed INT DEFAULT 0,
+    tickers_completed INT DEFAULT 0,
+    error_message TEXT,
+    summary_message TEXT,
+    extra_metrics JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_job_executions_started ON job_executions (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_job_executions_name ON job_executions (job_name, started_at DESC);
+
 -- Create table for company descriptions (for semantic similarity)
 CREATE TABLE IF NOT EXISTS companies (
     ticker TEXT PRIMARY KEY,

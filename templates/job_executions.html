@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Job Executions - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-clock-history"></i> Job Executions</h2>
+    <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-left"></i> Admin</a>
+</div>
+
+<p class="text-muted small">
+    History of scheduled and manual background jobs. Coverage ingestion can be scheduled via
+    Heroku Scheduler: <code>python run_coverage.py</code>
+    (env: <code>COVERAGE_NUM_DAYS</code>, <code>COVERAGE_MAX_MINUTES</code>).
+</p>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+    <div class="col-auto">
+        <label class="form-label mb-1" for="job">Filter by job</label>
+        <select class="form-select" id="job" name="job">
+            <option value="">All jobs</option>
+            <option value="coverage_ingestion" {% if job_filter == 'coverage_ingestion' %}selected{% endif %}>coverage_ingestion</option>
+            <option value="prune_old_news" {% if job_filter == 'prune_old_news' %}selected{% endif %}>prune_old_news</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+        <a href="{{ url_for('job_executions_page') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
+    </div>
+</form>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-striped table-sm mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Job</th>
+                        <th>Trigger</th>
+                        <th>Started</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th class="text-end">Found</th>
+                        <th class="text-end">Inserted</th>
+                        <th class="text-end">Skipped</th>
+                        <th class="text-end">Deleted</th>
+                        <th>Summary</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in executions %}
+                    {% set em = e.extra_metrics if e.extra_metrics is mapping else {} %}
+                    {% set deleted = em.get('articles_deleted') %}
+                    <tr>
+                        <td class="text-muted">{{ e.id }}</td>
+                        <td><code>{{ e.job_name }}</code></td>
+                        <td>
+                            <span class="badge {% if e.trigger_source == 'scheduler' %}bg-info{% else %}bg-secondary{% endif %}">
+                                {{ e.trigger_source }}
+                            </span>
+                        </td>
+                        <td class="small text-nowrap">{{ e.started_at or '-' }}</td>
+                        <td class="small text-nowrap">
+                            {% if e.duration_seconds is not none %}
+                                {% if e.duration_seconds >= 3600 %}
+                                    {{ '%.1f'|format(e.duration_seconds / 3600) }}h
+                                {% elif e.duration_seconds >= 60 %}
+                                    {{ '%.1f'|format(e.duration_seconds / 60) }}m
+                                {% else %}
+                                    {{ '%.0f'|format(e.duration_seconds) }}s
+                                {% endif %}
+                            {% elif e.status == 'running' %}
+                                <span class="text-warning">running…</span>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge {% if e.status == 'completed' %}bg-success{% elif e.status == 'running' %}bg-warning text-dark{% elif e.status == 'error' %}bg-danger{% elif e.status in ('stopped', 'timeout') %}bg-secondary{% else %}bg-light text-dark{% endif %}">
+                                {{ e.status }}
+                            </span>
+                        </td>
+                        <td class="text-end">{{ e.articles_found if e.job_name == 'coverage_ingestion' else '-' }}</td>
+                        <td class="text-end">{{ e.articles_inserted if e.job_name == 'coverage_ingestion' else '-' }}</td>
+                        <td class="text-end">{{ e.articles_skipped if e.job_name == 'coverage_ingestion' else '-' }}</td>
+                        <td class="text-end">{{ deleted if deleted is not none else '-' }}</td>
+                        <td class="small" style="max-width:320px;">
+                            {{ e.summary_message or e.error_message or '-' }}
+                            {% if e.job_name == 'coverage_ingestion' and (e.topics_completed or e.tickers_completed) %}
+                                <span class="text-muted d-block">
+                                    topics {{ e.topics_completed }}, tickers {{ e.tickers_completed }}
+                                    {% if e.num_days %} · {{ e.num_days }}d window{% endif %}
+                                    {% if e.max_minutes %} · {{ e.max_minutes }}m budget{% endif %}
+                                </span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="11" class="text-center text-muted py-4">No job executions logged yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
