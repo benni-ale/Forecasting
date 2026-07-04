@@ -1,0 +1,289 @@
+\chapter{Descrizione del progetto}
+\label{ch:descrizione-progetto}
+
+\section{Strumenti di sviluppo, versioning e hosting}
+
+Il progetto adotta un approccio rapido e sperimentale, supportato da strumenti AI per refactoring, debugging e generazione di codice, sotto supervisione umana.
+Il codice sarà gestito tramite GitHub, con checkpoint strategici lungo lo sviluppo.
+
+Si utilizzeranno Python, Rust o JavaScript a seconda dei moduli, con architettura containerizzata (es.\ Docker) per garantire portabilità.
+L'hosting di server e API sarà valutato tra soluzioni PaaS e VPS, bilanciando costi e controllo operativo.
+Per calcoli intensivi o training si ricorrerà a servizi cloud come Databricks o RunPod.
+
+L'impostazione resta flessibile e suscettibile di correzioni in corso d'opera: nella pratica, il prototipo attuale è interamente in Python (Flask + PostgreSQL, containerizzato con Docker e in produzione su Heroku), come documentato nel Capitolo~\ref{ch:stato-implementazione}.
+Una demo pubblica è disponibile all'indirizzo:
+\url{https://dollarpunk-26786f215068.herokuapp.com/dashboard}
+
+\section{Raccolta dati}
+
+La previsione dei movimenti di mercato richiede l'acquisizione di grandi volumi di dati testuali da fonti eterogenee:
+
+\begin{itemize}
+    \item \textbf{Fonti finanziarie:} Bloomberg, Reuters, WSJ, Yahoo Finance, ANSA, Il Sole 24 Ore, Investing.com, ecc.
+    \item \textbf{Social media e community:} Twitter, Reddit (\textit{r/investing}, \textit{r/wallstreetbets}), LinkedIn, Telegram, YouTube.
+    \item \textbf{Motori di ricerca:} SerpApi, \texttt{duckduckgo-search}, \texttt{ddgs}.
+    \item \textbf{Temi di interesse:} sentiment finanziario, trend macroeconomici, eventi geopolitici, earning report, indicatori ESG, criptovalute.
+\end{itemize}
+
+L'acquisizione avverrà via scraping (es.\ libreria \texttt{newspaper}) o tramite API quando possibile.
+Su Reddit sarà rilevante raccogliere anche commenti, upvote e metriche social.
+Per tutti i canali sarà definita una strategia per strutturare e contestualizzare i dati in modo coerente.
+
+\section{Analisi dati testuali}
+
+Una volta raccolti dati testuali in quantità adeguata, sarà necessario sviluppare una funzione che elabori il testo (notizia o post) e restituisca un array JSON con le informazioni principali: ticker menzionati, \emph{relevance score} e \emph{sentiment score}.
+
+\vspace{0.3cm}
+\paragraph{Esempio di output atteso:}
+
+\begin{lstlisting}[language=json]
+[
+{
+"title": "If You Invested $1,000 In Lululemon Stock In 2013, Here's How Much You'd Have Now",
+"url": "https://www.fool.com/investing/2023/04/30/if-you-invested-1000-in-lululemon-stock-in-2013-he/",
+"source": "Motley Fool",
+"time_published": "2023-04-30T13:34:00",
+"stocks_mentioned": ["LULU", "NKE"],
+"ticker_sentiments": [
+{
+"ticker": "LULU",
+"relevance_score": 0.11,
+"sentiment_score": 0.12,
+"sentiment": "Neutral"
+},
+{
+"ticker": "NKE",
+"relevance_score": 0.27,
+"sentiment_score": 0.22,
+"sentiment": "Somewhat-Bullish"
+}
+]
+}
+]
+\end{lstlisting}
+
+\vspace{0.5cm}
+
+In seguito verranno presentate e valutate diverse soluzioni per identificare e calcolare in modo affidabile i tre campi (\textit{tickers}, \textit{relevance score}, \textit{sentiment score}).
+Considerata la natura dinamica del settore NLP applicato alla finanza, nulla esclude che possano emergere approcci o strumenti più efficaci anche nel breve termine, adottabili qualora risultino vantaggiosi.
+
+\subsection{Tickers}
+
+Per associare un testo al ticker corretto, è utile combinare più segnali: il contesto della raccolta (es.\ query mirate come ``Apple stock''), tecniche di Named Entity Recognition (es.\ ``Apple Inc.''), pattern matching (es.\ \verb|$AAPL|, \verb|(NASDAQ:AAPL)|) e dizionari che mappano nomi aziendali ai ticker.
+
+Un sistema robusto integra queste fonti assegnando un \emph{confidence score}: alto (0.9--1.0) per citazioni dirette o query esplicite, medio (0.6--0.8) per nomi aziendali, più basso per riferimenti indiretti.
+Questo riduce l'ambiguità e migliora la precisione nel collegare testo e titolo azionario.
+
+\subsection{Relevance score}
+
+Il \textit{relevance score} misura quanto un ticker sia centrale in un testo.
+Un metodo elementare consiste nel contare le occorrenze e normalizzarle per lunghezza o per il numero totale di ticker.
+
+Approcci più avanzati includono l'uso dei pesi di attenzione nei modelli Transformer, reinterpretati come indicatori di rilevanza, e sistemi commerciali come RavenPack, che valutano frequenza, posizione e ruolo semantico \parencite{ravenpack_relevance}.
+In alternativa, un LLM può assegnare direttamente un punteggio di rilevanza a ciascuna coppia ticker--testo tramite prompting, approccio reso credibile dai risultati di \textcite{lopezlira2024chatgptforecaststockprice} sullo scoring di headline finanziarie.
+
+In sintesi, il conteggio base è utile per prototipi, ma applicazioni professionali richiedono metodi più contestuali e automatizzati.
+
+\subsection{Sentiment score}
+
+Il \textit{sentiment score} quantifica il tono associato a un ticker in un testo, mappando le polarità (positiva, negativa, neutra) su scale continue (es.\ da $-1$ a $+1$), tramite modelli come FinBERT o LLM specializzati.
+
+Per maggiore precisione si adotta il sentiment a livello di entità (ticker--frase) \parencite{tang-etal-2023-finentity}, come fanno anche sistemi commerciali (Refinitiv, Bloomberg) o open-source (FinGPT \parencite{yang2023fingptopensourcefinanciallarge}).
+
+In alternativa, modelli zero-shot come GPT-4 possono generare punteggi continui (es.\ 0--100) via prompt, senza training specifico \parencite{bdcc8110143}, risultando utili per pipeline automatizzate e flessibili.
+
+\subsection{Fine tuning}
+
+Il fine-tuning di un LLM open source consente di ottenere un modello che, dato un testo, restituisce direttamente un oggetto strutturato con \textit{ticker}, \textit{relevance score} e \textit{sentiment score}.
+Questo approccio unifica la pipeline ed evita moduli separati, sfruttando la generalizzazione del modello pre-addestrato.
+
+Modelli come \textit{FinBERT} \parencite{araci2019finbert} o \textit{Mixtral}, così come LLM open-source adattabili (es.\ \textit{FinGPT} \parencite{yang2023fingptopensourcefinanciallarge}), possono essere affinati con dati finanziari annotati.
+A tal fine è cruciale disporre di un dataset ampio con etichette a livello di entità (\textit{ticker-level sentiment}), come quelli forniti da challenge pubbliche \parencite{maia201818} o aggregabili tramite API di notizie come Alpha Vantage.
+
+L'addestramento può essere eseguito su infrastrutture cloud dotate di GPU, offerte da servizi come RunPod, Lambda Labs o Google Cloud, consentendo di bilanciare costi e prestazioni in modo flessibile.
+
+\subsection{Retrieval-Augmented Generation (RAG)}
+
+RAG unisce LLM (es.\ GPT-4, Mixtral) a un modulo di recupero documentale: il modello genera risposte basate su contesto estratto in tempo reale da un indice vettoriale (es.\ notizie o headline finanziarie).
+
+L'input può essere un prompt standardizzato (``Estrai ticker, sentiment score e relevance score''), e il modello produce direttamente un JSON strutturato, senza fine-tuning.
+Il sistema è aggiornabile modificando i documenti indicizzati \parencite{lewis2020retrieval}.
+
+Strumenti come FAISS e LangChain abilitano una pipeline scalabile e flessibile, come dimostrato da progetti come FinGPT-RAG \parencite{yang2023fingptopensourcefinanciallarge}.
+
+\subsection{Sintesi}
+
+Disponendo di un dataset etichettato (sentiment per ticker), si possono seguire varie strategie:
+
+\begin{itemize}
+  \item \textbf{Fine tuning di FinBERT:} usando GPU (es.\ RunPod), si perfeziona FinBERT affinché generi direttamente JSON con sentiment score per ticker, sfruttando l'apprendimento supervisionato.
+  \item \textbf{Fine tuning di LLM open-source generici:} modelli come Mixtral o FinGPT si adattano tramite dataset etichettati, richiedendo anch'essi GPU performanti.
+  \item \textbf{Approccio RAG:} se le risorse GPU sono limitate, si indicizza il dataset e si usa un LLM con retrieval (es.\ GPT-4, Mixtral) per generare JSON dal contesto recuperato, evitando il fine-tuning \parencite{lewis2020retrieval}.
+\end{itemize}
+
+Se non è disponibile un dataset già annotato:
+
+\begin{itemize}
+  \item \textbf{Modello di base con FinBERT:} applicazione zero-shot su frasi per generare sentiment iniziale.
+  \item \textbf{GPT-4 via API:} può produrre JSON strutturati, ma su larga scala può risultare costoso.
+  \item \textbf{Costruzione manuale del dataset:} annotazione manuale di esempi, utile per successivo fine-tuning anche con risorse limitate.
+\end{itemize}
+
+\section{Decay temporale (solo sul relevance)}
+
+Una volta calcolati \textit{tickers}, \textit{sentiment} e \textit{relevance}, è utile distribuirli nel tempo per ottenere una visione aggregata su base giornaliera.
+Si propone di applicare un decadimento temporale al solo \textit{relevance score}: il sentiment resta invariato, ma viene ponderato in base alla rilevanza residua della notizia nei giorni successivi alla pubblicazione.
+
+L'obiettivo è costruire, per ogni giorno, una misura sintetica del sentiment attivo nel mercato, tenendo conto del fatto che l'impatto informativo di una notizia tende a ridursi nel tempo.
+
+\subsubsection*{Esempio}
+
+Nella tabella seguente, il relevance score viene attenuato giorno per giorno, mentre il sentiment associato rimane fisso:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{News \#} & \textbf{Giorno 0} & \textbf{Giorno 1} & \textbf{Giorno 2} \\
+\hline
+1 & S=1.000,\ R=0.800 & S=1.000,\ R=0.593 & S=1.000,\ R=0.442 \\
+2 & ---               & S=0.900,\ R=0.700 & S=0.900,\ R=0.518 \\
+3 & S=0.750,\ R=0.600 & S=0.750,\ R=0.444 & S=0.750,\ R=0.329 \\
+\hline
+\textbf{Media ponderata} & $\approx$0.892 & $\approx$0.716 & $\approx$0.697 \\
+\hline
+\end{tabular}
+\end{center}
+
+Il relevance viene attenuato con una funzione esponenziale:
+\[
+R_{i,d} = R_{i,0} \cdot e^{-\lambda \Delta t}, \quad S_{i,d} = S_{i,0}
+\]
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=8cm,
+    height=6cm,
+    xlabel={Giorni ($\Delta t$)},
+    ylabel={Relevance residuo $R_{i,d}$},
+    grid=major,
+    domain=0:10,
+    samples=100,
+    thick,
+]
+\addplot[blue] {exp(-0.5*x)};
+\end{axis}
+\end{tikzpicture}
+\caption{Decay esponenziale del relevance score con $\lambda = 0.5$}
+\end{figure}
+
+Dove:
+\begin{itemize}
+  \item $R_{i,0}$ e $S_{i,0}$ sono rispettivamente i valori iniziali di relevance e sentiment della news $i$;
+  \item $\Delta t$ è il numero di giorni trascorsi dalla pubblicazione;
+  \item $\lambda$ è un parametro di decay da stimare.
+\end{itemize}
+
+Per ogni giorno $d$, si calcola la media del sentiment pesata per relevance:
+\[
+\text{AvgW}_d = \frac{\sum_i \left(S_{i,0} \cdot R_{i,d}\right)}{\sum_i R_{i,d}}
+\]
+
+L'approccio è coerente con le logiche adottate da provider come RavenPack, che applicano decay esponenziali al relevance score per modellare la rilevanza informativa nel tempo \parencite{ravenpack_relevance, ravenpack_forex, ravenpack_credit}.
+
+Nell'implementazione corrente (Capitolo~\ref{ch:stato-implementazione}) il decadimento è parametrizzato tramite \emph{emivita} $h$, con peso $w = 0{,}5^{\Delta t / h}$: la formulazione è equivalente a quella esponenziale con $\lambda = \ln(2)/h$, ma rende il parametro direttamente interpretabile (giorni necessari a dimezzare la rilevanza di una notizia).
+
+\subsection{Sviluppi futuri}
+
+Nel modello presentato, il relevance score associato a ciascuna notizia viene attenuato nel tempo secondo un decadimento esponenziale:
+\[
+R(t) = R_0 \cdot e^{-\lambda t}
+\]
+Questa funzione è soluzione dell'equazione differenziale ordinaria:
+\[
+\frac{dR(t)}{dt} = -\lambda R(t)
+\]
+L'equazione stabilisce una regola che governa la dinamica del decadimento continuo nel tempo, coerente con la logica adottata da vari provider per modellare la perdita di rilevanza delle informazioni.
+
+Tuttavia, questo approccio assume che ogni notizia agisca in modo indipendente.
+In realtà, molte news trattano argomenti simili, fanno riferimento a eventi collegati o condividono un contesto semantico comune.
+Trattarle come isolate rischia di ignorare effetti informativi diffusi o correlati.
+
+Un possibile sviluppo futuro consiste nell'estendere il decadimento temporale del relevance score introducendo un termine di diffusione semantica: la rilevanza di una notizia potrebbe non solo decrescere nel tempo, ma anche propagarsi verso altre notizie semanticamente affini.
+
+Questa estensione porta a una generalizzazione dell'equazione di decadimento:
+\[
+\frac{\partial R(x, t)}{\partial t} = D \nabla^2 R(x, t) - \lambda R(x, t)
+\]
+
+Dove:
+\begin{itemize}
+  \item $R(x, t)$ è il relevance in funzione del tempo $t$ e della posizione $x$ nello spazio semantico (es.\ embedding del testo);
+  \item $D$ è il coefficiente di diffusione semantica;
+  \item $\lambda$ è il tasso di decadimento temporale.
+\end{itemize}
+
+In questo modello, la rilevanza informativa di una notizia può diffondersi verso altre notizie simili, modellando una dinamica più realistica del flusso informativo.
+Il sentiment rimane invariato, ma viene ponderato con $R(x, t)$, che evolve sia nel tempo sia nello spazio semantico.
+
+La sfida principale è definire una distanza semantica robusta tra testi, usando embedding, reti di similarità o clustering.
+In uno spazio semantico coerente, il relevance score può propagarsi tramite metodi numerici o grafi, abilitando applicazioni in risk monitoring, segnali di portafoglio ed eventi informativi.
+Ciò permette di concepire il relevance non come punteggio statico, ma come campo dinamico in evoluzione.
+
+\subsection{Innovatività e letteratura esistente}
+
+La modellazione del sentiment come campo dinamico che si diffonde tra notizie correlate è ancora poco esplorata.
+La maggior parte degli studi tratta le news come unità indipendenti o aggrega il sentiment nel tempo.
+
+Alcuni lavori recenti si avvicinano a questa prospettiva: \textcite{wan2021sentimentdiffusion} mostrano la diffusione del sentiment in reti informative, mentre \textcite{wang2024finin} introducono FININ, che considera interazioni semantiche tra notizie per predire il mercato.
+
+L'uso esplicito di un modello a derivate parziali, come un'equazione di diffusione con decadimento, risulta tuttavia poco documentato in ambito NLP-finance.
+Questa formulazione continua e interpretabile supera reti discrete e medie pesate, aprendo a nuove applicazioni in previsione, strategie di portafoglio e interpretazione dei flussi informativi.
+
+\section{Analisi esplorativa: sentiment e prezzo}
+
+Dopo la fase di raccolta e scoring, è essenziale verificare se il sentiment estratto abbia un legame con l'andamento dei prezzi.
+L'analisi esplorativa consente un primo controllo di plausibilità, confrontando l'evoluzione giornaliera del sentiment con le variazioni di mercato.
+
+Un approccio elementare prevede grafici comparativi tra sentiment e prezzo di chiusura, uno scatter plot con variazione percentuale del prezzo e una misura di correlazione (Pearson o Spearman), anche con ritardi temporali.
+
+Studi precedenti, come \textcite{cristescu2023wavelet}, hanno rilevato correlazioni significative tra il sentiment delle notizie e i prezzi di titoli come Apple, Microsoft e Tesla.
+
+Questa fase è iterativa: se non emergono segnali, si torna a rivedere i dati o il metodo di scoring; se la relazione è anche solo parziale, si può proseguire verso modelli più sofisticati.
+
+\subsection{Backtesting operativo semplice}
+
+Il backtesting consiste nel simulare l'applicazione di una strategia su dati storici per valutarne l'efficacia.
+Si operano retroattivamente serie storiche di sentiment e prezzi per stimare come avrebbe performato una certa logica decisionale.
+
+Un esempio semplice: si entra long se il sentiment è positivo, si resta fuori (o short) se è negativo o neutro.
+L'ingresso avviene il giorno successivo al segnale, l'uscita a fine giornata o dopo $n$ giorni.
+
+Si valutano metriche come:
+\begin{itemize}
+  \item rendimento cumulato vs.\ benchmark;
+  \item accuratezza delle previsioni;
+  \item Sharpe ratio semplificato.
+\end{itemize}
+
+È un primo test operativo a bassa complessità; se i risultati sono promettenti, si può passare a strategie più avanzate.
+
+\subsection{Simulazione del portafoglio}
+
+Per rendere il test più realistico, la strategia può essere estesa a un contesto multi-ticker.
+La simulazione definisce capitale iniziale, distribuzione tra titoli, regole di uscita (es.\ stop-loss) e include i costi per trade.
+L'obiettivo non è ancora ottimizzare, ma verificare se, nel complesso, la strategia regge in condizioni credibili.
+Se i risultati suggeriscono robustezza, la fase successiva---con modelli predittivi come LSTM---può essere intrapresa con maggiore fiducia.
+
+\subsection{Integrazione con modelli LSTM}
+
+Un passo successivo consiste nel costruire un modello predittivo che utilizzi congiuntamente dati di prezzo, volumi, indicatori tecnici e sentiment.
+Diversi studi \parencite{ouf2024lstm, chaudhary2025lstm, gu2024finbert} mostrano che combinare questi segnali in un LSTM migliora la capacità di previsione rispetto all'uso esclusivo dei prezzi.
+
+Un LSTM (\textit{Long Short-Term Memory}) è una rete neurale adatta all'analisi di serie temporali.
+Per prevedere il valore in un giorno $t$, il modello osserva una finestra di dati dei giorni precedenti (es.\ gli ultimi 5 giorni), includendo prezzo, volume e sentiment.
+
+In pratica, l'LSTM apprende schemi nel passato che anticipano evoluzioni future.
+L'aggiunta del sentiment come variabile esplicativa consente di catturare movimenti di mercato non spiegabili solo da dati numerici, ma anche dall'informazione diffusa nei testi.

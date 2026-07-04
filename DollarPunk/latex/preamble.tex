@@ -1,0 +1,44 @@
+% --- Encoding e lingua ---
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[utf8]{inputenc}
+\DeclareUnicodeCharacter{2009}{\,}
+\DeclareUnicodeCharacter{2248}{\ensuremath{\approx}}
+\usepackage[italian]{babel}
+\usepackage{csquotes}
+
+% --- Layout accademico ---
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{setspace}
+\onehalfspacing
+
+% --- Matematica e grafica ---
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{float}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% --- Codice (esempi JSON) ---
+\usepackage{xcolor}
+\usepackage{listings}
+\lstdefinelanguage{json}{
+  basicstyle=\ttfamily\small,
+  numbers=left,
+  numberstyle=\tiny,
+  stepnumber=1,
+  numbersep=5pt,
+  showstringspaces=false,
+  breaklines=true,
+  frame=lines,
+  backgroundcolor=\color{gray!10},
+}
+
+% --- Bibliografia ---
+\usepackage[style=authoryear, backend=biber]{biblatex}
+\addbibresource{references.bib}
+
+% --- Link (dopo biblatex) ---
+\usepackage[hidelinks, hypertexnames=false]{hyperref}

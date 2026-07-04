@@ -1,0 +1,91 @@
+\chapter{Stato dell'arte}
+\label{ch:stato-dell-arte}
+
+Uno degli studi pionieristici della \textit{sentiment analysis} è quello di \textcite{tetlock2007giving}.
+In particolare, Tetlock ha quantificato il ``pessimismo'' degli articoli del \textit{Wall Street Journal} e ha rilevato che livelli elevati di tono negativo nella stampa anticipano pressioni al ribasso sui prezzi azionari, seguite da un ritorno ai fondamentali di mercato.
+Questo risultato ha fornito evidenza empirica che il sentiment estratto dai testi---ad esempio il tono pessimista o ottimista delle notizie---può influenzare il comportamento di mercato.
+
+\section{Social media e sentiment degli investitori}
+
+Con la diffusione dei social media e delle piattaforme online negli anni 2010, le fonti di dati sul sentiment si sono ampliate.
+Gli investitori, in particolare quelli retail, hanno iniziato a esprimere opinioni su forum finanziari, Twitter e blog, generando un flusso di testo ricco di informazioni sul sentiment di mercato in tempo reale.
+
+La letteratura di questo periodo ha analizzato in che misura il sentiment influenzi i rendimenti azionari, spesso in tensione con la teoria finanziaria tradizionale, che tende a escludere fattori emotivi.
+\textcite{mcgurk2020stock} illustrano chiaramente questo cambio di paradigma: analizzando i post sui social media, gli autori costruiscono una misura quantitativa del sentiment degli investitori e rilevano un effetto positivo e significativo sui rendimenti anomali delle azioni.
+
+Un caso emblematico che ha catalizzato l'interesse sull'analisi del sentiment è la pandemia di COVID-19.
+\textcite{duan2021covid}, tra gli altri, sviluppano indici di sentiment legati al COVID-19 utilizzando milioni di testi provenienti sia dai media ufficiali sia dai social in Cina.
+
+\section{L'avvento dei modelli Transformer e di FinBERT}
+
+Alla fine degli anni 2010, l'introduzione di BERT \parencite{devlin2018bert} ha rivoluzionato l'NLP anche in ambito finanziario, grazie a rappresentazioni linguistiche contestuali di alta qualità.
+Tuttavia, l'adattamento al linguaggio tecnico della finanza ha richiesto modelli specializzati.
+FinBERT, proposto da \textcite{araci2019finbert}, è stato tra i primi modelli pre-addestrati su testi finanziari e successivamente fine-tunati per la sentiment analysis, superando di circa 15 punti percentuali i metodi precedenti su dataset come \textit{Financial PhraseBank}.
+
+Versioni successive, come quella di \textcite{huang2022finbert}, addestrate su ampi corpora finanziari, hanno raggiunto fino all'89,7\% di accuratezza nel rilevare frasi negative, migliorando la comprensione delle sfumature linguistiche rispetto ai modelli generici.
+
+FinBERT è oggi uno standard per task NLP finanziari: analisi del tono nei report, classificazione di notizie, estrazione di informazioni da bilanci.
+\textcite{gu2024finbert} mostrano che un modello FinBERT+LSTM migliora la previsione dei trend azionari rispetto a LSTM tradizionali, evidenziando il valore della specializzazione di dominio.
+
+Infine, l'emergere di benchmark specifici (es.\ FiQA, Financial PhraseBank) ha supportato valutazioni comparative, mentre estensioni recenti si concentrano su analisi a livello di entità \parencite{tang-etal-2023-finentity}.
+
+\section{Modelli di linguaggio generali vs.\ specifici in finanza}
+
+Nel 2022--2023, l'attenzione si è spostata sui LLM generici come ChatGPT (GPT-3.5/4), capaci di interpretare testi finanziari nonostante l'assenza di addestramento settoriale.
+\textcite{lopezlira2024chatgptforecaststockprice} mostrano che ChatGPT può prevedere la direzione dei prezzi azionari basandosi sui titoli delle notizie.
+Anche in modalità zero-shot, modelli come GPT-3.5/4 riescono a svolgere sentiment analysis su documenti finanziari, pur con limiti su contesti specialistici o eventi recenti \parencite{bdcc8110143}.
+
+Questi risultati hanno spinto verso LLM specializzati.
+BloombergGPT \parencite{wu2023bloomberggptlargelanguagemodel}, con 50 miliardi di parametri e un corpus di 363 miliardi di token finanziari, è tra i primi LLM su larga scala dedicati alla finanza, con maggiore precisione su prompt settoriali grazie alla conoscenza approfondita del dominio.
+
+In parallelo, il progetto open-source FinGPT \parencite{yang2023fingptopensourcefinanciallarge} punta a rendere i LLM finanziari accessibili, attraverso fine-tuning di modelli open-source su dati finanziari pubblici.
+Con un approccio \textit{data-centric}, FinGPT abilita analisi di sentiment, generazione automatica di report e sviluppo low-code, pur operando con risorse più contenute rispetto ai modelli proprietari.
+
+\section{Instruction tuning e preference optimization}
+
+Una direzione che si è consolidata dal 2023 è l'\textit{instruction tuning} di LLM open-weight su compiti finanziari.
+Il progetto PIXIU \parencite{xie2023pixiu} introduce FinMA, un modello basato su LLaMA e affinato su 136.000 istruzioni finanziarie multi-task, insieme al primo benchmark standardizzato di valutazione (FLARE).
+I modelli instruction-tuned di dimensioni contenute eccellono nei task di sentiment classification (Financial PhraseBank, FiQA-SA), pur generalizzando peggio dei grandi modelli proprietari su compiti di ragionamento complesso.
+
+Il paradigma più recente supera il fine-tuning supervisionato (SFT) con tecniche di \textit{preference alignment}.
+FinDPO \parencite{iacovides2025findpo} applica la Direct Preference Optimization a un LLM causale per la sentiment analysis finanziaria, superando in media dell'11\% i modelli SFT esistenti sui benchmark standard.
+Di particolare interesse per questo progetto è la conversione \textit{logit-to-score} proposta dagli autori: le predizioni discrete di sentiment vengono trasformate in punteggi continui e ordinabili (probabilità), direttamente integrabili in strategie di portafoglio---un'idea affine al \textit{sentiment score} continuo adottato nella presente proposta.
+Nelle simulazioni riportate, la strategia basata su FinDPO mantiene rendimenti positivi anche in presenza di costi di transazione realistici.
+
+Più in generale, diversi lavori del 2024--2025 mostrano che LLM open-weight recenti (LLaMA~3, Qwen, DeepSeek), anche con fine-tuning leggero, superano stabilmente FinBERT nella classificazione del sentiment finanziario, rendendo lo scoring di qualità accessibile senza infrastrutture proprietarie.
+
+\section{Benchmark e valutazione sistematica}
+
+La proliferazione di modelli ha reso centrale il problema della valutazione.
+FinBen \parencite{xie2024finben} è il primo benchmark open-source su larga scala per LLM finanziari: 36 dataset su 24 task, che coprono estrazione di informazioni, analisi testuale, question answering, generazione, gestione del rischio, previsione e decision-making, incluse valutazioni di agenti e di pipeline RAG.
+I risultati confermano che i LLM eccellono nell'analisi testuale (incluso il sentiment) ma faticano su ragionamento avanzato e previsione.
+
+In parallelo emergono cautele metodologiche.
+\textcite{bdcc8110143} mostrano che un semplice modello di regressione logistica ha superato FinBERT e GPT-4 in accuratezza su un task di sentiment, segnalando che maggiore complessità non implica necessariamente migliori performance.
+Inoltre, benchmark storici come Financial PhraseBank risultano ormai prossimi alla saturazione e potenzialmente presenti nei dati di pre-training dei modelli più recenti, sollevando dubbi di contaminazione che spingono verso dataset di valutazione nuovi, a livello di entità \parencite{tang-etal-2023-finentity} e temporalmente successivi al cutoff dei modelli.
+
+\section{Agenti LLM e validità empirica delle strategie}
+
+Dal 2024 la frontiera si è spostata dagli score di sentiment ai sistemi \textit{agentici}, in cui più LLM con ruoli specializzati collaborano al processo decisionale.
+TradingAgents \parencite{xiao2025tradingagents} simula una società di trading con agenti analisti (fondamentale, sentiment, tecnico), ricercatori bull/bear in dibattito, trader e risk manager, riportando miglioramenti su rendimento cumulato, Sharpe ratio e drawdown massimo.
+Framework analoghi (FinMem, FinCon, FinRobot, MarketSenseAI) integrano memoria episodica, retrieval di notizie e analisi multi-fonte.
+
+A questi risultati promettenti si contrappone una crescente letteratura critica sulla loro validità empirica.
+\textcite{li2025finsaber} propongono FINSABER, un framework di backtesting che valuta le strategie LLM su oltre vent'anni e più di cento titoli, controllando \textit{survivorship bias}, \textit{look-ahead bias} e \textit{data-snooping}: i vantaggi riportati in letteratura si riducono drasticamente su orizzonti lunghi e universi ampi, con strategie troppo conservative nei mercati rialzisti e troppo aggressive in quelli ribassisti.
+Un'insidia specifica dei LLM è inoltre il look-ahead bias ``parametrico'': un modello con cutoff di addestramento recente ha già osservato gli anni coperti dal backtest, e questa conoscenza---incorporata nei pesi---è invisibile ai controlli sulla pipeline dei dati.
+Queste evidenze rendono il disegno sperimentale del backtesting (Capitolo~\ref{ch:descrizione-progetto}) un aspetto metodologicamente critico, non un dettaglio implementativo.
+
+\section{Interazioni tra notizie, grafi e diffusione}
+
+Un ulteriore filone, direttamente rilevante per la proposta di diffusione semantica di questo progetto, abbandona l'ipotesi che le notizie agiscano in modo indipendente.
+\textcite{wan2021sentimentdiffusion} mostrano che il sentiment si diffonde lungo reti di notizie tra aziende collegate, con effetti misurabili sui movimenti di mercato; \textcite{wang2024finin} introducono FININ, che modella esplicitamente le interazioni semantiche tra notizie per la previsione dei mercati.
+Più recentemente, architetture a grafo con meccanismi di diffusione dell'informazione (graph neural network su relazioni tra titoli, reti di \textit{sentiment spillover} stimate via transfer entropy) integrano segnali testuali e struttura relazionale del mercato, confermando che la propagazione cross-asset dell'informazione è un segnale predittivo autonomo.
+La formulazione continua a derivate parziali proposta nel Capitolo~\ref{ch:descrizione-progetto} si colloca in questo filone, ma con un approccio interpretabile e ancora poco documentato in letteratura.
+
+\section{Sintesi e tendenze}
+
+Nuove metriche ampliano infine le prospettive oltre la polarità del tono: \textcite{cao2025hypeindexnlpdrivenmeasure} propongono l'Hype Index, che misura l'attenzione mediatica anziché il sentiment.
+Analizzando l'S\&P~100, dimostrano che un picco di copertura può anticipare volatilità e movimenti di mercato, sottolineando il valore dell'``intensità'' informativa come fattore predittivo.
+
+In sintesi, dal 2000 al 2026 l'evoluzione è passata dalle analisi lessicali (Tetlock) ai modelli specializzati (FinBERT), ai LLM generici e finanziari (BloombergGPT, FinGPT), fino a instruction tuning e preference optimization (FinMA, FinDPO), sistemi agentici (TradingAgents) e benchmark olistici (FinBen).
+Le tendenze attuali puntano su punteggi continui integrabili in strategie, valutazione rigorosa e priva di bias temporali, analisi a livello di entità e modelli che considerano non solo il sentiment, ma anche attenzione mediatica, interazioni tra notizie e struttura relazionale del mercato.

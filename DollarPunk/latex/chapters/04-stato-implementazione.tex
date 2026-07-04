@@ -1,0 +1,197 @@
+\chapter{Stato dell'implementazione}
+\label{ch:stato-implementazione}
+
+Il presente capitolo documenta lo stato attuale del prototipo operativo \textit{Forecasting}, sviluppato in parallelo alla proposta descritta nel Capitolo~\ref{ch:descrizione-progetto}.
+L'obiettivo è rendere esplicito cosa è già funzionante, con quale architettura e quali limiti, distinguendo le componenti implementate da quelle ancora pianificate.
+
+\section{Architettura e stack tecnologico}
+
+Il codice sorgente è organizzato in un repository Git e implementato interamente in \textbf{Python}.
+L'applicazione è containerizzata con Docker e composta da tre elementi principali:
+
+\begin{itemize}
+  \item \textbf{PostgreSQL} per la persistenza strutturata degli articoli, dei prezzi e dei metadati aziendali;
+  \item \textbf{Flask} (\texttt{app.py}) come server web e API REST;
+  \item \textbf{Gunicorn} per il deploy in produzione su Heroku.
+\end{itemize}
+
+La configurazione locale avviene tramite \texttt{docker-compose.yml}; in produzione l'applicazione è esposta pubblicamente su Heroku all'indirizzo:
+\url{https://dollarpunk-26786f215068.herokuapp.com/dashboard}
+
+Rispetto al disegno iniziale, non sono stati ancora introdotti moduli in Rust o JavaScript dedicati, né pipeline di training su infrastrutture GPU (RunPod, Databricks).
+L'approccio attuale privilegia un \textit{MVP} orientato all'ingestion, alla persistenza e alla visualizzazione.
+
+\section{Raccolta dati}
+
+\subsection{Fonte attuale: Alpha Vantage}
+
+Al momento la raccolta testuale si appoggia esclusivamente all'endpoint \texttt{NEWS\_SENTIMENT} di Alpha Vantage, orchestrato dal modulo \texttt{news\_collector.py}.
+Per ogni articolo l'API restituisce metadati (titolo, URL, fonte, timestamp, summary) e, per ciascun ticker menzionato, un punteggio di \emph{relevance} e di \emph{sentiment} già calcolati dal provider.
+
+La struttura salvata in database replica il formato JSON dell'API, coerente con l'output atteso nel Capitolo~\ref{ch:descrizione-progetto}:
+
+\begin{itemize}
+  \item \texttt{stocks\_mentioned} e \texttt{ticker\_sentiments} (campo JSONB \texttt{ticker\_sentiment});
+  \item \texttt{relevance\_score} e \texttt{sentiment\_score} per ticker;
+  \item etichetta qualitativa (\texttt{Bullish}, \texttt{Bearish}, \texttt{Neutral}, ecc.).
+\end{itemize}
+
+\subsection{Modalità di ingestion}
+
+Sono disponibili più modalità di acquisizione, attivabili dalla dashboard amministrativa o da job schedulati:
+
+\begin{itemize}
+  \item \textbf{Collect manuale}: raccolta parametrizzata per ticker, topic e intervallo temporale;
+  \item \textbf{Deep ingestion / deep research}: acquisizione estesa su ticker o topic con tracciamento dello stato in tempo reale;
+  \item \textbf{Coverage ingestion} (\texttt{coverage\_ingestion\_job.py}): scansione sistematica degli ultimi $N$ giorni su tutti i topic supportati dall'API e sui ticker presenti nel database, con progresso salvato su file e ripresa automatica;
+  \item \textbf{Prune old news} (\texttt{prune\_old\_news.py}): manutenzione del database per mantenere una finestra temporale rolling degli articoli.
+\end{itemize}
+
+Tutte le esecuzioni significative sono registrate nella tabella \texttt{job\_executions}, consultabile dalla pagina \textit{Job Executions}.
+
+\subsection{Scostamento rispetto al disegno iniziale}
+
+Non sono ancora integrate le fonti eterogenee descritte nel Capitolo~\ref{ch:descrizione-progetto} (Bloomberg, Reuters, social media, Reddit, scraping con \texttt{newspaper}, motori di ricerca).
+La raccolta attuale è quindi \textbf{monofonte} e dipendente dai limiti di rate dell'API Alpha Vantage (5 chiamate/minuto nel tier gratuito, fino a 75/minuto nel tier premium).
+
+\section{Persistenza e modello dati}
+
+Il modello relazionale principale è definito in \texttt{schema.sql}.
+La tabella centrale \texttt{articles} memorizza ogni notizia con inserimento \textbf{idempotente} sulla chiave \texttt{url}.
+
+Oltre agli articoli, il database include:
+
+\begin{itemize}
+  \item \texttt{stock\_prices}: prezzi di chiusura e volumi giornalieri per ticker, recuperati lazy da Alpha Vantage e cachati localmente;
+  \item \texttt{companies}: anagrafica e descrizione del business per ticker (Alpha Vantage OVERVIEW e, opzionalmente, FMP);
+  \item \texttt{company\_embeddings}: vettori embedding OpenAI (\texttt{text-embedding-3-small}) delle descrizioni aziendali;
+  \item \texttt{company\_correlation\_matrix}: matrice di similarità coseno tra embedding aziendali, con cache in database;
+  \item \texttt{job\_executions}: log strutturato dei job di background.
+\end{itemize}
+
+Sono inoltre presenti tabelle predisposte per estensioni future (\texttt{ticker\_decayed\_sentiment}, \texttt{ticker\_cross\_diffused\_sentiment}) la cui logica di popolamento non è ancora implementata.
+
+\subsection{Viste analitiche SQL}
+
+Per l'aggregazione del sentiment a livello di ticker sono state definite due viste:
+
+\begin{itemize}
+  \item \texttt{article\_ticker\_sentiment\_view}: espande il JSONB \texttt{ticker\_sentiment} in una riga per coppia (articolo, ticker);
+  \item \texttt{ticker\_daily\_sentiment\_view}: aggrega per ticker e giorno, con decadimento temporale del \emph{relevance score} e media ponderata del sentiment.
+\end{itemize}
+
+\section{Scoring del sentiment: delega al provider}
+
+Una distinzione importante rispetto al Capitolo~\ref{ch:descrizione-progetto}: al momento \textbf{non esiste una pipeline NLP proprietaria}.
+L'estrazione dei ticker, il \emph{relevance score} e il \emph{sentiment score} sono calcolati interamente da Alpha Vantage e persistiti così come ricevuti.
+
+Di conseguenza, non sono ancora stati implementati:
+
+\begin{itemize}
+  \item modelli FinBERT, GPT-4 o LLM open-source per scoring interno;
+  \item approcci RAG (FAISS, LangChain);
+  \item fine-tuning su dataset annotati;
+  \item NER, pattern matching e \emph{confidence score} proprietari per l'associazione testo--ticker.
+\end{itemize}
+
+Questa scelta consente di validare rapidamente il flusso ETL, lo storage e le visualizzazioni, rimandando lo sviluppo del modulo NLP a una fase successiva.
+
+\section{Decay temporale e KPI di sentiment}
+
+Il decadimento temporale descritto nel Capitolo~\ref{ch:descrizione-progetto} è stato implementato in forma operativa, con una parametrizzazione basata su \textbf{emivita} (\textit{half-life}) anziché sul parametro $\lambda$ esplicito del modello teorico.
+
+Per ogni ticker, il KPI giornaliero calcolato in dashboard e nelle API pubbliche è:
+
+\[
+\text{KPI}_d = \frac{\sum_i s_i \cdot r_i \cdot w_i}{\sum_i r_i \cdot w_i},
+\qquad
+w_i = 0{,}5^{\,\Delta t_i / h}
+\]
+
+dove $s_i$ e $r_i$ sono rispettivamente \emph{sentiment score} e \emph{relevance score} dell'articolo $i$, $\Delta t_i$ i giorni trascorsi dalla pubblicazione e $h$ l'emivita configurabile (default: 7 giorni).
+Il fattore $0{,}5^{\Delta t / h}$ equivale a un decadimento esponenziale con $\lambda = \ln(2)/h$.
+
+La stessa logica è replicata:
+
+\begin{itemize}
+  \item nella vista SQL \texttt{ticker\_daily\_sentiment\_view} (lookback 30 giorni);
+  \item nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi};
+  \item nella pagina portfolio, per il sentiment decayed su intervalli temporali configurabili.
+\end{itemize}
+
+\subsection{Diffusione semantica}
+
+La proposta di diffusione del \emph{relevance} nello spazio semantico (equazione alle derivate parziali del Capitolo~\ref{ch:descrizione-progetto}) non è ancora operativa sulle notizie.
+Esiste tuttavia un \textbf{primo passo parziale} sulle aziende: le descrizioni di business vengono vettorizzate con OpenAI e confrontate tramite similarità coseno, producendo una matrice di correlazione tra ticker consultabile dalla sezione \textit{Companies}.
+Questa matrice misura affinità tra profili aziendali, non tra articoli di news, e non alimenta ancora la tabella \texttt{ticker\_cross\_diffused\_sentiment}.
+
+\section{Interfaccia web e funzionalità utente}
+
+L'applicazione Flask espone due livelli di accesso:
+
+\paragraph{Area amministrativa} (autenticata)
+Pannello di controllo per lanciare job di ingestion, consultare statistiche globali, esplorare articoli, eseguire query SQL e gestire l'anagrafica aziende con vectorizzazione batch.
+
+\paragraph{Area pubblica} (read-only)
+Dashboard giornaliera (\texttt{/dashboard}) con ranking dei ticker per KPI di sentiment decayed, filtri per direzione (bullish/bearish) e finestra temporale.
+Per ogni ticker è disponibile una pagina di dettaglio con:
+
+\begin{itemize}
+  \item grafico prezzo e volume (Alpha Vantage, tabella \texttt{stock\_prices});
+  \item serie temporale del KPI di sentiment;
+  \item elenco delle ultime notizie che menzionano il ticker;
+  \item metadati aziendali (settore, industry, descrizione).
+\end{itemize}
+
+La pagina \textit{Portfolio} consente di monitorare una watchlist personalizzata (persistita lato client) con quote, storico prezzi, sentiment decayed e ultime news per i ticker selezionati.
+
+\section{Confronto sintetico: previsto vs.\ implementato}
+
+La Tabella~\ref{tab:previsto-implementato} riassume lo scostamento tra la proposta del Capitolo~\ref{ch:descrizione-progetto} e lo stato corrente del codice.
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|p{5.5cm}|p{4cm}|p{4.5cm}|}
+\hline
+\textbf{Componente} & \textbf{Previsto} & \textbf{Stato attuale} \\
+\hline
+Fonti dati & Multi-fonte (news, social, scraping) & Solo Alpha Vantage \\
+\hline
+NLP / scoring & FinBERT, RAG, fine-tuning & Delegato al provider API \\
+\hline
+ETL e storage & Pipeline strutturata & Implementato (PostgreSQL) \\
+\hline
+Decay temporale & $R \cdot e^{-\lambda \Delta t}$ & Emivita $0{,}5^{\Delta t/h}$ in SQL e API \\
+\hline
+Diffusione semantica & PDE su spazio news & Solo embedding aziende (parziale) \\
+\hline
+Analisi sentiment--prezzo & Correlazioni Pearson/Spearman & Grafici separati, no statistica \\
+\hline
+Backtesting & Strategia long/short, Sharpe & Non implementato \\
+\hline
+Simulazione portafoglio & Capitale, costi, stop-loss & Watchlist + monitoraggio \\
+\hline
+LSTM predittivo & Prezzo + sentiment & Non implementato \\
+\hline
+Deploy & Docker, PaaS & Docker + Heroku operativi \\
+\hline
+\end{tabular}
+\caption{Confronto tra componenti previste e stato di implementazione al momento della stesura.}
+\label{tab:previsto-implementato}
+\end{table}
+
+\section{Prossimi passi}
+
+Sulla base del prototipo attuale, le priorità di sviluppo coerenti con la proposta di ricerca sono:
+
+\begin{enumerate}
+  \item introdurre almeno una fonte dati aggiuntiva (scraping o social) per ridurre la dipendenza da un unico provider;
+  \item implementare un modulo NLP interno (es.\ FinBERT zero-shot) per confronto con i punteggi Alpha Vantage;
+  \item popolare e validare le tabelle di \emph{cross-diffused sentiment} sfruttando la matrice di correlazione tra aziende;
+  \item aggiungere analisi esplorativa sentiment--prezzo con correlazioni e ritardi temporali;
+  \item costruire un backtester elementare prima di passare a modelli LSTM.
+\end{enumerate}
+
+Il prototipo dimostra la fattibilità della catena \emph{raccolta $\rightarrow$ persistenza $\rightarrow$ decay $\rightarrow$ visualizzazione}, che costituisce il substrato su cui innestare le componenti analitiche e predittive descritte nel capitolo precedente.
+Le priorità qui elencate sono sviluppate in dettaglio, insieme alle corrispondenti domande di ricerca, nel Capitolo~\ref{ch:direzioni-future}.

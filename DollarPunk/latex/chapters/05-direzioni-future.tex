@@ -1,0 +1,61 @@
+\chapter{Direzioni future}
+\label{ch:direzioni-future}
+
+Alla luce dello stato dell'arte aggiornato (Capitolo~\ref{ch:stato-dell-arte}) e del prototipo operativo (Capitolo~\ref{ch:stato-implementazione}), questo capitolo delinea le direzioni di sviluppo ritenute più promettenti, distinguendo tra quelle di natura scientifica e quelle applicative.
+Le due dimensioni sono complementari: l'applicativo fornisce l'infrastruttura di dati e validazione su cui le domande di ricerca possono essere testate empiricamente.
+
+\section{Direzioni per la ricerca}
+
+\subsection{Stima empirica del parametro di decay}
+
+Nel prototipo l'emivita del relevance score è un parametro configurabile (default: 7 giorni), scelto per plausibilità e non stimato dai dati.
+Una prima domanda di ricerca, a basso costo sperimentale, è la stima ottimale di $h$ (o equivalentemente $\lambda$): si può selezionare il valore che massimizza la correlazione ritardata tra KPI di sentiment e rendimenti successivi, per singolo titolo o per settore.
+L'ipotesi verificabile è che l'emivita informativa non sia costante, ma vari con la capitalizzazione, la copertura mediatica e il regime di mercato---un risultato che avrebbe valore autonomo rispetto alla letteratura sul decay fisso adottato dai provider commerciali.
+
+\subsection{Dalla PDE alla diffusione su grafo}
+
+La formulazione a derivate parziali della diffusione semantica (Capitolo~\ref{ch:descrizione-progetto}) può essere resa operativa nella sua approssimazione discreta: un grafo i cui nodi sono i ticker (o le notizie) e i cui archi sono pesati dalla similarità coseno tra embedding.
+Su questo grafo l'equazione di diffusione--decadimento diventa
+\[
+\frac{d\mathbf{R}(t)}{dt} = -D\, L\, \mathbf{R}(t) - \lambda \mathbf{R}(t),
+\]
+dove $L$ è il Laplaciano del grafo di similarità.
+Il prototipo dispone già dell'ingrediente chiave: la matrice di similarità tra profili aziendali calcolata dagli embedding OpenAI.
+Questa direzione si collega naturalmente alla letteratura recente su sentiment spillover e graph neural network (Capitolo~\ref{ch:stato-dell-arte}), ma mantiene un vantaggio distintivo di interpretabilità: $D$ e $\lambda$ sono parametri fisicamente leggibili, a differenza dei pesi appresi da una GNN.
+Un confronto sistematico tra la diffusione interpretabile e un baseline GNN costituirebbe il contributo scientifico centrale del progetto.
+
+\subsection{Benchmark multi-scorer del sentiment}
+
+La delega dello scoring ad Alpha Vantage, oggi un limite, può diventare un'opportunità sperimentale: il database contiene decine di migliaia di coppie (articolo, ticker) già etichettate dal provider.
+Si propone un confronto sistematico tra scorer alternativi sullo stesso corpus: FinBERT zero-shot, un LLM open-weight recente (es.\ LLaMA~3 o Qwen) via prompting, e i punteggi del provider.
+Le domande aperte sono due: quanto concordano gli scorer tra loro (affidabilità inter-rater), e quale segnale correla meglio con i rendimenti successivi (validità predittiva).
+La conversione \textit{logit-to-score} di FinDPO \parencite{iacovides2025findpo} offre inoltre una via per ottenere punteggi continui e calibrati da modelli generativi, direttamente confrontabili con la scala $[-1, +1]$ già in uso.
+
+\subsection{Attenzione mediatica come segnale complementare}
+
+Il job di \textit{coverage ingestion} raccoglie sistematicamente il volume di notizie per ticker e topic: questo dato, già disponibile, permette di costruire un indice di attenzione mediatica nello spirito dell'Hype Index \parencite{cao2025hypeindexnlpdrivenmeasure}, senza costi aggiuntivi di acquisizione.
+L'ipotesi da verificare è che picchi di copertura anticipino volatilità indipendentemente dalla polarità del sentiment, e che l'interazione sentiment~$\times$~attenzione sia più informativa dei due segnali separati.
+
+\subsection{Protocollo di backtesting metodologicamente rigoroso}
+
+La letteratura critica recente \parencite{li2025finsaber} mostra che i vantaggi delle strategie basate su LLM tendono a svanire su orizzonti lunghi e universi ampi di titoli, e che i backtest sono esposti a survivorship bias, look-ahead bias e data-snooping.
+Il piano di backtesting del Capitolo~\ref{ch:descrizione-progetto} sarà quindi vincolato fin dall'inizio a un protocollo esplicito: uso esclusivo di informazione disponibile alla data di segnale, confronto con benchmark passivi, valutazione su più regimi di mercato e reporting dei costi di transazione.
+Per gli scorer basati su LLM andrà inoltre considerato il look-ahead bias ``parametrico'': la valutazione più pulita richiede notizie successive al cutoff di addestramento del modello utilizzato.
+
+\section{Direzioni per l'applicativo}
+
+Le priorità implementative, ordinate per rapporto tra valore e sforzo, sono le seguenti.
+
+\begin{enumerate}
+  \item \textbf{Modulo di scoring interno con FinBERT.} Applicazione batch di FinBERT agli articoli già in database, con persistenza dei punteggi in colonne parallele a quelli del provider: abilita immediatamente il benchmark multi-scorer ed elimina il vincolo monofonte sullo scoring.
+  \item \textbf{Popolamento del cross-diffused sentiment.} La tabella \texttt{ticker\_cross\_diffused\_sentiment}, già predisposta, può essere alimentata con un primo modello di diffusione su grafo che utilizzi la matrice di correlazione tra aziende esistente: è il passo che trasforma la proposta teorica della diffusione semantica in funzionalità osservabile in dashboard.
+  \item \textbf{Analisi statistica sentiment--prezzo.} Un endpoint e una vista che calcolino correlazioni di Pearson e Spearman tra KPI di sentiment e rendimenti, con ritardi temporali configurabili ($0$--$5$ giorni), sostituendo l'attuale confronto visivo tra grafici separati.
+  \item \textbf{Backtester elementare.} Simulazione della strategia long/flat descritta nel Capitolo~\ref{ch:descrizione-progetto} sui dati storici già persistiti (sentiment KPI e prezzi), con rendimento cumulato contro benchmark, hit-rate e Sharpe ratio semplificato, nel rispetto del protocollo anti-bias sopra definito.
+  \item \textbf{Seconda fonte di dati.} Integrazione di una fonte a basso attrito (feed RSS finanziari o scraping mirato) per ridurre la dipendenza da Alpha Vantage; gli articoli senza scoring del provider diventano il banco di prova naturale del modulo FinBERT interno.
+  \item \textbf{LLM-as-annotator per un dataset entity-level.} Utilizzo di un LLM per annotare un sottoinsieme di articoli a livello di entità (nello spirito di FinEntity \parencite{tang-etal-2023-finentity}), con revisione manuale a campione: il dataset risultante abilita il fine-tuning previsto dalla proposta originaria a costi contenuti.
+\end{enumerate}
+
+\section{Sintesi}
+
+Il filo conduttore delle direzioni proposte è la trasformazione del prototipo da strumento di monitoraggio a piattaforma sperimentale: ogni componente applicativa (scoring interno, diffusione su grafo, correlazioni, backtester) corrisponde a una domanda di ricerca verificabile con i dati già raccolti.
+L'elemento di maggiore originalità resta la modellazione della rilevanza informativa come campo dinamico che decade e si diffonde nello spazio semantico, per la quale il prototipo dispone ormai di tutti gli ingredienti infrastrutturali.
