@@ -72,6 +72,7 @@ PUBLIC_ENDPOINTS = {
     'public_dashboard', 'api_dashboard_stocks',
     'view_articles', 'api_articles', 'view_article_detail',
     'public_companies', 'public_ticker_detail', 'api_ticker_sentiment_kpi', 'get_companies',
+    'about',
     'login', 'logout', 'static',
 }
 
@@ -788,6 +789,16 @@ def api_ticker_sentiment_kpi(ticker):
     except Exception as e:
         logger.error(f"Error computing sentiment KPI series for {ticker}: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/about')
+def about():
+    """Public page explaining what DollarPunk shows and how to read it."""
+    return render_template(
+        'about.html',
+        default_kpi_window=DEFAULT_KPI_WINDOW_DAYS,
+        default_kpi_half_life=DEFAULT_KPI_HALF_LIFE,
+    )
 
 
 @app.route('/tickers')

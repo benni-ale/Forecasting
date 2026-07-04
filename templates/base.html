@@ -6,6 +6,9 @@
     <title>{% block title %}DollarPunk{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💲</text></svg>">
     <style>
         /* ===== DollarPunk: Monokai theme (warm dark bg, vibrant accents, soft borders) ===== */
         :root {
@@ -25,7 +28,12 @@
             --mk-dark: #1d1e19;
             --mk-radius: 0.5rem;
         }
-        body { background-color: var(--mk-bg); color: var(--mk-fg); }
+        body {
+            background-color: var(--mk-bg); color: var(--mk-fg);
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            display: flex; flex-direction: column; min-height: 100vh;
+        }
+        main.app-main { flex: 1 0 auto; }
         a { color: var(--mk-cyan); }
         a:hover { color: var(--mk-green); }
 
@@ -36,13 +44,34 @@
         }
 
         /* Navbar (handled standalone, not via bg-primary) */
-        .navbar { background-color: var(--mk-dark) !important; border-bottom: 2px solid var(--mk-pink); }
-        .navbar .navbar-brand { color: var(--mk-green) !important; font-weight: bold; }
-        .navbar .nav-link { color: var(--mk-fg) !important; }
-        .navbar .nav-link:hover { color: var(--mk-cyan) !important; }
+        .navbar {
+            background-color: var(--mk-dark) !important;
+            border-bottom: 2px solid var(--mk-pink);
+            position: sticky; top: 0; z-index: 1030;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+        }
+        .navbar .navbar-brand { color: var(--mk-green) !important; font-weight: 700; letter-spacing: 0.02em; }
+        .navbar .nav-link { color: var(--mk-fg) !important; border-radius: var(--mk-radius); padding: 0.4rem 0.75rem; transition: background-color 0.15s ease, color 0.15s ease; }
+        .navbar .nav-link:hover { color: var(--mk-cyan) !important; background-color: rgba(102, 217, 239, 0.08); }
+        .navbar .nav-link.active { color: var(--mk-yellow) !important; background-color: rgba(230, 219, 116, 0.08); }
+
+        /* Footer */
+        .app-footer {
+            flex-shrink: 0;
+            background-color: var(--mk-dark); border-top: 1px solid var(--mk-border);
+            color: var(--mk-muted); padding: 0.9rem 1rem; margin-top: 2.5rem;
+            font-size: 0.85rem;
+        }
+        .app-footer a { color: var(--mk-muted); text-decoration: none; }
+        .app-footer a:hover { color: var(--mk-cyan); }
 
         /* Cards */
-        .card { background-color: var(--mk-bg-elev); color: var(--mk-fg); border: 1px solid var(--mk-border); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
+        .card {
+            background-color: var(--mk-bg-elev); color: var(--mk-fg); border: 1px solid var(--mk-border);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+        }
+        .card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); border-color: #4d4e45; }
         .card-header { background-color: var(--mk-bg-header); color: var(--mk-fg); border-bottom: 1px solid var(--mk-border); }
         .card-footer { background-color: var(--mk-bg-header); border-top: 1px solid var(--mk-border); }
 
@@ -163,13 +192,16 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/dashboard">Daily Dashboard</a>
+                        <a class="nav-link {% if request.path == '/dashboard' %}active{% endif %}" href="/dashboard"><i class="bi bi-graph-up-arrow"></i> Daily Dashboard</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/articles">Articles</a>
+                        <a class="nav-link {% if request.path == '/articles' %}active{% endif %}" href="/articles"><i class="bi bi-newspaper"></i> Articles</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/tickers">Companies</a>
+                        <a class="nav-link {% if request.path == '/tickers' %}active{% endif %}" href="/tickers"><i class="bi bi-buildings"></i> Companies</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/about' %}active{% endif %}" href="/about"><i class="bi bi-info-circle"></i> About</a>
                     </li>
                     {% if is_admin %}
                     <li class="nav-item">
@@ -204,7 +236,7 @@
         </div>
     </nav>
 
-    <div class="container-fluid mt-4">
+    <main class="app-main container-fluid mt-4">
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
@@ -217,7 +249,18 @@
         {% endwith %}
 
         {% block content %}{% endblock %}
-    </div>
+    </main>
+
+    <footer class="app-footer">
+        <div class="container-fluid d-flex justify-content-between flex-wrap gap-2">
+            <span><i class="bi bi-currency-dollar"></i> <strong>DollarPunk</strong> &mdash; news sentiment research prototype</span>
+            <span>
+                <a href="/about"><i class="bi bi-info-circle"></i> What am I looking at?</a>
+                <span class="mx-2">&middot;</span>
+                <span>Data: Alpha Vantage &middot; Not financial advice</span>
+            </span>
+        </div>
+    </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>

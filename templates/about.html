@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}About - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="mx-auto" style="max-width: 900px;">
+
+    <div class="text-center mb-5 mt-3">
+        <h1 class="display-6 fw-bold">
+            <i class="bi bi-currency-dollar text-success"></i> What is DollarPunk?
+        </h1>
+        <p class="lead text-muted mb-0">
+            A research prototype that tracks the <strong>digital sentiment</strong> around
+            stocks in the financial news, and turns it into a single daily indicator per ticker.
+        </p>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-diagram-3"></i> How it works</div>
+        <div class="card-body">
+            <ol class="mb-0">
+                <li class="mb-2"><strong>Collect.</strong> Financial news articles are ingested continuously
+                    (currently from the Alpha Vantage <code>NEWS_SENTIMENT</code> feed) and stored with their
+                    metadata: source, timestamp, tickers mentioned.</li>
+                <li class="mb-2"><strong>Score.</strong> Every article carries, for each ticker it mentions, two numbers:
+                    a <strong>relevance score</strong> (0 to 1 &mdash; how central the ticker is in the article) and a
+                    <strong>sentiment score</strong> (&minus;1 to +1 &mdash; how bearish or bullish the tone is toward that ticker).</li>
+                <li class="mb-2"><strong>Decay.</strong> News gets old: the impact of an article fades over time.
+                    Each article's weight is halved every <strong>{{ default_kpi_half_life|int }} days</strong> (configurable half-life).</li>
+                <li class="mb-0"><strong>Aggregate.</strong> For every ticker, all recent articles are combined into
+                    one daily <strong>sentiment KPI</strong>, weighting each article's sentiment by its relevance and
+                    its remaining freshness.</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-calculator"></i> The KPI, precisely</div>
+        <div class="card-body">
+            <p>For a given ticker and day, over the articles of the last {{ default_kpi_window }} days:</p>
+            <pre class="text-center py-3 mb-3" style="font-size: 1.05rem;">KPI  =  &Sigma; ( sentiment &times; relevance &times; decay )  /  &Sigma; ( relevance &times; decay )
+
+decay = 0.5 ^ ( days_since_publication / {{ default_kpi_half_life|int }} )</pre>
+            <div class="row text-center g-3">
+                <div class="col-md-4">
+                    <div class="p-3 rounded" style="background: rgba(166,226,46,.08); border: 1px solid var(--mk-green);">
+                        <div class="h5 sentiment-bullish mb-1">KPI &gt; 0</div>
+                        <div class="small text-muted">recent, relevant coverage is on balance <strong>bullish</strong></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 rounded" style="background: rgba(154,150,130,.08); border: 1px solid var(--mk-border);">
+                        <div class="h5 sentiment-neutral mb-1">KPI &asymp; 0</div>
+                        <div class="small text-muted">mixed or neutral coverage</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 rounded" style="background: rgba(249,38,114,.08); border: 1px solid var(--mk-pink);">
+                        <div class="h5 sentiment-bearish mb-1">KPI &lt; 0</div>
+                        <div class="small text-muted">recent, relevant coverage is on balance <strong>bearish</strong></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-map"></i> Reading the pages</div>
+        <div class="card-body">
+            <dl class="row mb-0">
+                <dt class="col-sm-3"><a href="{{ url_for('public_dashboard') }}">Daily Dashboard</a></dt>
+                <dd class="col-sm-9">The main view. Ranks tickers by sentiment KPI (or by number of mentions) and shows,
+                    for each stock, the recent price/volume history and the sentiment KPI trend. Click any card to open the company details.</dd>
+
+                <dt class="col-sm-3"><a href="{{ url_for('public_companies') }}">Companies</a></dt>
+                <dd class="col-sm-9">Browse the companies on file, with sector, industry and business description.</dd>
+
+                <dt class="col-sm-3"><a href="{{ url_for('view_articles') }}">Articles</a></dt>
+                <dd class="col-sm-9">The raw material: every collected news article, searchable and filterable by ticker,
+                    with its per-ticker relevance and sentiment scores.</dd>
+
+                <dt class="col-sm-3">Company details</dt>
+                <dd class="col-sm-9 mb-0">One page per ticker: price &amp; volume chart, the sentiment KPI over time
+                    (same formula as the dashboard), company profile and the latest news mentioning the ticker.</dd>
+            </dl>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-mortarboard"></i> Why</div>
+        <div class="card-body">
+            <p class="mb-0">
+                DollarPunk is the working prototype of a research project on <em>NLP-driven market sentiment</em>:
+                whether the tone and intensity of financial news, aggregated with a time-decay model, carries a
+                measurable signal about market behaviour. The roadmap includes independent sentiment scoring
+                (FinBERT / LLM based), sentiment <em>diffusion</em> across semantically related companies,
+                statistical sentiment&ndash;price analysis and a simple backtesting engine.
+            </p>
+        </div>
+    </div>
+
+    <div class="alert alert-warning d-flex gap-2 align-items-start">
+        <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+        <div>
+            <strong>Not financial advice.</strong> This is an experimental research tool.
+            Sentiment scores come from automated models, can be noisy or wrong, and past coverage
+            patterns do not predict future prices. Do not base investment decisions on this dashboard.
+        </div>
+    </div>
+
+    <div class="text-center text-muted small mb-4">
+        Data: Alpha Vantage &middot; Built with Flask + PostgreSQL &middot; Charts: Chart.js
+    </div>
+</div>
+{% endblock %}
