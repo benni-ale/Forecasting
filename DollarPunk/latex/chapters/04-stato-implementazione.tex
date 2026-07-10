@@ -80,6 +80,23 @@ Per l'aggregazione del sentiment a livello di ticker sono state definite due vis
   \item \texttt{ticker\_daily\_sentiment\_view}: aggrega per ticker e giorno, con decadimento temporale del \emph{relevance score} e media ponderata del sentiment.
 \end{itemize}
 
+\subsection{Archiviazione cold-storage}
+\label{sec:cold-storage}
+
+La finestra rolling di 30 giorni, imposta dai limiti del piano PostgreSQL in produzione (1~GB), comportava originariamente la perdita definitiva degli articoli rimossi dal job di prune.
+Per eliminare questa perdita informativa è stata introdotta un'architettura a due livelli:
+
+\begin{itemize}
+  \item \textbf{Hot store}: il PostgreSQL di produzione, limitato agli ultimi 30 giorni, che serve dashboard e API con tempi di risposta contenuti;
+  \item \textbf{Cold store}: un archivio analitico \textbf{DuckDB} ospitato su MotherDuck, alimentato quotidianamente e privo di limiti pratici di crescita.
+\end{itemize}
+
+Il job di archiviazione (\texttt{archive\_job.py}) copia articoli e prezzi giornalieri dal database operativo all'archivio con \textbf{inserimento idempotente} tramite anti-join sulla chiave naturale (\texttt{url} per gli articoli, coppia ticker--data per i prezzi): l'esecuzione ripetuta non produce duplicati.
+Nello scheduler di produzione il job precede il prune, garantendo che nessun articolo venga cancellato prima di essere stato archiviato.
+
+Al momento del bootstrap (luglio 2026) l'archivio conteneva \textbf{758\,817 articoli} con scoring per ticker --- con storico dal novembre 2018, recuperato in parte da un'istanza locale del database --- e 24\,758 osservazioni di prezzo.
+Questo dataset costituisce la base empirica per due componenti della proposta originaria rimaste finora teoriche: il \emph{fine-tuning} di modelli open-source su coppie (testo, sentiment per ticker) già etichettate, e il backtesting su orizzonti pluriennali richiesto dal protocollo anti-bias del Capitolo~\ref{ch:direzioni-future}.
+
 \section{Scoring del sentiment: delega al provider}
 
 Una distinzione importante rispetto al Capitolo~\ref{ch:descrizione-progetto}: al momento \textbf{non esiste una pipeline NLP proprietaria}.
@@ -125,6 +142,23 @@ La proposta di diffusione del \emph{relevance} nello spazio semantico (equazione
 Esiste tuttavia un \textbf{primo passo parziale} sulle aziende: le descrizioni di business vengono vettorizzate con OpenAI e confrontate tramite similarità coseno, producendo una matrice di correlazione tra ticker consultabile dalla sezione \textit{Companies}.
 Questa matrice misura affinità tra profili aziendali, non tra articoli di news, e non alimenta ancora la tabella \texttt{ticker\_cross\_diffused\_sentiment}.
 
+\section{Indicatori di analisi tecnica}
+\label{sec:analisi-tecnica}
+
+Accanto al KPI di sentiment, il prototipo calcola un insieme di indicatori tecnici classici a partire dalle chiusure giornaliere già persistite in \texttt{stock\_prices}, senza chiamate API aggiuntive.
+L'obiettivo è affiancare al segnale informativo (``cosa dicono le notizie'') un segnale di prezzo (``cosa sta facendo il titolo''), abilitando la lettura congiunta dei due.
+
+\begin{itemize}
+  \item \textbf{Medie mobili semplici} a 20 e 50 giorni, con la distanza percentuale del prezzo dalla SMA~50 come indicatore sintetico di momentum;
+  \item \textbf{Bande di Bollinger} \parencite{bollinger2001bollinger}: $\text{SMA}_{20} \pm 2\sigma_{20}$, dove $\sigma_{20}$ è la deviazione standard mobile a 20 giorni; la posizione del prezzo all'interno della banda, normalizzata in $[0,1]$, segnala movimenti anomali rispetto alla volatilità recente;
+  \item \textbf{RSI a 14 giorni} \parencite{wilder1978new}, con smoothing di Wilder, e le soglie convenzionali di ipercomprato ($>70$) e ipervenduto ($<30$);
+  \item \textbf{Volatilità realizzata a 20 giorni}, deviazione standard dei log-rendimenti giornalieri annualizzata con fattore $\sqrt{252}$.
+\end{itemize}
+
+Gli indicatori sono esposti da un endpoint dedicato (\texttt{/api/tickers/<ticker>/technicals}) e visualizzati in due punti dell'interfaccia: nella pagina di dettaglio del ticker, come overlay attivabili sul grafico prezzo--volume con uno snapshot dei valori correnti, e nella dashboard pubblica, come badge sintetici (direzione rispetto alla SMA~50, RSI) accanto al KPI di sentiment di ciascun titolo in classifica.
+
+La co-presenza dei due segnali sulla stessa vista non è solo una scelta di interfaccia: prepara la domanda di ricerca sull'\emph{interazione} tra sentiment e segnali tecnici discussa nel Capitolo~\ref{ch:direzioni-future}, in linea con la letteratura che documenta il valore predittivo congiunto di regole tecniche e variabili informative \parencite{brock1992simple}.
+
 \section{Interfaccia web e funzionalità utente}
 
 L'applicazione Flask espone due livelli di accesso:
@@ -162,6 +196,10 @@ NLP / scoring & FinBERT, RAG, fine-tuning & Delegato al provider API \\
 \hline
 ETL e storage & Pipeline strutturata & Implementato (PostgreSQL) \\
 \hline
+Archiviazione storico & --- (non prevista) & Cold store DuckDB/MotherDuck, 758k articoli dal 2018 \\
+\hline
+Indicatori tecnici & Input per LSTM & SMA, Bollinger, RSI, volatilità in dashboard e API \\
+\hline
 Decay temporale & $R \cdot e^{-\lambda \Delta t}$ & Emivita $0{,}5^{\Delta t/h}$ in SQL e API \\
 \hline
 Diffusione semantica & PDE su spazio news & Solo embedding aziende (parziale) \\
@@ -187,9 +225,9 @@ Sulla base del prototipo attuale, le priorità di sviluppo coerenti con la propo
 
 \begin{enumerate}
   \item introdurre almeno una fonte dati aggiuntiva (scraping o social) per ridurre la dipendenza da un unico provider;
-  \item implementare un modulo NLP interno (es.\ FinBERT zero-shot) per confronto con i punteggi Alpha Vantage;
+  \item implementare un modulo NLP interno (es.\ FinBERT zero-shot) per confronto con i punteggi Alpha Vantage, sfruttando il dataset etichettato ormai accumulato nel cold store (Sezione~\ref{sec:cold-storage});
   \item popolare e validare le tabelle di \emph{cross-diffused sentiment} sfruttando la matrice di correlazione tra aziende;
-  \item aggiungere analisi esplorativa sentiment--prezzo con correlazioni e ritardi temporali;
+  \item aggiungere analisi esplorativa sentiment--prezzo con correlazioni e ritardi temporali, estesa all'interazione con gli indicatori tecnici (Sezione~\ref{sec:analisi-tecnica});
   \item costruire un backtester elementare prima di passare a modelli LSTM.
 \end{enumerate}
 

@@ -65,6 +65,34 @@ decay = 0.5 ^ ( days_since_publication / {{ default_kpi_half_life|int }} )</pre>
     </div>
 
     <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-graph-up"></i> Technical indicators</div>
+        <div class="card-body">
+            <p>Next to the sentiment KPI, each stock also shows a few classic <strong>technical analysis</strong> signals,
+                computed from its daily closing prices. They answer a different question &mdash; not <em>"what is the news
+                saying?"</em> but <em>"what is the price itself doing?"</em> &mdash; and are most interesting when read together
+                with the sentiment.</p>
+            <dl class="row mb-0">
+                <dt class="col-sm-3">SMA 20 / 50</dt>
+                <dd class="col-sm-9">Simple moving averages of the last 20 and 50 closes. Price <span class="sentiment-bullish">above</span>
+                    the SMA 50 (badge <span class="sentiment-bullish">&#9650; SMA50 +x%</span>) signals positive momentum;
+                    <span class="sentiment-bearish">below</span> it, negative.</dd>
+
+                <dt class="col-sm-3">Bollinger bands</dt>
+                <dd class="col-sm-9">SMA 20 &plusmn; 2 standard deviations. A price hugging the upper band means an unusually
+                    strong (possibly stretched) move; the lower band, an unusually weak one.</dd>
+
+                <dt class="col-sm-3">RSI 14</dt>
+                <dd class="col-sm-9">Relative Strength Index over 14 days, from 0 to 100. Above <strong>70</strong> the stock is
+                    conventionally <em>overbought</em> ("ob"), below <strong>30</strong> <em>oversold</em> ("os").</dd>
+
+                <dt class="col-sm-3">Volatility 20d</dt>
+                <dd class="col-sm-9 mb-0">Annualized standard deviation of the last 20 daily returns &mdash; how much the stock
+                    is moving, regardless of direction.</dd>
+            </dl>
+        </div>
+    </div>
+
+    <div class="card mb-4">
         <div class="card-header"><i class="bi bi-map"></i> Reading the pages</div>
         <div class="card-body">
             <dl class="row mb-0">
@@ -92,9 +120,12 @@ decay = 0.5 ^ ( days_since_publication / {{ default_kpi_half_life|int }} )</pre>
             <p class="mb-0">
                 DollarPunk is the working prototype of a research project on <em>NLP-driven market sentiment</em>:
                 whether the tone and intensity of financial news, aggregated with a time-decay model, carries a
-                measurable signal about market behaviour. The roadmap includes independent sentiment scoring
-                (FinBERT / LLM based), sentiment <em>diffusion</em> across semantically related companies,
-                statistical sentiment&ndash;price analysis and a simple backtesting engine.
+                measurable signal about market behaviour. While the dashboard shows a rolling window of recent news,
+                every collected article is preserved in a cloud <strong>cold-storage archive</strong> (hundreds of
+                thousands of scored articles, back to 2018) that will feed model fine-tuning and long-horizon backtesting.
+                The roadmap includes independent sentiment scoring (FinBERT / LLM based), sentiment <em>diffusion</em>
+                across semantically related companies, statistical sentiment&ndash;price analysis, and the interaction
+                between sentiment and technical signals.
             </p>
         </div>
     </div>

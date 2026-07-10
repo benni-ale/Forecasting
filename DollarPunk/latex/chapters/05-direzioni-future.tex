@@ -36,6 +36,16 @@ La conversione \textit{logit-to-score} di FinDPO \parencite{iacovides2025findpo}
 Il job di \textit{coverage ingestion} raccoglie sistematicamente il volume di notizie per ticker e topic: questo dato, già disponibile, permette di costruire un indice di attenzione mediatica nello spirito dell'Hype Index \parencite{cao2025hypeindexnlpdrivenmeasure}, senza costi aggiuntivi di acquisizione.
 L'ipotesi da verificare è che picchi di copertura anticipino volatilità indipendentemente dalla polarità del sentiment, e che l'interazione sentiment~$\times$~attenzione sia più informativa dei due segnali separati.
 
+\subsection{Interazione tra sentiment e segnali tecnici}
+
+Con l'introduzione degli indicatori tecnici (Capitolo~\ref{ch:stato-implementazione}, Sezione~\ref{sec:analisi-tecnica}), il prototipo espone per ogni titolo due segnali di natura diversa: uno informativo (il KPI di sentiment) e uno di prezzo (momentum rispetto alla SMA~50, RSI, posizione nelle bande di Bollinger).
+La domanda di ricerca naturale è se il sentiment abbia \emph{valore predittivo incrementale} rispetto ai segnali tecnici: un segnale di sentiment bullish su un titolo già in momentum positivo è ridondante, o i due segnali si rafforzano?
+E, specularmente, le divergenze (sentiment bullish su titolo tecnicamente ipercomprato, o viceversa) anticipano inversioni?
+
+La letteratura classica documenta il potere predittivo delle regole tecniche semplici \parencite{brock1992simple}; gli studi su LSTM citati nel Capitolo~\ref{ch:descrizione-progetto} combinano già prezzo, indicatori e sentiment come feature congiunte.
+Il contributo qui proposto è più interpretabile: una regressione dei rendimenti futuri su sentiment, segnale tecnico e loro interazione, per quantificare separatamente i tre effetti prima di delegarli a un modello black-box.
+Il prototipo dispone già di tutti gli ingredienti (KPI giornaliero, indicatori, prezzi persistiti), rendendo questa direzione a costo sperimentale quasi nullo.
+
 \subsection{Protocollo di backtesting metodologicamente rigoroso}
 
 La letteratura critica recente \parencite{li2025finsaber} mostra che i vantaggi delle strategie basate su LLM tendono a svanire su orizzonti lunghi e universi ampi di titoli, e che i backtest sono esposti a survivorship bias, look-ahead bias e data-snooping.
@@ -54,6 +64,9 @@ Le priorità implementative, ordinate per rapporto tra valore e sforzo, sono le 
   \item \textbf{Seconda fonte di dati.} Integrazione di una fonte a basso attrito (feed RSS finanziari o scraping mirato) per ridurre la dipendenza da Alpha Vantage; gli articoli senza scoring del provider diventano il banco di prova naturale del modulo FinBERT interno.
   \item \textbf{LLM-as-annotator per un dataset entity-level.} Utilizzo di un LLM per annotare un sottoinsieme di articoli a livello di entità (nello spirito di FinEntity \parencite{tang-etal-2023-finentity}), con revisione manuale a campione: il dataset risultante abilita il fine-tuning previsto dalla proposta originaria a costi contenuti.
 \end{enumerate}
+
+Rispetto alla prima stesura di questo elenco, il vincolo pratico più stringente --- la disponibilità di uno storico ampio e stabile su cui addestrare e validare --- è stato rimosso: il cold store descritto nel Capitolo~\ref{ch:stato-implementazione} (Sezione~\ref{sec:cold-storage}) accumula senza limiti di ritenzione l'intero flusso di articoli etichettati, con storico dal 2018.
+Il fine-tuning e il benchmark multi-scorer possono quindi essere pianificati su un corpus dell'ordine delle centinaia di migliaia di esempi, anziché sulla finestra rolling di 30 giorni.
 
 \section{Sintesi}
 

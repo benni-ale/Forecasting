@@ -7,6 +7,7 @@ Provides a GUI to collect news and visualize collected articles.
 import os
 import json
 import logging
+import math
 import requests
 import subprocess
 from datetime import datetime, timedelta
@@ -788,6 +789,138 @@ def api_ticker_sentiment_kpi(ticker):
         })
     except Exception as e:
         logger.error(f"Error computing sentiment KPI series for {ticker}: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# --- Technical analysis (computed from the stock_prices cache, no extra API calls) ---
+
+def _sma(closes, window):
+    """Simple moving average; None until the window is full."""
+    out = [None] * len(closes)
+    total = 0.0
+    for i, c in enumerate(closes):
+        total += c
+        if i >= window:
+            total -= closes[i - window]
+        if i >= window - 1:
+            out[i] = total / window
+    return out
+
+
+def _bollinger(closes, window=20, num_std=2.0):
+    """Bollinger bands: SMA(window) +/- num_std * rolling std deviation."""
+    mid = _sma(closes, window)
+    upper = [None] * len(closes)
+    lower = [None] * len(closes)
+    for i in range(window - 1, len(closes)):
+        seg = closes[i - window + 1:i + 1]
+        mean = mid[i]
+        std = (sum((c - mean) ** 2 for c in seg) / window) ** 0.5
+        upper[i] = mean + num_std * std
+        lower[i] = mean - num_std * std
+    return mid, upper, lower
+
+
+def _rsi(closes, period=14):
+    """RSI (Wilder smoothing); None until enough data."""
+    out = [None] * len(closes)
+    if len(closes) <= period:
+        return out
+    gains = losses = 0.0
+    for i in range(1, period + 1):
+        delta = closes[i] - closes[i - 1]
+        gains += max(delta, 0.0)
+        losses += max(-delta, 0.0)
+    avg_gain, avg_loss = gains / period, losses / period
+    out[period] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    for i in range(period + 1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        avg_gain = (avg_gain * (period - 1) + max(delta, 0.0)) / period
+        avg_loss = (avg_loss * (period - 1) + max(-delta, 0.0)) / period
+        out[i] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    return out
+
+
+def _volatility_20d(closes):
+    """Annualized volatility (%) of the last 20 daily log returns."""
+    if len(closes) < 21:
+        return None
+    rets = []
+    for i in range(len(closes) - 20, len(closes)):
+        if closes[i - 1] and closes[i]:
+            rets.append(math.log(closes[i] / closes[i - 1]))
+    if len(rets) < 2:
+        return None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    return (var ** 0.5) * (252 ** 0.5) * 100.0
+
+
+@app.route('/api/tickers/<ticker>/technicals')
+def api_ticker_technicals(ticker):
+    """Public endpoint: daily prices plus technical indicators for one ticker.
+
+    Everything is computed from the stock_prices cache (same data as the price
+    chart), so this adds zero Alpha Vantage calls. Returns full series for
+    charting (sma20/sma50, Bollinger 20+/-2sigma, rsi14) and a snapshot of the
+    latest values for the KPI badges.
+    """
+    ticker = (ticker or '').strip().upper()
+    if not ticker:
+        return jsonify({'error': 'Ticker required'}), 400
+    try:
+        points = min(int(request.args.get('points', 120)), 365)
+    except (TypeError, ValueError):
+        points = 120
+    try:
+        data = _fetch_av_daily(ticker, points=points)
+        if data.get('error'):
+            return jsonify({'ticker': ticker, 'error': data['error']})
+
+        dates = data['dates']
+        closes = [c if c is not None else 0.0 for c in data['closes']]
+        sma20 = _sma(closes, 20)
+        _, bb_upper, bb_lower = _bollinger(closes, 20, 2.0)
+        sma50 = _sma(closes, 50)
+        rsi14 = _rsi(closes, 14)
+
+        last_close = closes[-1] if closes else None
+        last_sma50 = sma50[-1]
+        last_rsi = rsi14[-1]
+        snapshot = {
+            'close': last_close,
+            'rsi14': round(last_rsi, 1) if last_rsi is not None else None,
+            'sma20': round(sma20[-1], 2) if sma20[-1] is not None else None,
+            'sma50': round(last_sma50, 2) if last_sma50 is not None else None,
+            'dist_sma50_pct': (
+                round((last_close / last_sma50 - 1.0) * 100.0, 2)
+                if last_close and last_sma50 else None
+            ),
+            'volatility_20d_pct': None,
+            'bb_position': None,  # 0 = lower band, 1 = upper band
+        }
+        vol = _volatility_20d(closes)
+        if vol is not None:
+            snapshot['volatility_20d_pct'] = round(vol, 1)
+        if last_close and bb_upper[-1] is not None and bb_lower[-1] is not None:
+            band_width = bb_upper[-1] - bb_lower[-1]
+            if band_width > 0:
+                snapshot['bb_position'] = round((last_close - bb_lower[-1]) / band_width, 2)
+
+        return jsonify({
+            'ticker': ticker,
+            'dates': dates,
+            'closes': data['closes'],
+            'volumes': data['volumes'],
+            'sma20': sma20,
+            'sma50': sma50,
+            'bb_upper': bb_upper,
+            'bb_lower': bb_lower,
+            'rsi14': rsi14,
+            'snapshot': snapshot,
+        })
+    except Exception as e:
+        logger.error(f"Error computing technicals for {ticker}: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

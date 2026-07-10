@@ -56,13 +56,45 @@
 <div class="row">
     <div class="col-lg-7 mb-4">
         <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <span><i class="bi bi-bar-chart-line"></i> Price &amp; volume (daily, Alpha Vantage)</span>
                 <span class="small text-muted" id="stockStatus">loading...</span>
             </div>
             <div class="card-body">
+                <div class="d-flex flex-wrap gap-3 mb-2 small" id="taToggles" style="display: none;">
+                    <div class="form-check form-check-inline mb-0">
+                        <input class="form-check-input" type="checkbox" id="toggleSma20" checked>
+                        <label class="form-check-label" for="toggleSma20" style="color: #66d9ef;">SMA 20</label>
+                    </div>
+                    <div class="form-check form-check-inline mb-0">
+                        <input class="form-check-input" type="checkbox" id="toggleSma50" checked>
+                        <label class="form-check-label" for="toggleSma50" style="color: #ae81ff;">SMA 50</label>
+                    </div>
+                    <div class="form-check form-check-inline mb-0">
+                        <input class="form-check-input" type="checkbox" id="toggleBb" checked>
+                        <label class="form-check-label" for="toggleBb" style="color: #f92672;">Bollinger (20, 2&sigma;)</label>
+                    </div>
+                </div>
                 <div class="chart-wrap" style="height: 220px; position: relative;">
                     <canvas id="stockChart"></canvas>
+                </div>
+                <div class="row g-2 mt-2 text-center small" id="taSnapshot" style="display: none;">
+                    <div class="col-3">
+                        <div class="text-muted">RSI 14</div>
+                        <div class="fw-semibold" id="taRsi">-</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="text-muted">vs SMA 50</div>
+                        <div class="fw-semibold" id="taDistSma">-</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="text-muted">Volatility 20d</div>
+                        <div class="fw-semibold" id="taVol">-</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="text-muted">Bollinger pos.</div>
+                        <div class="fw-semibold" id="taBbPos">-</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -144,32 +176,46 @@
 (function () {
     const ticker = {{ ticker|tojson }};
 
-    // --- Price chart ---
+    // --- Price chart + technical indicators ---
     const stockStatus = document.getElementById('stockStatus');
-    fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(ticker)}&top=1`)
+    fetch(`/api/tickers/${encodeURIComponent(ticker)}/technicals`)
         .then(r => r.json())
-        .then(data => {
-            const s = (data.series || [])[0];
+        .then(s => {
             if (!s || s.error) {
                 stockStatus.textContent = s && s.error ? ('no price data: ' + s.error) : 'no price data';
                 return;
             }
             stockStatus.textContent = `last ${s.dates.length} days`;
-            new Chart(document.getElementById('stockChart').getContext('2d'), {
+
+            const stockChart = new Chart(document.getElementById('stockChart').getContext('2d'), {
                 data: {
                     labels: s.dates,
                     datasets: [
                         { type: 'bar', label: 'Volume', data: s.volumes, yAxisID: 'yVol',
-                          backgroundColor: 'rgba(102, 217, 239, 0.35)', borderWidth: 0, order: 2 },
+                          backgroundColor: 'rgba(102, 217, 239, 0.35)', borderWidth: 0, order: 6 },
                         { type: 'line', label: 'Close', data: s.closes, yAxisID: 'yPrice',
                           borderColor: '#a6e22e', backgroundColor: 'rgba(166, 226, 46, 0.1)',
-                          borderWidth: 2, pointRadius: 0, tension: 0.2, order: 1 }
+                          borderWidth: 2, pointRadius: 0, tension: 0.2, order: 1 },
+                        { type: 'line', label: 'SMA 20', data: s.sma20, yAxisID: 'yPrice',
+                          borderColor: '#66d9ef', borderWidth: 1.5, pointRadius: 0,
+                          tension: 0.2, spanGaps: true, order: 2, _key: 'sma20' },
+                        { type: 'line', label: 'SMA 50', data: s.sma50, yAxisID: 'yPrice',
+                          borderColor: '#ae81ff', borderWidth: 1.5, pointRadius: 0,
+                          tension: 0.2, spanGaps: true, order: 3, _key: 'sma50' },
+                        { type: 'line', label: 'BB upper', data: s.bb_upper, yAxisID: 'yPrice',
+                          borderColor: 'rgba(249, 38, 114, 0.55)', borderWidth: 1, borderDash: [4, 3],
+                          pointRadius: 0, tension: 0.2, spanGaps: true, order: 4, _key: 'bb' },
+                        { type: 'line', label: 'BB lower', data: s.bb_lower, yAxisID: 'yPrice',
+                          borderColor: 'rgba(249, 38, 114, 0.55)', borderWidth: 1, borderDash: [4, 3],
+                          pointRadius: 0, tension: 0.2, spanGaps: true, order: 5, _key: 'bb',
+                          fill: '-1', backgroundColor: 'rgba(249, 38, 114, 0.07)' }
                     ]
                 },
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     interaction: { mode: 'index', intersect: false },
-                    plugins: { legend: { display: true, labels: { boxWidth: 12 } } },
+                    plugins: { legend: { display: true, labels: { boxWidth: 12,
+                        filter: item => !item.text.startsWith('BB ') || item.text === 'BB upper' } } },
                     scales: {
                         x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
                         yPrice: { position: 'left', title: { display: true, text: 'Close ($)' } },
@@ -177,6 +223,45 @@
                     }
                 }
             });
+
+            // Overlay toggles
+            document.getElementById('taToggles').style.display = 'flex';
+            function bindToggle(id, key) {
+                document.getElementById(id).addEventListener('change', function () {
+                    stockChart.data.datasets.forEach(ds => {
+                        if (ds._key === key) ds.hidden = !this.checked;
+                    });
+                    stockChart.update();
+                });
+            }
+            bindToggle('toggleSma20', 'sma20');
+            bindToggle('toggleSma50', 'sma50');
+            bindToggle('toggleBb', 'bb');
+
+            // Technical KPI snapshot
+            const snap = s.snapshot || {};
+            document.getElementById('taSnapshot').style.display = 'flex';
+            const rsiEl = document.getElementById('taRsi');
+            if (snap.rsi14 != null) {
+                rsiEl.textContent = snap.rsi14;
+                if (snap.rsi14 >= 70) { rsiEl.classList.add('sentiment-bearish'); rsiEl.textContent += ' (overbought)'; }
+                else if (snap.rsi14 <= 30) { rsiEl.classList.add('sentiment-bullish'); rsiEl.textContent += ' (oversold)'; }
+            }
+            const distEl = document.getElementById('taDistSma');
+            if (snap.dist_sma50_pct != null) {
+                distEl.textContent = (snap.dist_sma50_pct > 0 ? '+' : '') + snap.dist_sma50_pct + '%';
+                distEl.classList.add(snap.dist_sma50_pct >= 0 ? 'sentiment-bullish' : 'sentiment-bearish');
+            }
+            if (snap.volatility_20d_pct != null) {
+                document.getElementById('taVol').textContent = snap.volatility_20d_pct + '% ann.';
+            }
+            const bbEl = document.getElementById('taBbPos');
+            if (snap.bb_position != null) {
+                const pct = Math.round(snap.bb_position * 100);
+                bbEl.textContent = pct + '%';
+                if (pct >= 95) bbEl.textContent += ' (at upper band)';
+                else if (pct <= 5) bbEl.textContent += ' (at lower band)';
+            }
         })
         .catch(err => { stockStatus.textContent = 'error loading price data'; console.error(err); });
 
@@ -210,7 +295,7 @@
             const lastKpi = data.current_kpi;
             if (lastKpi != null) {
                 const cls = lastKpi > 0 ? 'sentiment-bullish' : (lastKpi < 0 ? 'sentiment-bearish' : '');
-                currentKpiLabel.innerHTML = `Current KPI: <strong class="${cls}">${Number(lastKpi).toFixed(4)}</strong>`;
+                currentKpiLabel.innerHTML = `Current Sentiment KPI: <strong class="${cls}">${Number(lastKpi).toFixed(4)}</strong>`;
             }
 
             const mentionsNorm = norm01(mentions);

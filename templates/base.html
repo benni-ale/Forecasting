@@ -71,7 +71,22 @@
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
             transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
         }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); border-color: #4d4e45; }
+        .card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 14px rgba(102, 217, 239, 0.10);
+            border-color: rgba(102, 217, 239, 0.35);
+        }
+
+        /* Motion: staggered entrance for dynamically rendered cards */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: none; }
+        }
+        .fade-in-up { animation: fadeInUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+        @media (prefers-reduced-motion: reduce) {
+            .fade-in-up { animation: none; }
+            .card, .card:hover { transform: none; transition: none; }
+        }
         .card-header { background-color: var(--mk-bg-header); color: var(--mk-fg); border-bottom: 1px solid var(--mk-border); }
         .card-footer { background-color: var(--mk-bg-header); border-top: 1px solid var(--mk-border); }
 

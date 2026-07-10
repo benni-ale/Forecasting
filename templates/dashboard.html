@@ -148,6 +148,53 @@
         return v > 0 ? 'sentiment-bullish' : (v < 0 ? 'sentiment-bearish' : 'sentiment-neutral');
     }
 
+    // --- Technical badges, computed client-side from the price series already fetched ---
+    function lastSma(closes, window) {
+        const vals = (closes || []).filter(c => c != null);
+        if (vals.length < window) return null;
+        const seg = vals.slice(-window);
+        return seg.reduce((a, b) => a + b, 0) / window;
+    }
+
+    function lastRsi(closes, period = 14) {
+        const vals = (closes || []).filter(c => c != null);
+        if (vals.length <= period) return null;
+        let avgGain = 0, avgLoss = 0;
+        for (let i = 1; i <= period; i++) {
+            const d = vals[i] - vals[i - 1];
+            avgGain += Math.max(d, 0); avgLoss += Math.max(-d, 0);
+        }
+        avgGain /= period; avgLoss /= period;
+        for (let i = period + 1; i < vals.length; i++) {
+            const d = vals[i] - vals[i - 1];
+            avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+            avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
+        }
+        return avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    }
+
+    function taBadges(s) {
+        if (!s || s.error || !(s.closes || []).length) return '';
+        const closes = s.closes;
+        const close = closes[closes.length - 1];
+        const badges = [];
+        const sma50 = lastSma(closes, 50);
+        if (close != null && sma50 != null) {
+            const dist = (close / sma50 - 1) * 100;
+            const cls = dist >= 0 ? 'sentiment-bullish' : 'sentiment-bearish';
+            const arrow = dist >= 0 ? '&#9650;' : '&#9660;';
+            badges.push(`<span class="${cls}" title="Close vs 50-day moving average">${arrow} SMA50 ${dist >= 0 ? '+' : ''}${dist.toFixed(1)}%</span>`);
+        }
+        const rsi = lastRsi(closes);
+        if (rsi != null) {
+            let cls = 'text-muted', note = '';
+            if (rsi >= 70) { cls = 'sentiment-bearish'; note = ' ob'; }
+            else if (rsi <= 30) { cls = 'sentiment-bullish'; note = ' os'; }
+            badges.push(`<span class="${cls}" title="RSI 14 (ob = overbought, os = oversold)">RSI ${rsi.toFixed(0)}${note}</span>`);
+        }
+        return badges.join(' ');
+    }
+
     async function ensureSeries(tickers) {
         const missing = tickers.filter(t => !(t in seriesCache));
         if (missing.length === 0) return;
@@ -237,13 +284,15 @@
         const sentCanvasId = 'sentimentChart' + idx;
 
         const col = document.createElement('div');
-        col.className = 'col-lg-6 col-xl-4 mb-4';
+        col.className = 'col-lg-6 col-xl-4 mb-4 fade-in-up';
+        col.style.animationDelay = (idx * 70) + 'ms';
 
+        const badges = taBadges(s);
         const infoRow = `<div class="px-3 pt-2 d-flex justify-content-between small flex-wrap gap-2">
-            <span>KPI <span class="${kpiClass(row.kpi)}">${fmtKpi(row.kpi)}</span></span>
+            <span>Sentiment KPI <span class="${kpiClass(row.kpi)}">${fmtKpi(row.kpi)}</span></span>
             <span class="text-muted">Mentions <strong>${row.mentions}</strong></span>
             <span class="text-muted">Last seen ${row.last_seen || '-'}</span>
-        </div>`;
+        </div>${badges ? `<div class="px-3 pt-1 small d-flex flex-wrap gap-3">${badges}</div>` : ''}`;
 
         const header = `<div class="card-header py-2 d-flex justify-content-between align-items-center">
             <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${ticker}</span></a>
@@ -324,6 +373,22 @@
             if (el.checked) { activeView = el.value; render(); }
         });
     });
+
+    // Count-up animation on the top stat numbers (respects reduced motion).
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        document.querySelectorAll('.row.g-3 .h4').forEach(el => {
+            const target = parseInt(el.textContent.replace(/[^0-9]/g, ''), 10);
+            if (!Number.isFinite(target) || target <= 0) return;
+            const duration = 900, t0 = performance.now();
+            function tick(now) {
+                const p = Math.min((now - t0) / duration, 1);
+                const eased = 1 - Math.pow(1 - p, 3);  // ease-out cubic
+                el.textContent = Math.round(target * eased).toLocaleString('en-US');
+                if (p < 1) requestAnimationFrame(tick);
+            }
+            requestAnimationFrame(tick);
+        });
+    }
 
     render();
 })();
