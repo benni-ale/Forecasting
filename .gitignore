@@ -43,3 +43,7 @@ output/
 .DS_Store
 Thumbs.db
 
+# DuckDB cold-storage archive (large binary, lives locally / in cloud)
+archive.duckdb
+archive.duckdb.wal
+
