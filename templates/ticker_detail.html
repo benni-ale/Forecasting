@@ -127,6 +127,17 @@
     </div>
 </div>
 
+<div class="card mb-4" id="taReportCard" style="display: none;">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span><i class="bi bi-clipboard-data"></i> Automated technical read</span>
+        <span class="small text-muted">rule-based &middot; not financial advice</span>
+    </div>
+    <div class="card-body py-3">
+        <p class="fw-semibold mb-2" id="taReportHeadline"></p>
+        <ul class="mb-0 small" id="taReportList" style="list-style: none; padding-left: 0;"></ul>
+    </div>
+</div>
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span><i class="bi bi-activity"></i> Sentiment KPI over time ({{ default_kpi_window }}d window, {{ default_kpi_half_life|int }}d half-life)</span>
@@ -261,6 +272,27 @@
                 bbEl.textContent = pct + '%';
                 if (pct >= 95) bbEl.textContent += ' (at upper band)';
                 else if (pct <= 5) bbEl.textContent += ' (at lower band)';
+            }
+
+            // Automated technical read (rule-based report from the API)
+            const report = s.report;
+            if (report && (report.findings || []).length) {
+                const toneIcon = {
+                    bullish: '<i class="bi bi-arrow-up-circle-fill sentiment-bullish"></i>',
+                    bearish: '<i class="bi bi-arrow-down-circle-fill sentiment-bearish"></i>',
+                    warning: '<i class="bi bi-exclamation-triangle-fill" style="color: var(--mk-yellow);"></i>',
+                    neutral: '<i class="bi bi-dash-circle-fill sentiment-neutral"></i>'
+                };
+                document.getElementById('taReportHeadline').textContent = report.headline || '';
+                const list = document.getElementById('taReportList');
+                report.findings.forEach((f, i) => {
+                    const li = document.createElement('li');
+                    li.className = 'd-flex gap-2 align-items-start mb-2 fade-in-up';
+                    li.style.animationDelay = (i * 90) + 'ms';
+                    li.innerHTML = `${toneIcon[f.tone] || toneIcon.neutral} <span>${f.text}</span>`;
+                    list.appendChild(li);
+                });
+                document.getElementById('taReportCard').style.display = '';
             }
         })
         .catch(err => { stockStatus.textContent = 'error loading price data'; console.error(err); });

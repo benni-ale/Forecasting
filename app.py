@@ -856,6 +856,110 @@ def _volatility_20d(closes):
     return (var ** 0.5) * (252 ** 0.5) * 100.0
 
 
+def _technical_report(closes, sma20, sma50, bb_upper, bb_lower, rsi14, snapshot):
+    """Rule-based narrative from the technical indicators.
+
+    Returns a list of {text, tone} findings (tone: bullish/bearish/neutral/warning)
+    plus a one-line headline. Purely deterministic, no LLM involved.
+    """
+    findings = []
+
+    def add(text, tone='neutral'):
+        findings.append({'text': text, 'tone': tone})
+
+    last_close = closes[-1] if closes else None
+    if not last_close:
+        return {'headline': 'Not enough price history for a technical read.', 'findings': []}
+
+    # Price change over 5 and 20 sessions.
+    if len(closes) > 20:
+        chg5 = (last_close / closes[-6] - 1) * 100 if closes[-6] else None
+        chg20 = (last_close / closes[-21] - 1) * 100 if closes[-21] else None
+        if chg5 is not None and chg20 is not None:
+            add(
+                f"Price moved {chg5:+.1f}% over the last 5 sessions and {chg20:+.1f}% over the last 20.",
+                'bullish' if chg20 > 0 else ('bearish' if chg20 < 0 else 'neutral'),
+            )
+
+    # Medium-term momentum vs SMA 50.
+    dist = snapshot.get('dist_sma50_pct')
+    if dist is not None:
+        if dist > 2:
+            add(f"Trading {dist:+.1f}% above its 50-day average: medium-term momentum is positive.", 'bullish')
+        elif dist < -2:
+            add(f"Trading {dist:+.1f}% below its 50-day average: medium-term momentum is negative.", 'bearish')
+        else:
+            add(f"Hovering around its 50-day average ({dist:+.1f}%): no clear medium-term trend.", 'neutral')
+
+    # Trend structure: SMA 20 vs SMA 50, with recent cross detection.
+    if sma20[-1] is not None and sma50[-1] is not None:
+        above = sma20[-1] > sma50[-1]
+        cross = None
+        for i in range(max(1, len(closes) - 5), len(closes)):
+            if sma20[i] is None or sma50[i] is None or sma20[i - 1] is None or sma50[i - 1] is None:
+                continue
+            if sma20[i - 1] <= sma50[i - 1] and sma20[i] > sma50[i]:
+                cross = 'golden'
+            elif sma20[i - 1] >= sma50[i - 1] and sma20[i] < sma50[i]:
+                cross = 'death'
+        if cross == 'golden':
+            add("The 20-day average just crossed above the 50-day one (golden cross), a classic trend-reversal signal to the upside.", 'bullish')
+        elif cross == 'death':
+            add("The 20-day average just crossed below the 50-day one (death cross), a classic trend-reversal signal to the downside.", 'bearish')
+        elif above:
+            add("Short-term average above the medium-term one: the uptrend structure is intact.", 'bullish')
+        else:
+            add("Short-term average below the medium-term one: the downtrend structure is intact.", 'bearish')
+
+    # RSI.
+    rsi = snapshot.get('rsi14')
+    if rsi is not None:
+        if rsi >= 70:
+            add(f"RSI at {rsi:.0f}: overbought territory - the recent run may be stretched.", 'warning')
+        elif rsi <= 30:
+            add(f"RSI at {rsi:.0f}: oversold territory - selling pressure may be exhausting.", 'warning')
+        elif rsi >= 55:
+            add(f"RSI at {rsi:.0f}: buyers are in control, with room before overbought levels.", 'bullish')
+        elif rsi <= 45:
+            add(f"RSI at {rsi:.0f}: sellers are in control, with room before oversold levels.", 'bearish')
+        else:
+            add(f"RSI at {rsi:.0f}: momentum is balanced.", 'neutral')
+
+    # Bollinger position and squeeze.
+    bb_pos = snapshot.get('bb_position')
+    if bb_pos is not None:
+        if bb_pos >= 0.95:
+            add("Price is riding the upper Bollinger band: an unusually strong move relative to recent volatility.", 'warning')
+        elif bb_pos <= 0.05:
+            add("Price is pressing the lower Bollinger band: an unusually weak move relative to recent volatility.", 'warning')
+    widths = [u - l for u, l in zip(bb_upper, bb_lower) if u is not None and l is not None]
+    if len(widths) >= 20 and last_close:
+        avg_width = sum(widths[:-1]) / (len(widths) - 1)
+        if avg_width > 0 and widths[-1] < avg_width * 0.55:
+            add("Bollinger bands are unusually tight (volatility squeeze): historically this precedes a sharp move, direction unknown.", 'warning')
+
+    # Volatility bucket.
+    vol = snapshot.get('volatility_20d_pct')
+    if vol is not None:
+        bucket = 'low' if vol < 20 else ('moderate' if vol < 40 else ('high' if vol < 60 else 'very high'))
+        tone = 'neutral' if vol < 40 else 'warning'
+        add(f"Realized volatility is {bucket} ({vol:.0f}% annualized).", tone)
+
+    # Headline: net bullish vs bearish findings.
+    score = sum(1 for f in findings if f['tone'] == 'bullish') - sum(1 for f in findings if f['tone'] == 'bearish')
+    if score >= 2:
+        headline = 'Technically constructive: trend and momentum point up.'
+    elif score == 1:
+        headline = 'Mildly constructive, with mixed signals.'
+    elif score == -1:
+        headline = 'Mildly negative, with mixed signals.'
+    elif score <= -2:
+        headline = 'Technically weak: trend and momentum point down.'
+    else:
+        headline = 'No clear technical direction: signals are mixed.'
+    return {'headline': headline, 'findings': findings}
+
+
 @app.route('/api/tickers/<ticker>/technicals')
 def api_ticker_technicals(ticker):
     """Public endpoint: daily prices plus technical indicators for one ticker.
@@ -918,6 +1022,7 @@ def api_ticker_technicals(ticker):
             'bb_lower': bb_lower,
             'rsi14': rsi14,
             'snapshot': snapshot,
+            'report': _technical_report(closes, sma20, sma50, bb_upper, bb_lower, rsi14, snapshot),
         })
     except Exception as e:
         logger.error(f"Error computing technicals for {ticker}: {e}", exc_info=True)
