@@ -72,7 +72,7 @@ AUTH_ENABLED = bool(ADMIN_PASSWORD)
 PUBLIC_ENDPOINTS = {
     'public_dashboard', 'api_dashboard_stocks',
     'view_articles', 'api_articles', 'view_article_detail',
-    'public_companies', 'public_ticker_detail', 'api_ticker_sentiment_kpi', 'get_companies',
+    'public_companies', 'public_ticker_detail', 'api_ticker_sentiment_kpi', 'api_ticker_technicals', 'get_companies',
     'about',
     'login', 'logout', 'static',
 }
