@@ -38,25 +38,23 @@ La PDE diventa il sistema di equazioni ordinarie
 Per il sentiment basta un'accortezza: insieme a $R$ si fa evolvere, con lo stesso operatore, il \emph{sentiment pesato} $V = S \cdot R$ (la stessa quantità $s \cdot r$ già usata nel KPI), e si definisce $S_i(t) = V_i(t)/R_i(t)$.
 Così la rilevanza che si sposta da un titolo all'altro porta con sé il proprio tono, invece di gonfiare quello locale.
 
-\begin{proposizione}[Correttezza del modello]
-\label{prop:diffusione}
-Per ogni $R(0) \geq 0$ e $t \geq 0$:
-\begin{enumerate}
-  \item[(i)] la soluzione esiste, è unica e vale $R(t) = e^{-\lambda t} e^{-DtL} R(0)$ (idem per $V$); per $D = 0$ coincide esattamente con il decadimento in produzione ($w = 0{,}5^{\Delta t/h}$, $h = \ln 2/\lambda$);
-  \item[(ii)] la rilevanza totale decade esattamente come nel modello base, $\sum_i R_i(t) = e^{-\lambda t} \sum_i R_i(0)$: la diffusione redistribuisce, non crea né distrugge;
-  \item[(iii)] $R(t) \geq 0$ e il sentiment resta confinato tra i valori osservati, $\min_j S_j(0) \leq S_i(t) \leq \max_j S_j(0)$: la diffusione non può produrre un sentiment più estremo di quello presente nelle notizie;
-  \item[(iv)] l'aggiornamento giornaliero implicito $R_{k+1} = (I + \Delta t(DL + \lambda I))^{-1} R_k$ è stabile per ogni passo $\Delta t$ e preserva le proprietà precedenti.
-\end{enumerate}
-\end{proposizione}
-\begin{proof}
-(i) Il sistema è lineare a coefficienti costanti, quindi ha soluzione unica data dall'esponenziale di matrice, che fattorizza perché $\lambda I$ commuta con $L$; per $D=0$ le equazioni si disaccoppiano in $R_i' = -\lambda R_i$.
-(ii) $L\mathbf{1} = 0$ per costruzione e, per simmetria, $\mathbf{1}^{\top}L = 0$: dunque $\frac{d}{dt} \sum_i R_i = -\lambda \sum_i R_i$.
-(iii) Posto $c = \max_i d_i$, la matrice $cI - L = W + (cI - \operatorname{diag}(d_i))$ ha elementi non negativi e $e^{-DtL} = e^{-Dtc}\, e^{Dt(cI-L)} \geq 0$ (serie di potenze a termini non negativi); allora $R(t) \geq 0$ e
-$S_i(t) = \sum_j P_{ij} R_j(0) S_j(0) \big/ \sum_j P_{ij} R_j(0)$ con $P = e^{-t(DL+\lambda I)} \geq 0$ è una media pesata, con pesi non negativi a somma uno, dei sentiment iniziali.
-(iv) $I + \Delta t(DL + \lambda I)$ ha diagonale strettamente dominante e fuori diagonale non positiva: è una M-matrice, con inversa a elementi non negativi e raggio spettrale dell'iterazione pari al più a $(1 + \lambda \Delta t)^{-1} < 1$.
-\end{proof}
+\paragraph{Perché il modello si comporta bene.}
+Riscritta nodo per nodo, l'equazione diventa
+\[
+\frac{dR_i}{dt} = D \sum_j w_{ij}\,(R_j - R_i) \; - \; \lambda R_i,
+\]
+e in questa forma le sue proprietà si leggono direttamente.
+Il flusso tra due titoli è proporzionale alla \emph{differenza} di rilevanza: ciò che esce da un nodo entra esattamente nel vicino, quindi sommando su tutti i nodi i termini di diffusione si elidono a coppie e resta $\frac{d}{dt}\sum_i R_i = -\lambda \sum_i R_i$.
+La rilevanza complessiva del mercato decade dunque \emph{esattamente come nel modello attuale}: la diffusione redistribuisce, non crea né distrugge.
+Per lo stesso motivo la rilevanza non può diventare negativa: se $R_i$ si avvicina a zero, ogni differenza $R_j - R_i$ è non negativa e il flusso può solo rientrare.
+Essendo il sistema lineare, la soluzione si scrive anche in forma chiusa, $R(t) = e^{-\lambda t}\, e^{-DtL} R(0)$, e per $D = 0$ le equazioni si disaccoppiano riducendosi al decadimento già in produzione ($w = 0{,}5^{\Delta t/h}$ con $h = \ln 2/\lambda$): il sistema attuale è il caso particolare senza diffusione.
 
-In pratica: popolare \texttt{ticker\_cross\_diffused\_sentiment} richiede un passo implicito al giorno sulle coppie $(R, V)$, con la matrice $W$ già disponibile dagli embedding; il caso $D = 0$ della proprietà~(i) è anche il test di validazione naturale, perché la nuova pipeline deve riprodurre esattamente i KPI attuali.
+Quanto al sentiment, poiché $V = S \cdot R$ evolve con lo stesso operatore di $R$, il sentiment di un titolo al tempo $t$ è il rapporto tra due somme costruite con gli stessi coefficienti non negativi---in altre parole, una \emph{media pesata dei sentiment iniziali}, dove il peso di ciascun titolo è la quota di rilevanza che da lì è arrivata.
+E una media pesata non può mai superare il massimo né scendere sotto il minimo dei valori che media: la diffusione non può fabbricare un sentiment più estremo di quello effettivamente osservato nelle notizie.
+È la garanzia che conta per un sistema che genera segnali operativi: nessuna amplificazione spuria.
+
+In pratica, popolare \texttt{ticker\_cross\_diffused\_sentiment} richiede un aggiornamento al giorno di $(R, V)$---la soluzione di un piccolo sistema lineare sparso, stabile per qualunque passo temporale---con la matrice $W$ già disponibile dagli embedding.
+Il caso $D = 0$ fornisce anche il test di validazione naturale: disattivando la diffusione, la nuova pipeline deve riprodurre esattamente i KPI attuali.
 
 \subsection{Benchmark multi-scorer del sentiment}
 

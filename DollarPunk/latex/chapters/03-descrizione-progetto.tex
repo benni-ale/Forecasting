@@ -91,25 +91,15 @@ Nella tabella, il relevance viene attenuato giorno per giorno con $\lambda = 0{,
 \end{tabular}
 \end{center}
 
-L'esempio illustra le proprietà strutturali del modello, che formalizziamo e dimostriamo di seguito.
+L'esempio illustra due proprietà del modello che vale la pena rendere esplicite, perché a prima vista sorprendono.
 
-\begin{proposizione}[Proprietà del modello di decadimento]
-\label{prop:decay}
-Sia $R_{i,d} = R_{i,0}\, e^{-\lambda \Delta t_i}$ con $\lambda > 0$ e $S_{i,d} = S_{i,0}$. Allora:
-\begin{enumerate}
-  \item[(i)] \emph{(unicità)} $R(t) = R_0 e^{-\lambda t}$ è l'unica soluzione di $R' = -\lambda R$ con dato iniziale $R_0$, ed è equivalente alla parametrizzazione in emivita $w = 0{,}5^{\Delta t / h}$ con $h = \ln 2/\lambda$;
-  \item[(ii)] \emph{(confinamento)} per ogni giorno $d$: $\min_i S_{i,0} \leq \text{AvgW}_d \leq \max_i S_{i,0}$;
-  \item[(iii)] \emph{(invarianza)} a insieme di notizie fissato, $\text{AvgW}_d$ è invariante al passare del tempo a meno del riordino relativo dei pesi, mentre la rilevanza totale decade esattamente: $\sum_i R_{i,d+1} = e^{-\lambda} \sum_i R_{i,d}$.
-\end{enumerate}
-\end{proposizione}
-\begin{proof}
-(i) Unicità dalla teoria delle equazioni lineari del primo ordine; $e^{-\lambda t} = 2^{-t/h} \iff \lambda = \ln 2 / h$.
-(ii) $\text{AvgW}_d = \sum_i \alpha_i S_{i,0}$ con $\alpha_i = R_{i,d}/\sum_j R_{j,d} \geq 0$ e $\sum_i \alpha_i = 1$: combinazione convessa dei sentiment osservati.
-(iii) Tra due giorni consecutivi senza nuove notizie ogni peso è moltiplicato per il medesimo fattore $e^{-\lambda}$, che si semplifica tra numeratore e denominatore di $\text{AvgW}$ lasciandola invariata, mentre la somma dei pesi ne risulta contratta esattamente di $e^{-\lambda}$.
-\end{proof}
+La prima: la media ponderata \emph{non decade}.
+Essendo una media dei sentiment osservati con pesi non negativi, $\text{AvgW}_d$ resta sempre compresa tra il sentiment minimo e quello massimo delle notizie attive (qui tra 0.75 e 1.0).
+E finché non arrivano notizie nuove, non cambia affatto: passando da un giorno al successivo ogni peso viene moltiplicato per lo stesso fattore $e^{-\lambda}$, che compare identico al numeratore e al denominatore e quindi si semplifica.
+Il decadimento sposta la media solo \emph{indirettamente}, cambiando i pesi relativi quando arrivano notizie nuove (più pesanti) accanto a quelle vecchie (più leggere).
 
-La conseguenza operativa della Proposizione~\ref{prop:decay} è visibile nella tabella: la media ponderata \emph{non} decade (si sposta solo verso le notizie più recenti quando ne arrivano), mentre a decadere è la rilevanza totale, che cresce al giorno~1 con la news~2 e si dissipa al giorno~2.
-Le due grandezze sono complementari---la media misura la \emph{direzione} del sentiment attivo, la rilevanza totale la sua \emph{intensità}---e un segnale operativo completo le richiede entrambe.
+La seconda: ciò che decade davvero è la \emph{rilevanza totale} $\sum_i R_{i,d}$, che si contrae esattamente di un fattore $e^{-\lambda}$ al giorno e risale solo all'arrivo di nuove notizie---nella tabella cresce al giorno~1 con la news~2 e si dissipa al giorno~2.
+Le due grandezze sono complementari: la media misura la \emph{direzione} del sentiment attivo, la rilevanza totale la sua \emph{intensità}, e un segnale operativo completo le richiede entrambe.
 
 \subsection{Sviluppi futuri: diffusione semantica}
 
