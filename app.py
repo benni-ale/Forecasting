@@ -869,7 +869,7 @@ def _technical_report(closes, sma20, sma50, bb_upper, bb_lower, rsi14, snapshot)
 
     last_close = closes[-1] if closes else None
     if not last_close:
-        return {'headline': 'Not enough price history for a technical read.', 'findings': []}
+        return [], 0
 
     # Price change over 5 and 20 sessions.
     if len(closes) > 20:
@@ -945,8 +945,39 @@ def _technical_report(closes, sma20, sma50, bb_upper, bb_lower, rsi14, snapshot)
         tone = 'neutral' if vol < 40 else 'warning'
         add(f"Realized volatility is {bucket} ({vol:.0f}% annualized).", tone)
 
-    # Headline: net bullish vs bearish findings.
     score = sum(1 for f in findings if f['tone'] == 'bullish') - sum(1 for f in findings if f['tone'] == 'bearish')
+    return findings, score
+
+
+def _cross_signal_finding(ticker, tech_score):
+    """Compare the news sentiment KPI with the technical stance.
+
+    The alignment/divergence between the two independent signals is the core
+    research question of the project; surfacing it in the report makes it
+    observable per ticker. Returns a finding dict or None.
+    """
+    try:
+        series = _compute_ticker_kpi_series(ticker)
+        kpi = next((p['kpi'] for p in reversed(series) if p['kpi'] is not None), None)
+    except Exception:
+        return None
+    if kpi is None:
+        return None
+    sent_up, sent_down = kpi > 0.15, kpi < -0.15
+    tech_up, tech_down = tech_score >= 1, tech_score <= -1
+    if sent_up and tech_up:
+        return {'text': f"News sentiment (KPI {kpi:+.2f}) and price action agree: both point up. Aligned signals.", 'tone': 'bullish'}
+    if sent_down and tech_down:
+        return {'text': f"News sentiment (KPI {kpi:+.2f}) and price action agree: both point down. Aligned signals.", 'tone': 'bearish'}
+    if sent_up and tech_down:
+        return {'text': f"Divergence: news sentiment is bullish (KPI {kpi:+.2f}) but the price action is weak. Either the market hasn't priced the news in, or the coverage is over-optimistic.", 'tone': 'warning'}
+    if sent_down and tech_up:
+        return {'text': f"Divergence: news sentiment is bearish (KPI {kpi:+.2f}) but the price action is strong. The rally is running against the news flow.", 'tone': 'warning'}
+    return {'text': f"News sentiment is close to neutral (KPI {kpi:+.2f}): the technical picture is the dominant signal right now.", 'tone': 'neutral'}
+
+
+def _finish_technical_report(findings, score):
+    # Headline: net bullish vs bearish findings.
     if score >= 2:
         headline = 'Technically constructive: trend and momentum point up.'
     elif score == 1:
@@ -1011,6 +1042,12 @@ def api_ticker_technicals(ticker):
             if band_width > 0:
                 snapshot['bb_position'] = round((last_close - bb_lower[-1]) / band_width, 2)
 
+        findings, tech_score = _technical_report(closes, sma20, sma50, bb_upper, bb_lower, rsi14, snapshot)
+        cross = _cross_signal_finding(ticker, tech_score)
+        if cross:
+            findings.insert(0, cross)
+        report = _finish_technical_report(findings, tech_score)
+
         return jsonify({
             'ticker': ticker,
             'dates': dates,
@@ -1022,7 +1059,7 @@ def api_ticker_technicals(ticker):
             'bb_lower': bb_lower,
             'rsi14': rsi14,
             'snapshot': snapshot,
-            'report': _technical_report(closes, sma20, sma50, bb_upper, bb_lower, rsi14, snapshot),
+            'report': report,
         })
     except Exception as e:
         logger.error(f"Error computing technicals for {ticker}: {e}", exc_info=True)

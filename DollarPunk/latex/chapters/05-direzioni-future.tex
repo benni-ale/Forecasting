@@ -42,9 +42,22 @@ Con l'introduzione degli indicatori tecnici (Capitolo~\ref{ch:stato-implementazi
 La domanda di ricerca naturale è se il sentiment abbia \emph{valore predittivo incrementale} rispetto ai segnali tecnici: un segnale di sentiment bullish su un titolo già in momentum positivo è ridondante, o i due segnali si rafforzano?
 E, specularmente, le divergenze (sentiment bullish su titolo tecnicamente ipercomprato, o viceversa) anticipano inversioni?
 
-La letteratura classica documenta il potere predittivo delle regole tecniche semplici \parencite{brock1992simple}; gli studi su LSTM citati nel Capitolo~\ref{ch:descrizione-progetto} combinano già prezzo, indicatori e sentiment come feature congiunte.
-Il contributo qui proposto è più interpretabile: una regressione dei rendimenti futuri su sentiment, segnale tecnico e loro interazione, per quantificare separatamente i tre effetti prima di delegarli a un modello black-box.
-Il prototipo dispone già di tutti gli ingredienti (KPI giornaliero, indicatori, prezzi persistiti), rendendo questa direzione a costo sperimentale quasi nullo.
+La letteratura offre un precedente diretto: \textcite{neely2014forecasting} mostrano che gli indicatori tecnici prevedono il premio al rischio azionario con potere comparabile alle variabili macroeconomiche, e soprattutto che i due insiemi di predittori catturano \emph{informazione complementare}---usati insieme, migliorano la previsione più di quanto faccia ciascuno da solo.
+La domanda proposta replica questo disegno sostituendo alle variabili macro il sentiment testuale: regressioni dei rendimenti futuri su sentiment, segnale tecnico e loro interazione, per quantificare separatamente i tre effetti prima di delegarli a un modello black-box \parencite{brock1992simple}.
+Il prototipo dispone già di tutti gli ingredienti (KPI giornaliero, indicatori, prezzi persistiti) e il report automatico descritto nel Capitolo~\ref{ch:stato-implementazione} già classifica ogni titolo come \emph{allineato} o \emph{divergente}: le etichette così generate costituiscono le celle del disegno sperimentale, rendendo questa direzione a costo quasi nullo.
+
+\subsection{Notizie programmate e non programmate}
+
+Un affinamento della relazione sentiment--prezzo, reso possibile dallo storico pluriennale del cold store, riguarda la natura degli eventi informativi.
+\textcite{boudoukh2019information} mostrano che, una volta identificate e classificate le notizie firm-specific, la frazione di volatilità spiegata dall'informazione pubblica cresce sensibilmente, e che l'impatto differisce tra eventi \emph{programmati} (earnings, guidance) e \emph{non programmati} (M\&A, azioni legali, downgrade).
+La pipeline del prototipo già classifica gli articoli per topic (inclusi \texttt{earnings} e \texttt{mergers\_and\_acquisitions}): separare il KPI di sentiment nei due regimi permetterebbe di verificare se il decay informativo---l'emivita $h$---differisca sistematicamente tra notizie attese dal mercato e sorprese, un'ipotesi che raffina la stima empirica del parametro di decay proposta sopra.
+
+\subsection{Foundation model per serie temporali}
+
+La proposta originaria individua nell'LSTM il modello predittivo di riferimento (Capitolo~\ref{ch:descrizione-progetto}).
+Dal 2024 il paradigma sta però cambiando: modelli fondazionali pre-addestrati su grandi corpora di serie temporali eterogenee---Chronos \parencite{ansari2024chronos}, che tokenizza le serie e le tratta come linguaggio, e TimesFM \parencite{das2024timesfm}, un decoder-only addestrato su cento miliardi di punti temporali reali---raggiungono in zero-shot prestazioni comparabili ai modelli supervisionati addestrati sul singolo dataset.
+Per il progetto questo suggerisce una revisione a basso costo del piano: usare un foundation model come baseline zero-shot sulla previsione dei rendimenti, e verificare se il condizionamento sul sentiment (come covariata o tramite fine-tuning leggero) apporti valore incrementale.
+Il confronto ``LSTM addestrato da zero vs.\ foundation model condizionato sul sentiment'' è a sua volta una domanda di ricerca attuale, resa possibile dallo storico dell'archivio.
 
 \subsection{Protocollo di backtesting metodologicamente rigoroso}
 

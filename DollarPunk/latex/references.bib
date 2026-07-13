@@ -2,6 +2,39 @@
 % Riferimenti storici e fondativi
 % =====================================================================
 
+@article{baker2007investor,
+  author    = {Baker, Malcolm and Wurgler, Jeffrey},
+  title     = {Investor Sentiment in the Stock Market},
+  journal   = {Journal of Economic Perspectives},
+  volume    = {21},
+  number    = {2},
+  pages     = {129--152},
+  year      = {2007},
+  doi       = {10.1257/jep.21.2.129}
+}
+
+@article{loughran2011liability,
+  author    = {Loughran, Tim and McDonald, Bill},
+  title     = {When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks},
+  journal   = {The Journal of Finance},
+  volume    = {66},
+  number    = {1},
+  pages     = {35--65},
+  year      = {2011},
+  doi       = {10.1111/j.1540-6261.2010.01625.x}
+}
+
+@article{bollen2011twitter,
+  author    = {Bollen, Johan and Mao, Huina and Zeng, Xiaojun},
+  title     = {Twitter Mood Predicts the Stock Market},
+  journal   = {Journal of Computational Science},
+  volume    = {2},
+  number    = {1},
+  pages     = {1--8},
+  year      = {2011},
+  doi       = {10.1016/j.jocs.2010.12.007}
+}
+
 @article{tetlock2007giving,
   author    = {Paul C. Tetlock},
   title     = {Giving Content to Investor Sentiment: The Role of Media in the Stock Market},
@@ -37,11 +70,13 @@
 % Transformer e modelli specializzati
 % =====================================================================
 
-@article{devlin2018bert,
-  title        = {BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding},
-  author       = {Devlin, Jacob and Chang, Ming-Wei and Lee, Kenton and Toutanova, Kristina},
-  journal      = {arXiv preprint arXiv:1810.04805},
-  year         = {2018}
+@inproceedings{devlin2018bert,
+  title     = {{BERT}: Pre-training of Deep Bidirectional Transformers for Language Understanding},
+  author    = {Devlin, Jacob and Chang, Ming-Wei and Lee, Kenton and Toutanova, Kristina},
+  booktitle = {Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (NAACL-HLT)},
+  pages     = {4171--4186},
+  year      = {2019},
+  doi       = {10.18653/v1/N19-1423}
 }
 
 @misc{araci2019finbert,
@@ -91,14 +126,13 @@
 % LLM generici e finanziari
 % =====================================================================
 
-@misc{lopezlira2024chatgptforecaststockprice,
-  title         = {Can ChatGPT Forecast Stock Price Movements? Return Predictability and Large Language Models},
-  author        = {Alejandro Lopez-Lira and Yuehua Tang},
-  year          = {2024},
-  eprint        = {2304.07619},
-  archivePrefix = {arXiv},
-  primaryClass  = {q-fin.ST},
-  url           = {https://arxiv.org/abs/2304.07619}
+@article{lopezlira2024chatgptforecaststockprice,
+  title   = {Can {ChatGPT} Forecast Stock Price Movements? Return Predictability and Large Language Models},
+  author  = {Lopez-Lira, Alejandro and Tang, Yuehua},
+  journal = {Journal of Financial Economics},
+  year    = {2025},
+  note    = {Forthcoming. Preprint: arXiv:2304.07619},
+  url     = {https://arxiv.org/abs/2304.07619}
 }
 
 @misc{wu2023bloomberggptlargelanguagemodel,
@@ -137,35 +171,28 @@
 % Instruction tuning, preference optimization, benchmark (2023-2025)
 % =====================================================================
 
-@misc{xie2023pixiu,
-  title         = {PIXIU: A Large Language Model, Instruction Data and Evaluation Benchmark for Finance},
-  author        = {Qianqian Xie and Weiguang Han and Xiao Zhang and Yanzhao Lai and Min Peng and Alejandro Lopez-Lira and Jimin Huang},
-  year          = {2023},
-  eprint        = {2306.05443},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CL},
-  url           = {https://arxiv.org/abs/2306.05443}
+@inproceedings{xie2023pixiu,
+  title     = {{PIXIU}: A Comprehensive Benchmark, Instruction Dataset and Large Language Model for Finance},
+  author    = {Qianqian Xie and Weiguang Han and Xiao Zhang and Yanzhao Lai and Min Peng and Alejandro Lopez-Lira and Jimin Huang},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS 2023), Datasets and Benchmarks Track},
+  year      = {2023},
+  url       = {https://proceedings.neurips.cc/paper_files/paper/2023/hash/6a386d703b50f1cf1f61ab02a15967bb-Abstract-Datasets_and_Benchmarks.html}
 }
 
-@misc{xie2024finben,
-  title         = {FinBen: A Holistic Financial Benchmark for Large Language Models},
-  author        = {Qianqian Xie and Weiguang Han and Zhengyu Chen and Ruoyu Xiang and Xiao Zhang and Yueru He and others},
-  year          = {2024},
-  eprint        = {2402.12659},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CL},
-  note          = {NeurIPS 2024, Datasets and Benchmarks Track},
-  url           = {https://arxiv.org/abs/2402.12659}
+@inproceedings{xie2024finben,
+  title     = {{FinBen}: A Holistic Financial Benchmark for Large Language Models},
+  author    = {Qianqian Xie and Weiguang Han and Zhengyu Chen and Ruoyu Xiang and Xiao Zhang and Yueru He and others},
+  booktitle = {Advances in Neural Information Processing Systems 37 (NeurIPS 2024), Datasets and Benchmarks Track},
+  year      = {2024},
+  url       = {https://arxiv.org/abs/2402.12659}
 }
 
-@misc{iacovides2025findpo,
-  title         = {FinDPO: Financial Sentiment Analysis for Algorithmic Trading through Preference Optimization of LLMs},
-  author        = {Giorgos Iacovides and Wuyang Zhou and Danilo Mandic},
-  year          = {2025},
-  eprint        = {2507.18417},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CL},
-  url           = {https://arxiv.org/abs/2507.18417}
+@inproceedings{iacovides2025findpo,
+  title     = {{FinDPO}: Financial Sentiment Analysis for Algorithmic Trading through Preference Optimization of {LLMs}},
+  author    = {Giorgos Iacovides and Wuyang Zhou and Danilo Mandic},
+  booktitle = {Proceedings of the 6th ACM International Conference on AI in Finance (ICAIF)},
+  year      = {2025},
+  doi       = {10.1145/3768292.3770367}
 }
 
 % =====================================================================
@@ -182,14 +209,12 @@
   url           = {https://arxiv.org/abs/2412.20138}
 }
 
-@misc{li2025finsaber,
-  title         = {Can LLM-based Financial Investing Strategies Outperform the Market in Long Run?},
-  author        = {Weixian Waylon Li and Hyeonjun Kim and Mihai Cucuringu and Tiejun Ma},
-  year          = {2025},
-  eprint        = {2505.07078},
-  archivePrefix = {arXiv},
-  primaryClass  = {q-fin.TR},
-  url           = {https://arxiv.org/abs/2505.07078}
+@inproceedings{li2025finsaber,
+  title     = {Can {LLM}-based Financial Investing Strategies Outperform the Market in Long Run?},
+  author    = {Weixian Waylon Li and Hyeonjun Kim and Mihai Cucuringu and Tiejun Ma},
+  booktitle = {Proceedings of the 32nd ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD)},
+  year      = {2026},
+  doi       = {10.1145/3770854.3785702}
 }
 
 % =====================================================================
@@ -270,13 +295,26 @@
   doi     = {10.14569/IJACSA.2024.0151223}
 }
 
-@misc{chaudhary2025lstm,
-  title         = {Advanced Stock Market Prediction Using Long Short-Term Memory Networks: A Comprehensive Deep Learning Framework},
-  author        = {Chaudhary, Rajneesh},
-  year          = {2025},
-  eprint        = {2505.05325},
-  archivePrefix = {arXiv},
-  url           = {https://arxiv.org/abs/2505.05325}
+@article{fischer2018deep,
+  author  = {Fischer, Thomas and Krauss, Christopher},
+  title   = {Deep Learning with Long Short-Term Memory Networks for Financial Market Predictions},
+  journal = {European Journal of Operational Research},
+  volume  = {270},
+  number  = {2},
+  pages   = {654--669},
+  year    = {2018},
+  doi     = {10.1016/j.ejor.2017.11.054}
+}
+
+@article{boudoukh2019information,
+  author  = {Boudoukh, Jacob and Feldman, Ronen and Kogan, Shimon and Richardson, Matthew},
+  title   = {Information, Trading, and Volatility: Evidence from Firm-Specific News},
+  journal = {The Review of Financial Studies},
+  volume  = {32},
+  number  = {3},
+  pages   = {992--1033},
+  year    = {2019},
+  doi     = {10.1093/rfs/hhy083}
 }
 
 % =====================================================================
@@ -308,6 +346,26 @@
 }
 
 % =====================================================================
+% Foundation model per serie temporali (nuove direzioni)
+% =====================================================================
+
+@article{ansari2024chronos,
+  title   = {Chronos: Learning the Language of Time Series},
+  author  = {Ansari, Abdul Fatir and Stella, Lorenzo and Turkmen, Caner and Zhang, Xiyuan and Mercado, Pedro and Shen, Huibin and others},
+  journal = {Transactions on Machine Learning Research (TMLR)},
+  year    = {2024},
+  url     = {https://openreview.net/forum?id=gerNCVqqtR}
+}
+
+@inproceedings{das2024timesfm,
+  title     = {A Decoder-Only Foundation Model for Time-Series Forecasting},
+  author    = {Das, Abhimanyu and Kong, Weihao and Sen, Rajat and Zhou, Yichen},
+  booktitle = {Proceedings of the 41st International Conference on Machine Learning (ICML)},
+  year      = {2024},
+  url       = {https://proceedings.mlr.press/v235/das24c.html}
+}
+
+% =====================================================================
 % Analisi tecnica (indicatori classici)
 % =====================================================================
 
@@ -326,6 +384,28 @@
   year      = {2001},
   publisher = {McGraw-Hill},
   address   = {New York}
+}
+
+@article{lo2000foundations,
+  title     = {Foundations of Technical Analysis: Computational Algorithms, Statistical Inference, and Empirical Implementation},
+  author    = {Lo, Andrew W. and Mamaysky, Harry and Wang, Jiang},
+  journal   = {The Journal of Finance},
+  volume    = {55},
+  number    = {4},
+  pages     = {1705--1765},
+  year      = {2000},
+  doi       = {10.1111/0022-1082.00265}
+}
+
+@article{neely2014forecasting,
+  title     = {Forecasting the Equity Risk Premium: The Role of Technical Indicators},
+  author    = {Neely, Christopher J. and Rapach, David E. and Tu, Jun and Zhou, Guofu},
+  journal   = {Management Science},
+  volume    = {60},
+  number    = {7},
+  pages     = {1772--1791},
+  year      = {2014},
+  doi       = {10.1287/mnsc.2013.1838}
 }
 
 @article{brock1992simple,

@@ -1,17 +1,16 @@
 \chapter{Stato dell'arte}
 \label{ch:stato-dell-arte}
 
-Uno degli studi pionieristici della \textit{sentiment analysis} è quello di \textcite{tetlock2007giving}.
-In particolare, Tetlock ha quantificato il ``pessimismo'' degli articoli del \textit{Wall Street Journal} e ha rilevato che livelli elevati di tono negativo nella stampa anticipano pressioni al ribasso sui prezzi azionari, seguite da un ritorno ai fondamentali di mercato.
-Questo risultato ha fornito evidenza empirica che il sentiment estratto dai testi---ad esempio il tono pessimista o ottimista delle notizie---può influenzare il comportamento di mercato.
+Il ruolo del sentiment degli investitori nei mercati è stato formalizzato da \textcite{baker2007investor}, che ne hanno mostrato l'effetto sistematico sui rendimenti trasversali, in particolare sui titoli difficili da valutare e da arbitraggiare.
+Sul fronte testuale, lo studio pionieristico è quello di \textcite{tetlock2007giving}: quantificando il ``pessimismo'' degli articoli del \textit{Wall Street Journal}, Tetlock ha rilevato che livelli elevati di tono negativo nella stampa anticipano pressioni al ribasso sui prezzi azionari, seguite da un ritorno ai fondamentali.
+La generazione successiva di lavori lessicali ha mostrato l'importanza della specializzazione di dominio: \textcite{loughran2011liability} dimostrano che i dizionari generici classificano erroneamente come negativo quasi i tre quarti delle parole ``negative'' nei documenti finanziari (es.\ \textit{liability}, \textit{cost}), introducendo il lessico finanziario che porta il loro nome e che resta un riferimento standard.
+Questi risultati hanno fornito l'evidenza empirica di base: il tono dei testi finanziari contiene informazione sui movimenti di mercato, purché estratto con strumenti adeguati al dominio.
 
 \section{Social media e sentiment degli investitori}
 
-Con la diffusione dei social media e delle piattaforme online negli anni 2010, le fonti di dati sul sentiment si sono ampliate.
-Gli investitori, in particolare quelli retail, hanno iniziato a esprimere opinioni su forum finanziari, Twitter e blog, generando un flusso di testo ricco di informazioni sul sentiment di mercato in tempo reale.
-
-La letteratura di questo periodo ha analizzato in che misura il sentiment influenzi i rendimenti azionari, spesso in tensione con la teoria finanziaria tradizionale, che tende a escludere fattori emotivi.
-\textcite{mcgurk2020stock} illustrano chiaramente questo cambio di paradigma: analizzando i post sui social media, gli autori costruiscono una misura quantitativa del sentiment degli investitori e rilevano un effetto positivo e significativo sui rendimenti anomali delle azioni.
+Con la diffusione dei social media negli anni 2010, le fonti di dati sul sentiment si sono ampliate: gli investitori retail hanno iniziato a esprimere opinioni su forum finanziari, Twitter e blog, generando un flusso testuale in tempo reale.
+Il lavoro che ha catalizzato l'interesse del settore è quello di \textcite{bollen2011twitter}, secondo cui specifiche dimensioni dell'umore collettivo estratte da Twitter anticipano le variazioni del Dow Jones.
+In seguito \textcite{mcgurk2020stock}, costruendo una misura quantitativa del sentiment degli investitori dai post social, rilevano un effetto positivo e significativo sui rendimenti anomali---in tensione con la teoria finanziaria tradizionale, che tende a escludere i fattori emotivi.
 
 Un caso emblematico che ha catalizzato l'interesse sull'analisi del sentiment è la pandemia di COVID-19.
 \textcite{duan2021covid}, tra gli altri, sviluppano indici di sentiment legati al COVID-19 utilizzando milioni di testi provenienti sia dai media ufficiali sia dai social in Cina.
@@ -32,7 +31,7 @@ Infine, l'emergere di benchmark specifici (es.\ FiQA, Financial PhraseBank) ha s
 \section{Modelli di linguaggio generali vs.\ specifici in finanza}
 
 Nel 2022--2023, l'attenzione si è spostata sui LLM generici come ChatGPT (GPT-3.5/4), capaci di interpretare testi finanziari nonostante l'assenza di addestramento settoriale.
-\textcite{lopezlira2024chatgptforecaststockprice} mostrano che ChatGPT può prevedere la direzione dei prezzi azionari basandosi sui titoli delle notizie.
+\textcite{lopezlira2024chatgptforecaststockprice}---in pubblicazione sul \textit{Journal of Financial Economics}---mostrano che GPT-4 può prevedere la direzione dei prezzi azionari dai soli titoli delle notizie, con capacità che cresce con la dimensione del modello e rendimenti della strategia che si riducono man mano che l'adozione dei LLM aumenta, coerentemente con un miglioramento dell'efficienza dei prezzi.
 Anche in modalità zero-shot, modelli come GPT-3.5/4 riescono a svolgere sentiment analysis su documenti finanziari, pur con limiti su contesti specialistici o eventi recenti \parencite{bdcc8110143}.
 
 Questi risultati hanno spinto verso LLM specializzati.

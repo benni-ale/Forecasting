@@ -5,6 +5,10 @@ set ROOT=%~dp0latex
 cd /d "%ROOT%"
 if not exist build mkdir build
 
+rem Rimuove artefatti stale nella root: pdflatex li preferirebbe a quelli in build/
+rem causando citazioni/riferimenti irrisolti (main.bbl vecchio letto al posto del nuovo).
+del /q main.aux main.bbl main.bcf main.blg main.out main.toc main.run.xml main.log main.synctex.gz 2>nul
+
 echo [1/4] pdflatex...
 "%BIN%\pdflatex.exe" -interaction=nonstopmode -output-directory=build main.tex
 if errorlevel 1 goto :error

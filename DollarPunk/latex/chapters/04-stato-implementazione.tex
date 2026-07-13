@@ -147,6 +147,7 @@ Questa matrice misura affinità tra profili aziendali, non tra articoli di news,
 
 Accanto al KPI di sentiment, il prototipo calcola un insieme di indicatori tecnici classici a partire dalle chiusure giornaliere già persistite in \texttt{stock\_prices}, senza chiamate API aggiuntive.
 L'obiettivo è affiancare al segnale informativo (``cosa dicono le notizie'') un segnale di prezzo (``cosa sta facendo il titolo''), abilitando la lettura congiunta dei due.
+Benché l'analisi tecnica sia storicamente controversa, la sua fondazione statistica è stata riabilitata in letteratura: \textcite{lo2000foundations} mostrano su dati di decenni che i pattern tecnici contengono informazione incrementale, e \textcite{neely2014forecasting} che gli indicatori tecnici prevedono il premio al rischio azionario con potere comparabile---e complementare---alle variabili macroeconomiche.
 
 \begin{itemize}
   \item \textbf{Medie mobili semplici} a 20 e 50 giorni, con la distanza percentuale del prezzo dalla SMA~50 come indicatore sintetico di momentum;
@@ -156,6 +157,9 @@ L'obiettivo è affiancare al segnale informativo (``cosa dicono le notizie'') un
 \end{itemize}
 
 Gli indicatori sono esposti da un endpoint dedicato (\texttt{/api/tickers/<ticker>/technicals}) e visualizzati in due punti dell'interfaccia: nella pagina di dettaglio del ticker, come overlay attivabili sul grafico prezzo--volume con uno snapshot dei valori correnti, e nella dashboard pubblica, come badge sintetici (direzione rispetto alla SMA~50, RSI) accanto al KPI di sentiment di ciascun titolo in classifica.
+
+Sopra questi valori è costruito un \textbf{report tecnico automatico}: un generatore deterministico a regole che traduce gli indicatori in una lettura testuale (momentum, incroci di medie mobili, condizioni di ipercomprato/ipervenduto, \textit{squeeze} di volatilità) e la conclude con un confronto esplicito tra la direzione tecnica e il KPI di sentiment corrente, segnalando l'\emph{allineamento} o la \emph{divergenza} dei due segnali.
+La rilevazione automatica delle divergenze (notizie bullish su un titolo tecnicamente debole, o viceversa) rende osservabile per ogni titolo, in tempo reale, il fenomeno al centro della domanda di ricerca del Capitolo~\ref{ch:direzioni-future}.
 
 La co-presenza dei due segnali sulla stessa vista non è solo una scelta di interfaccia: prepara la domanda di ricerca sull'\emph{interazione} tra sentiment e segnali tecnici discussa nel Capitolo~\ref{ch:direzioni-future}, in linea con la letteratura che documenta il valore predittivo congiunto di regole tecniche e variabili informative \parencite{brock1992simple}.
 

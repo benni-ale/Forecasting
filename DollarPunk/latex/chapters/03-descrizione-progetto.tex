@@ -113,21 +113,9 @@ Strumenti come FAISS e LangChain abilitano una pipeline scalabile e flessibile, 
 
 \subsection{Sintesi}
 
-Disponendo di un dataset etichettato (sentiment per ticker), si possono seguire varie strategie:
-
-\begin{itemize}
-  \item \textbf{Fine tuning di FinBERT:} usando GPU (es.\ RunPod), si perfeziona FinBERT affinché generi direttamente JSON con sentiment score per ticker, sfruttando l'apprendimento supervisionato.
-  \item \textbf{Fine tuning di LLM open-source generici:} modelli come Mixtral o FinGPT si adattano tramite dataset etichettati, richiedendo anch'essi GPU performanti.
-  \item \textbf{Approccio RAG:} se le risorse GPU sono limitate, si indicizza il dataset e si usa un LLM con retrieval (es.\ GPT-4, Mixtral) per generare JSON dal contesto recuperato, evitando il fine-tuning \parencite{lewis2020retrieval}.
-\end{itemize}
-
-Se non è disponibile un dataset già annotato:
-
-\begin{itemize}
-  \item \textbf{Modello di base con FinBERT:} applicazione zero-shot su frasi per generare sentiment iniziale.
-  \item \textbf{GPT-4 via API:} può produrre JSON strutturati, ma su larga scala può risultare costoso.
-  \item \textbf{Costruzione manuale del dataset:} annotazione manuale di esempi, utile per successivo fine-tuning anche con risorse limitate.
-\end{itemize}
+La scelta operativa dipende da due risorse: il dataset etichettato e la capacità di calcolo.
+Con un dataset a livello di ticker disponibile---condizione oggi soddisfatta dall'archivio descritto nel Capitolo~\ref{ch:stato-implementazione}---la via maestra è il fine-tuning supervisionato (FinBERT o LLM open-weight) su GPU cloud; in alternativa, un approccio RAG \parencite{lewis2020retrieval} evita l'addestramento indicizzando il corpus e delegando lo scoring a un LLM con retrieval.
+In assenza di dataset, restano lo zero-shot (FinBERT o GPT-4 via API, quest'ultimo costoso su larga scala) e l'annotazione manuale o LLM-assistita di un corpus iniziale.
 
 \section{Decay temporale (solo sul relevance)}
 
@@ -280,7 +268,7 @@ Se i risultati suggeriscono robustezza, la fase successiva---con modelli preditt
 \subsection{Integrazione con modelli LSTM}
 
 Un passo successivo consiste nel costruire un modello predittivo che utilizzi congiuntamente dati di prezzo, volumi, indicatori tecnici e sentiment.
-Diversi studi \parencite{ouf2024lstm, chaudhary2025lstm, gu2024finbert} mostrano che combinare questi segnali in un LSTM migliora la capacità di previsione rispetto all'uso esclusivo dei prezzi.
+Le reti LSTM sono uno standard consolidato per la previsione finanziaria \parencite{fischer2018deep}, e diversi studi \parencite{ouf2024lstm, gu2024finbert} mostrano che combinare segnali testuali e di prezzo in un LSTM migliora la capacità di previsione rispetto all'uso esclusivo dei prezzi.
 
 Un LSTM (\textit{Long Short-Term Memory}) è una rete neurale adatta all'analisi di serie temporali.
 Per prevedere il valore in un giorno $t$, il modello osserva una finestra di dati dei giorni precedenti (es.\ gli ultimi 5 giorni), includendo prezzo, volume e sentiment.
