@@ -11,101 +11,38 @@ Nel prototipo l'emivita del relevance score è configurabile (default: 7 giorni)
 Una prima domanda a basso costo sperimentale è la stima ottimale di $h$, selezionando il valore che massimizza la correlazione ritardata tra KPI di sentiment e rendimenti successivi, per titolo o settore.
 L'ipotesi verificabile è che l'emivita informativa non sia costante, ma vari con capitalizzazione, copertura mediatica e regime di mercato---un risultato autonomo rispetto al decay fisso dei provider commerciali.
 
-\subsection{Diffusione su grafo: modello discreto e garanzie di correttezza}
+\subsection{Diffusione semantica su grafo}
 \label{sec:soluzione-discreta}
 
-La formulazione a derivate parziali della diffusione semantica (Capitolo~\ref{ch:descrizione-progetto}) diventa operativa nella sua approssimazione discreta su grafo, di cui il prototipo possiede già l'ingrediente chiave: la matrice di similarità tra profili aziendali.
-Rispetto alla letteratura su sentiment spillover e graph neural network (Capitolo~\ref{ch:stato-dell-arte}), il vantaggio distintivo è l'interpretabilità---$D$ e $\lambda$ sono parametri fisicamente leggibili, a differenza dei pesi appresi da una GNN---e il confronto sistematico tra diffusione interpretabile e baseline GNN costituirebbe il contributo scientifico centrale del progetto.
-Questa sezione formula il modello discreto completo, incluso il trasporto del sentiment la cui necessità è discussa nel Capitolo~\ref{ch:descrizione-progetto}, e ne dimostra le proprietà di correttezza.
-
-\paragraph{Modello.}
-Sia $G$ un grafo non orientato su $n$ nodi (i ticker), con matrice dei pesi $W \in \mathbb{R}^{n \times n}$ simmetrica, a elementi non negativi e diagonale nulla (similarità coseno tra embedding, sogliata per sparsificare).
-Siano $d_i = \sum_j w_{ij}$ i gradi, $D_g = \operatorname{diag}(d_1, \dots, d_n)$ e $L = D_g - W$ il Laplaciano combinatorio.
-Lo stato è la coppia $(R(t), m(t))$, dove $R_i$ è la rilevanza attiva sul nodo $i$ e $m_i$ la sua \emph{massa di sentiment}, inizializzata come $m_i(0) = S_i(0)\, R_i(0)$; entrambe evolvono con lo stesso operatore:
+L'idea del Capitolo~\ref{ch:descrizione-progetto}---una rilevanza che decade nel tempo e si propaga tra titoli affini---si formalizza su un grafo di similarità: i nodi sono gli $n$ ticker, i pesi $w_{ij} \geq 0$ la similarità coseno tra gli embedding aziendali (sogliata, con $W$ simmetrica), $d_i = \sum_j w_{ij}$ i gradi e $L = \operatorname{diag}(d_i) - W$ il Laplaciano del grafo.
+La rilevanza $R(t) \in \mathbb{R}^n$ evolve secondo
 \[
 \frac{dR}{dt} = -(D\,L + \lambda I)\, R,
-\qquad
-\frac{dm}{dt} = -(D\,L + \lambda I)\, m,
-\qquad
-S_i(t) := \frac{m_i(t)}{R_i(t)} \quad (R_i(t) > 0),
 \]
-con $D \geq 0$ coefficiente di diffusione e $\lambda > 0$ tasso di decadimento: la rilevanza in movimento trasporta il proprio tono.
+dove $\lambda > 0$ è il tasso di decadimento già in uso e $D \geq 0$ regola quanta rilevanza fluisce verso i titoli vicini.
+Per il sentiment basta una accortezza: insieme a $R$ si fa evolvere, con lo stesso operatore, il \emph{sentiment pesato} $V = S \cdot R$ (la stessa quantità $s \cdot r$ già usata nel KPI), e si definisce $S_i(t) = V_i(t)/R_i(t)$.
+Così la rilevanza che si sposta da un titolo all'altro porta con sé il proprio tono, invece di gonfiare quello locale.
+Rispetto a una GNN, i due parametri $D$ e $\lambda$ restano fisicamente leggibili: il confronto tra questa diffusione interpretabile e un baseline appreso costituirebbe il contributo scientifico centrale del progetto.
 
-\begin{proposizione}[Esistenza, unicità e forma chiusa]
-\label{prop:esistenza}
-Il sistema ammette un'unica soluzione,
-\[
-R(t) = e^{-\lambda t}\, e^{-D t L}\, R(0),
-\qquad
-m(t) = e^{-\lambda t}\, e^{-D t L}\, m(0);
-\]
-se $L = U \Lambda U^{\top}$ è la decomposizione spettrale, $e^{-DtL} = U e^{-Dt\Lambda} U^{\top}$.
+\begin{proposizione}[Correttezza del modello]
+\label{prop:diffusione}
+Per ogni $R(0) \geq 0$ e $t \geq 0$:
+\begin{enumerate}
+  \item[(i)] la soluzione esiste, è unica e vale $R(t) = e^{-\lambda t} e^{-DtL} R(0)$ (idem per $V$); per $D = 0$ coincide esattamente con il decadimento in produzione ($w = 0{,}5^{\Delta t/h}$, $h = \ln 2/\lambda$);
+  \item[(ii)] la rilevanza totale decade esattamente come nel modello base, $\sum_i R_i(t) = e^{-\lambda t} \sum_i R_i(0)$: la diffusione redistribuisce, non crea né distrugge;
+  \item[(iii)] $R(t) \geq 0$ e il sentiment resta confinato tra i valori osservati, $\min_j S_j(0) \leq S_i(t) \leq \max_j S_j(0)$: la diffusione non può produrre un sentiment più estremo di quello presente nelle notizie;
+  \item[(iv)] l'aggiornamento giornaliero implicito $R_{k+1} = (I + \Delta t(DL + \lambda I))^{-1} R_k$ è stabile per ogni passo $\Delta t$ e preserva le proprietà precedenti.
+\end{enumerate}
 \end{proposizione}
 \begin{proof}
-Sistema lineare a coefficienti costanti: la soluzione è l'esponenziale di matrice $e^{-t(DL + \lambda I)}$, che fattorizza perché $\lambda I$ commuta con $L$.
-La decomposizione spettrale esiste per il teorema spettrale ($L$ simmetrica semidefinita positiva); il costo $O(n^3)$, una tantum, è trattabile per $n \sim 2 \cdot 10^3$.
+(i) Il sistema è lineare a coefficienti costanti, quindi ha soluzione unica data dall'esponenziale di matrice, che fattorizza perché $\lambda I$ commuta con $L$; per $D=0$ le equazioni si disaccoppiano in $R_i' = -\lambda R_i$.
+(ii) $L\mathbf{1} = 0$ per costruzione e, per simmetria, $\mathbf{1}^{\top}L = 0$: dunque $\frac{d}{dt} \sum_i R_i = -\lambda \sum_i R_i$.
+(iii) Posto $c = \max_i d_i$, la matrice $cI - L = W + (cI - \operatorname{diag}(d_i))$ ha elementi non negativi e $e^{-DtL} = e^{-Dtc}\, e^{Dt(cI-L)} \geq 0$ (serie di potenze a termini non negativi); allora $R(t) \geq 0$ e
+$S_i(t) = \sum_j P_{ij} R_j(0) S_j(0) \big/ \sum_j P_{ij} R_j(0)$ con $P = e^{-t(DL+\lambda I)} \geq 0$ è una media pesata, con pesi non negativi a somma uno, dei sentiment iniziali.
+(iv) $I + \Delta t(DL + \lambda I)$ ha diagonale strettamente dominante e fuori diagonale non positiva: è una M-matrice, con inversa a elementi non negativi e raggio spettrale dell'iterazione pari al più a $(1 + \lambda \Delta t)^{-1} < 1$.
 \end{proof}
 
-\begin{proposizione}[Positività]
-\label{prop:positivita}
-Se $R(0) \geq 0$ componente per componente, allora $R(t) \geq 0$ per ogni $t \geq 0$.
-\end{proposizione}
-\begin{proof}
-Sia $c \geq \max_i d_i$: la matrice $cI - L = W + (cI - D_g)$ ha elementi non negativi, e
-$e^{-DtL} = e^{-Dtc}\, e^{Dt(cI - L)}$,
-dove l'esponenziale di una matrice a elementi non negativi è a elementi non negativi (serie di potenze a termini non negativi).
-Dunque $e^{-DtL} \geq 0$ e $R(t) \geq 0$.
-\end{proof}
-
-\begin{proposizione}[Bilancio di massa e compatibilità retroattiva]
-\label{prop:massa}
-$\sum_i R_i(t) = e^{-\lambda t} \sum_i R_i(0)$: la diffusione redistribuisce la rilevanza senza crearne né distruggerne; solo $\lambda$ la dissipa.
-Per $D = 0$ il modello si riduce a $R_i(t) = R_i(0) \cdot 0{,}5^{\,t/h}$ con $h = \ln 2 / \lambda$: il sistema in produzione è il caso particolare $D = 0$.
-\end{proposizione}
-\begin{proof}
-$L \mathbf{1} = 0$ per costruzione e, per simmetria, $\mathbf{1}^{\top} L = 0$; quindi $\frac{d}{dt}(\mathbf{1}^{\top} R) = -\lambda\, \mathbf{1}^{\top} R$.
-Per $D = 0$ le equazioni si disaccoppiano in $R_i' = -\lambda R_i$, che riscritta in emivita coincide con il peso $w = 0{,}5^{\Delta t / h}$ del Capitolo~\ref{ch:stato-implementazione}.
-\end{proof}
-
-La compatibilità retroattiva è anche il test di validazione naturale: azzerando $W$, la nuova pipeline deve riprodurre esattamente i KPI attuali.
-
-\begin{proposizione}[Principio del massimo per il sentiment]
-\label{prop:massimo}
-Per ogni nodo $i$ e $t \geq 0$ con $R_i(t) > 0$:
-$\min_j S_j(0) \leq S_i(t) \leq \max_j S_j(0)$.
-\end{proposizione}
-\begin{proof}
-Sia $P(t) = e^{-t(DL + \lambda I)} \geq 0$ (Proposizione~\ref{prop:positivita}).
-Allora
-\[
-S_i(t) = \frac{(P(t)\, m(0))_i}{(P(t)\, R(0))_i}
-       = \frac{\sum_j P_{ij}(t)\, R_j(0)\, S_j(0)}{\sum_j P_{ij}(t)\, R_j(0)}
-       = \sum_j \alpha_j S_j(0),
-\]
-con $\alpha_j \geq 0$ e $\sum_j \alpha_j = 1$: combinazione convessa dei sentiment iniziali.
-\end{proof}
-
-È la garanzia applicativa decisiva: la diffusione \emph{non può fabbricare} un sentiment più estremo di quello osservato nelle notizie---nessuna amplificazione spuria in un sistema che genera segnali operativi.
-
-\begin{proposizione}[Schema numerico: stabilità e positività]
-\label{prop:schema}
-Lo schema di Eulero esplicito $R_{k+1} = (I - \Delta t\,(DL + \lambda I)) R_k$ è consistente di ordine~1 e, se
-$\Delta t \leq 1/(\lambda + D\, d_{\max})$ con $d_{\max} = \max_i d_i$,
-preserva positività e stabilità.
-Lo schema implicito $R_{k+1} = (I + \Delta t\,(DL + \lambda I))^{-1} R_k$ è incondizionatamente stabile e positivo.
-\end{proposizione}
-\begin{proof}
-\emph{Esplicito.} La matrice di iterazione $M = I - \Delta t (DL + \lambda I)$ ha fuori diagonale $\Delta t D\, w_{ij} \geq 0$ e diagonale $1 - \Delta t (D d_i + \lambda) \geq 0$ sotto la condizione: $M \geq 0$.
-Gli autovalori sono $1 - \Delta t(\lambda + D\mu)$ con $\mu \in [0, \lambda_{\max}(L)]$ e $\lambda_{\max}(L) \leq 2 d_{\max}$; sotto la condizione, $\Delta t (\lambda + D \lambda_{\max}) \leq (\lambda + 2 D d_{\max})/(\lambda + D d_{\max}) \leq 2$, quindi lo spettro resta in $[-1, 1]$; la convergenza $O(\Delta t)$ è classica.
-\emph{Implicito.} $I + \Delta t (DL + \lambda I)$ ha diagonale strettamente dominante e fuori diagonale non positiva: è una M-matrice non singolare con inversa $\geq 0$, e il raggio spettrale dell'iterazione è $\leq (1 + \lambda \Delta t)^{-1} < 1$.
-\end{proof}
-
-\begin{osservazione}[Calibrazione]
-Con passo giornaliero e l'emivita di default ($h = 7$, $\lambda \approx 0{,}099$), la condizione diventa $D\, d_{\max} \lesssim 0{,}9$: un vincolo interpretabile tra intensità della diffusione e densità del grafo, controllabile con la soglia di similarità.
-Lo schema implicito (una soluzione di sistema sparso al giorno) rimuove ogni vincolo sul passo.
-\end{osservazione}
-
-Il popolamento di \texttt{ticker\_cross\_diffused\_sentiment} si riduce quindi a un passo di Eulero implicito al giorno sulle coppie $(R, m)$: nessun ingrediente mancante.
+In pratica: popolare \texttt{ticker\_cross\_diffused\_sentiment} richiede un passo implicito al giorno sulle coppie $(R, V)$, con la matrice $W$ già disponibile dagli embedding; il caso $D = 0$ della proprietà~(i) è anche il test di validazione naturale, perché la nuova pipeline deve riprodurre esattamente i KPI attuali.
 
 \subsection{Benchmark multi-scorer del sentiment}
 

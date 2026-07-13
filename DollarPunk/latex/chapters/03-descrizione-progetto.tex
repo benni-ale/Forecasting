@@ -99,7 +99,7 @@ Sia $R_{i,d} = R_{i,0}\, e^{-\lambda \Delta t_i}$ con $\lambda > 0$ e $S_{i,d} =
 \begin{enumerate}
   \item[(i)] \emph{(unicità)} $R(t) = R_0 e^{-\lambda t}$ è l'unica soluzione di $R' = -\lambda R$ con dato iniziale $R_0$, ed è equivalente alla parametrizzazione in emivita $w = 0{,}5^{\Delta t / h}$ con $h = \ln 2/\lambda$;
   \item[(ii)] \emph{(confinamento)} per ogni giorno $d$: $\min_i S_{i,0} \leq \text{AvgW}_d \leq \max_i S_{i,0}$;
-  \item[(iii)] \emph{(invarianza)} a insieme di notizie fissato, $\text{AvgW}_d$ è invariante al passare del tempo a meno del riordino relativo dei pesi, mentre la massa attiva decade esattamente: $\sum_i R_{i,d+1} = e^{-\lambda} \sum_i R_{i,d}$.
+  \item[(iii)] \emph{(invarianza)} a insieme di notizie fissato, $\text{AvgW}_d$ è invariante al passare del tempo a meno del riordino relativo dei pesi, mentre la rilevanza totale decade esattamente: $\sum_i R_{i,d+1} = e^{-\lambda} \sum_i R_{i,d}$.
 \end{enumerate}
 \end{proposizione}
 \begin{proof}
@@ -108,24 +108,14 @@ Sia $R_{i,d} = R_{i,0}\, e^{-\lambda \Delta t_i}$ con $\lambda > 0$ e $S_{i,d} =
 (iii) Tra due giorni consecutivi senza nuove notizie ogni peso è moltiplicato per il medesimo fattore $e^{-\lambda}$, che si semplifica tra numeratore e denominatore di $\text{AvgW}$ lasciandola invariata, mentre la somma dei pesi ne risulta contratta esattamente di $e^{-\lambda}$.
 \end{proof}
 
-La conseguenza operativa della Proposizione~\ref{prop:decay} è visibile nella tabella: la media ponderata \emph{non} decade (si sposta solo verso le notizie più recenti quando ne arrivano), mentre a decadere è la massa attiva, che cresce al giorno~1 con la news~2 e si dissipa al giorno~2.
-Le due grandezze sono complementari---la media misura la \emph{direzione} del sentiment attivo, la massa la sua \emph{intensità}---e un segnale operativo completo le richiede entrambe.
+La conseguenza operativa della Proposizione~\ref{prop:decay} è visibile nella tabella: la media ponderata \emph{non} decade (si sposta solo verso le notizie più recenti quando ne arrivano), mentre a decadere è la rilevanza totale, che cresce al giorno~1 con la news~2 e si dissipa al giorno~2.
+Le due grandezze sono complementari---la media misura la \emph{direzione} del sentiment attivo, la rilevanza totale la sua \emph{intensità}---e un segnale operativo completo le richiede entrambe.
 
 \subsection{Sviluppi futuri: diffusione semantica}
 
-Il decadimento esponenziale è la soluzione dell'equazione $\frac{dR}{dt} = -\lambda R$, che tratta però ogni notizia come indipendente.
-In realtà molte news condividono contesto semantico, e trattarle come isolate ignora gli effetti informativi correlati.
-L'estensione proposta introduce un termine di diffusione nello spazio semantico degli embedding:
-\[
-\frac{\partial R(x, t)}{\partial t} = D \nabla^2 R(x, t) - \lambda R(x, t),
-\]
-con $D$ coefficiente di diffusione semantica: la rilevanza non solo decade, ma si propaga verso contenuti affini, trasformando il relevance da punteggio statico a campo dinamico.
-
-La formulazione così enunciata lascia però aperta una questione di buona posizione: se la rilevanza migra dal punto $x_j$ al punto $x_i$ mentre i sentiment restano fissi, la massa in arrivo amplifica il peso del sentiment \emph{locale} $S_i$, anche quando l'informazione che l'ha generata aveva tono opposto.
-La risoluzione naturale è far diffondere, con lo stesso operatore, anche la \emph{massa di sentiment} $m = S \cdot R$, definendo il sentiment come rapporto $S(x,t) = m(x,t)/R(x,t)$: la rilevanza che fluisce porta con sé il proprio tono.
-La versione discreta del modello, con le garanzie formali di correttezza, è sviluppata nel Capitolo~\ref{ch:direzioni-future}.
-
-Quanto all'innovatività: la maggior parte degli studi tratta le news come unità indipendenti; i lavori più vicini mostrano la diffusione del sentiment su reti informative \parencite{wan2021sentimentdiffusion} o modellano le interazioni tra notizie per la previsione \parencite{wang2024finin}, ma l'uso esplicito di un'equazione di diffusione--decadimento interpretabile risulta poco documentato in ambito NLP-finance.
+Il decadimento tratta ogni notizia come indipendente; in realtà i titoli condividono contesto semantico, e una notizia rilevante per un'azienda dice qualcosa anche sulle aziende affini.
+L'estensione naturale è quindi lasciare che la rilevanza, oltre a decadere nel tempo, si \emph{propaghi} tra titoli semanticamente vicini---un'idea ancora poco documentata in forma interpretabile nella letteratura NLP-finance, dove i lavori più affini usano reti informative \parencite{wan2021sentimentdiffusion} o modelli di interazione tra notizie \parencite{wang2024finin}.
+Il modello completo, con soluzione e proprietà di correttezza, è sviluppato in un'unica sezione nel Capitolo~\ref{ch:direzioni-future} (Sezione~\ref{sec:soluzione-discreta}).
 
 \section{Analisi esplorativa: sentiment e prezzo}
 
