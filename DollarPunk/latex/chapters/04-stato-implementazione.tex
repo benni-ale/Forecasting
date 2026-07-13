@@ -128,13 +128,10 @@ w_i = 0{,}5^{\,\Delta t_i / h}
 dove $s_i$ e $r_i$ sono rispettivamente \emph{sentiment score} e \emph{relevance score} dell'articolo $i$, $\Delta t_i$ i giorni trascorsi dalla pubblicazione e $h$ l'emivita configurabile (default: 7 giorni).
 Il fattore $0{,}5^{\Delta t / h}$ equivale a un decadimento esponenziale con $\lambda = \ln(2)/h$.
 
-La stessa logica è replicata:
-
-\begin{itemize}
-  \item nella vista SQL \texttt{ticker\_daily\_sentiment\_view} (lookback 30 giorni);
-  \item nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi};
-  \item nella pagina portfolio, per il sentiment decayed su intervalli temporali configurabili.
-\end{itemize}
+La stessa logica è replicata nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi} e nella pagina portfolio (sentiment decayed su intervalli configurabili).
+La vista SQL \texttt{ticker\_daily\_sentiment\_view} (lookback 30 giorni) adotta invece la variante \emph{non normalizzata}: una somma dei contributi giornalieri con decadimento, senza divisione per la somma dei pesi.
+Le due grandezze non sono intercambiabili: come discusso nel Capitolo~\ref{ch:descrizione-progetto}, la media normalizzata misura la direzione del sentiment attivo ed è confinata nell'intervallo dei sentiment osservati, mentre la somma decayed ne misura l'intensità e tende a zero in assenza di notizie.
+La coesistenza delle due varianti è quindi una scelta informativa, non una duplicazione.
 
 \subsection{Diffusione semantica}
 

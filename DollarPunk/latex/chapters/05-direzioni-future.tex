@@ -24,6 +24,112 @@ Il prototipo dispone già dell'ingrediente chiave: la matrice di similarità tra
 Questa direzione si collega naturalmente alla letteratura recente su sentiment spillover e graph neural network (Capitolo~\ref{ch:stato-dell-arte}), ma mantiene un vantaggio distintivo di interpretabilità: $D$ e $\lambda$ sono parametri fisicamente leggibili, a differenza dei pesi appresi da una GNN.
 Un confronto sistematico tra la diffusione interpretabile e un baseline GNN costituirebbe il contributo scientifico centrale del progetto.
 
+\subsection{Soluzione discreta del modello di diffusione e garanzie di correttezza}
+\label{sec:soluzione-discreta}
+
+Questa sezione rende operativa la proposta precedente: formula il modello discreto completo---includendo il trasporto del sentiment, la cui necessità è discussa nel Capitolo~\ref{ch:descrizione-progetto}---ne fornisce la soluzione in forma chiusa e ne dimostra le proprietà di correttezza rilevanti per l'uso applicativo.
+
+\paragraph{Modello.}
+Sia $G$ un grafo non orientato su $n$ nodi (i ticker), con matrice dei pesi $W \in \mathbb{R}^{n \times n}$ simmetrica, a elementi non negativi e diagonale nulla (similarità coseno tra embedding aziendali, sogliata per sparsificare).
+Siano $d_i = \sum_j w_{ij}$ i gradi, $D_g = \operatorname{diag}(d_1, \dots, d_n)$ e $L = D_g - W$ il Laplaciano combinatorio.
+Lo stato del sistema è la coppia $(R(t), m(t)) \in \mathbb{R}^n \times \mathbb{R}^n$, dove $R_i$ è la rilevanza aggregata attiva sul nodo $i$ e $m_i$ la sua \emph{massa di sentiment}, inizializzata come $m_i(0) = S_i(0)\, R_i(0)$.
+Entrambe evolvono con lo stesso operatore lineare:
+\[
+\frac{dR}{dt} = -(D\,L + \lambda I)\, R,
+\qquad
+\frac{dm}{dt} = -(D\,L + \lambda I)\, m,
+\qquad
+S_i(t) := \frac{m_i(t)}{R_i(t)} \quad (R_i(t) > 0),
+\]
+con $D \geq 0$ coefficiente di diffusione e $\lambda > 0$ tasso di decadimento.
+Diffondere $m$ insieme a $R$ garantisce che la rilevanza in movimento trasporti il proprio tono.
+
+\begin{proposizione}[Esistenza, unicità e forma chiusa]
+\label{prop:esistenza}
+Il sistema ammette un'unica soluzione, data da
+\[
+R(t) = e^{-\lambda t}\, e^{-D t L}\, R(0),
+\qquad
+m(t) = e^{-\lambda t}\, e^{-D t L}\, m(0).
+\]
+Se $L = U \Lambda U^{\top}$ è la decomposizione spettrale ($L$ è simmetrica e semidefinita positiva), allora $e^{-DtL} = U e^{-Dt\Lambda} U^{\top}$.
+\end{proposizione}
+\begin{proof}
+Il sistema è lineare a coefficienti costanti, dunque la soluzione esiste, è unica ed è data dall'esponenziale di matrice $e^{-t(DL + \lambda I)}$.
+Poiché $\lambda I$ commuta con $L$, l'esponenziale fattorizza nel prodotto indicato.
+La decomposizione spettrale esiste per il teorema spettrale; il costo $O(n^3)$ è sostenuto una sola volta ed è trattabile per $n \sim 2 \cdot 10^3$ ticker.
+\end{proof}
+
+\begin{proposizione}[Positività]
+\label{prop:positivita}
+Se $R(0) \geq 0$ componente per componente, allora $R(t) \geq 0$ per ogni $t \geq 0$.
+\end{proposizione}
+\begin{proof}
+Sia $c \geq \max_i d_i$.
+La matrice $cI - L = W + (cI - D_g)$ ha tutti gli elementi non negativi, e
+\[
+e^{-DtL} = e^{-Dtc}\, e^{Dt\,(cI - L)},
+\]
+dove l'esponenziale di una matrice a elementi non negativi è a elementi non negativi (serie di potenze a termini non negativi) e il fattore scalare $e^{-Dtc}$ è positivo.
+Dunque $e^{-DtL} \geq 0$ come matrice, e $R(t) = e^{-\lambda t} e^{-DtL} R(0) \geq 0$.
+\end{proof}
+
+\begin{proposizione}[Bilancio di massa e compatibilità retroattiva]
+\label{prop:massa}
+La massa totale di rilevanza soddisfa $\sum_i R_i(t) = e^{-\lambda t} \sum_i R_i(0)$: la diffusione redistribuisce la rilevanza tra i nodi senza crearne né distruggerne, e solo il decadimento $\lambda$ la dissipa.
+Inoltre, per $D = 0$ il modello si riduce a $R_i(t) = R_i(0) \cdot 0{,}5^{\,t/h}$ con $h = \ln 2 / \lambda$: il sistema attualmente in produzione è esattamente il caso particolare $D = 0$.
+\end{proposizione}
+\begin{proof}
+Per costruzione $L \mathbf{1} = 0$ e, per simmetria, $\mathbf{1}^{\top} L = 0$.
+Quindi $\frac{d}{dt}(\mathbf{1}^{\top} R) = -\mathbf{1}^{\top}(DL + \lambda I) R = -\lambda\, \mathbf{1}^{\top} R$, da cui la prima affermazione.
+Per $D = 0$ le equazioni si disaccoppiano in $R_i' = -\lambda R_i$, la cui soluzione riscritta in emivita coincide con il peso $w = 0{,}5^{\Delta t / h}$ del Capitolo~\ref{ch:stato-implementazione}.
+\end{proof}
+
+La compatibilità retroattiva fornisce anche il test di validazione naturale dell'implementazione: azzerando $W$ (soglia di similarità massima), la nuova pipeline deve riprodurre esattamente i KPI attuali.
+
+\begin{proposizione}[Principio del massimo per il sentiment]
+\label{prop:massimo}
+Per ogni nodo $i$ e ogni $t \geq 0$ con $R_i(t) > 0$:
+\[
+\min_j S_j(0) \;\leq\; S_i(t) \;\leq\; \max_j S_j(0).
+\]
+\end{proposizione}
+\begin{proof}
+Sia $P(t) = e^{-t(DL + \lambda I)}$, non negativa per la Proposizione~\ref{prop:positivita}.
+Allora
+\[
+S_i(t) = \frac{(P(t)\, m(0))_i}{(P(t)\, R(0))_i}
+       = \frac{\sum_j P_{ij}(t)\, R_j(0)\, S_j(0)}{\sum_j P_{ij}(t)\, R_j(0)}
+       = \sum_j \alpha_j S_j(0),
+\]
+con $\alpha_j = P_{ij}(t) R_j(0) / \sum_k P_{ik}(t) R_k(0) \geq 0$ e $\sum_j \alpha_j = 1$: una combinazione convessa dei sentiment iniziali.
+\end{proof}
+
+La Proposizione~\ref{prop:massimo} è la garanzia di correttezza più importante dal punto di vista applicativo: la diffusione semantica \emph{non può fabbricare} un sentiment più estremo di quello effettivamente osservato nelle notizie---nessuna amplificazione spuria, requisito essenziale per un sistema che genera segnali operativi.
+
+\begin{proposizione}[Schema numerico: stabilità e positività]
+\label{prop:schema}
+Lo schema di Eulero esplicito $R_{k+1} = \left(I - \Delta t\,(DL + \lambda I)\right) R_k$ è consistente di ordine~1 e, sotto la condizione
+\[
+\Delta t \;\leq\; \frac{1}{\lambda + D\, d_{\max}}, \qquad d_{\max} = \max_i d_i,
+\]
+preserva la positività ed è stabile.
+Lo schema di Eulero implicito $R_{k+1} = \left(I + \Delta t\,(DL + \lambda I)\right)^{-1} R_k$ è incondizionatamente stabile e positivo per ogni $\Delta t > 0$.
+\end{proposizione}
+\begin{proof}
+\emph{Esplicito.} Gli elementi fuori diagonale della matrice di iterazione $M = I - \Delta t (DL + \lambda I)$ valgono $\Delta t D\, w_{ij} \geq 0$; quelli diagonali $1 - \Delta t (D d_i + \lambda)$, non negativi sotto la condizione data: dunque $M \geq 0$ e la positività è preservata.
+Per la stabilità, gli autovalori di $M$ sono $1 - \Delta t(\lambda + D\mu)$ con $\mu \in [0, \lambda_{\max}(L)]$ e $\lambda_{\max}(L) \leq 2 d_{\max}$; sotto la condizione, $\Delta t (\lambda + D \lambda_{\max}) \leq (\lambda + 2 D d_{\max})/(\lambda + D d_{\max}) \leq 2$, quindi lo spettro resta in $[-1, 1]$.
+La convergenza di ordine $O(\Delta t)$ è il risultato classico per sistemi lineari.
+\emph{Implicito.} La matrice $I + \Delta t (DL + \lambda I)$ ha diagonale strettamente dominante ($1 + \Delta t(D d_i + \lambda) > \Delta t D d_i$) e fuori diagonale non positiva: è una M-matrice non singolare, la cui inversa è a elementi non negativi; il raggio spettrale dell'iterazione è $\leq (1 + \lambda \Delta t)^{-1} < 1$.
+\end{proof}
+
+\begin{osservazione}[Calibrazione]
+Con passo giornaliero ($\Delta t = 1$) e l'emivita di default $h = 7$ giorni ($\lambda = \ln 2 / 7 \approx 0{,}099$), la condizione della Proposizione~\ref{prop:schema} diventa $D\, d_{\max} \lesssim 0{,}9$: un vincolo esplicito e interpretabile tra l'intensità della diffusione e la densità del grafo, che si controlla in pratica tramite la soglia di similarità con cui si sparsifica $W$.
+In alternativa, lo schema implicito (una soluzione di sistema lineare sparso al giorno) rimuove ogni vincolo sul passo.
+\end{osservazione}
+
+Sul piano implementativo, il popolamento della tabella \texttt{ticker\_cross\_diffused\_sentiment} si riduce quindi a un passo di Eulero implicito al giorno sulle coppie $(R, m)$, con la matrice $W$ già disponibile dalla similarità tra embedding aziendali---nessun ingrediente mancante.
+
 \subsection{Benchmark multi-scorer del sentiment}
 
 La delega dello scoring ad Alpha Vantage, oggi un limite, può diventare un'opportunità sperimentale: il database contiene decine di migliaia di coppie (articolo, ticker) già etichettate dal provider.

@@ -126,7 +126,7 @@ L'obiettivo è costruire, per ogni giorno, una misura sintetica del sentiment at
 
 \subsubsection*{Esempio}
 
-Nella tabella seguente, il relevance score viene attenuato giorno per giorno, mentre il sentiment associato rimane fisso:
+Nella tabella seguente, il relevance score viene attenuato giorno per giorno con $\lambda = 0{,}5$ (la news~2 è pubblicata al giorno~1), mentre il sentiment associato rimane fisso:
 
 \begin{center}
 \renewcommand{\arraystretch}{1.4}
@@ -134,14 +134,20 @@ Nella tabella seguente, il relevance score viene attenuato giorno per giorno, me
 \hline
 \textbf{News \#} & \textbf{Giorno 0} & \textbf{Giorno 1} & \textbf{Giorno 2} \\
 \hline
-1 & S=1.000,\ R=0.800 & S=1.000,\ R=0.593 & S=1.000,\ R=0.442 \\
-2 & ---               & S=0.900,\ R=0.700 & S=0.900,\ R=0.518 \\
-3 & S=0.750,\ R=0.600 & S=0.750,\ R=0.444 & S=0.750,\ R=0.329 \\
+1 & S=1.000,\ R=0.800 & S=1.000,\ R=0.485 & S=1.000,\ R=0.294 \\
+2 & ---               & S=0.900,\ R=0.700 & S=0.900,\ R=0.425 \\
+3 & S=0.750,\ R=0.600 & S=0.750,\ R=0.364 & S=0.750,\ R=0.221 \\
 \hline
-\textbf{Media ponderata} & $\approx$0.892 & $\approx$0.716 & $\approx$0.697 \\
+\textbf{Media ponderata $\text{AvgW}_d$} & $\approx$0.893 & $\approx$0.896 & $\approx$0.896 \\
+\hline
+\textbf{Massa attiva $\sum_i R_{i,d}$} & 1.400 & 1.549 & 0.940 \\
 \hline
 \end{tabular}
 \end{center}
+
+L'esempio mette in luce una proprietà strutturale del modello: la media ponderata è per costruzione confinata nell'intervallo $[\min_i S_i, \max_i S_i]$ e \emph{non} decade nel tempo---il decadimento agisce sui pesi, che al numeratore e al denominatore si compensano, spostando la media solo verso le notizie più recenti.
+Ciò che decade è la \emph{massa attiva} $\sum_i R_{i,d}$, che cresce all'arrivo di nuove notizie (giorno~1) e si dissipa in loro assenza (giorno~2).
+Le due grandezze sono complementari: la media misura la \emph{direzione} del sentiment attivo, la massa la sua \emph{intensità}; un segnale operativo completo le richiede entrambe.
 
 Il relevance viene attenuato con una funzione esponenziale:
 \[
@@ -214,7 +220,10 @@ Dove:
 \end{itemize}
 
 In questo modello, la rilevanza informativa di una notizia può diffondersi verso altre notizie simili, modellando una dinamica più realistica del flusso informativo.
-Il sentiment rimane invariato, ma viene ponderato con $R(x, t)$, che evolve sia nel tempo sia nello spazio semantico.
+
+La formulazione così enunciata lascia però aperta una questione di buona posizione: se la rilevanza migra dal punto $x_j$ al punto $x_i$ mentre i sentiment restano fissi, la massa in arrivo amplifica il peso del sentiment \emph{locale} $S_i$, anche quando l'informazione che l'ha generata aveva tono opposto---un trasferimento di rilevanza senza trasporto del contenuto che la giustifica.
+La risoluzione naturale è far diffondere, con lo stesso operatore, anche la \emph{massa di sentiment} $m = S \cdot R$, e definire il sentiment locale come rapporto $S(x,t) = m(x,t)/R(x,t)$: la rilevanza che fluisce porta con sé il proprio tono.
+La versione discreta di questo modello, con le relative garanzie formali di correttezza, è sviluppata nel Capitolo~\ref{ch:direzioni-future}.
 
 La sfida principale è definire una distanza semantica robusta tra testi, usando embedding, reti di similarità o clustering.
 In uno spazio semantico coerente, il relevance score può propagarsi tramite metodi numerici o grafi, abilitando applicazioni in risk monitoring, segnali di portafoglio ed eventi informativi.
