@@ -11,18 +11,32 @@ Nel prototipo l'emivita del relevance score è configurabile (default: 7 giorni)
 Una prima domanda a basso costo sperimentale è la stima ottimale di $h$, selezionando il valore che massimizza la correlazione ritardata tra KPI di sentiment e rendimenti successivi, per titolo o settore.
 L'ipotesi verificabile è che l'emivita informativa non sia costante, ma vari con capitalizzazione, copertura mediatica e regime di mercato---un risultato autonomo rispetto al decay fisso dei provider commerciali.
 
-\subsection{Diffusione semantica su grafo}
+\subsection{Diffusione semantica: dalla PDE alla soluzione discreta}
 \label{sec:soluzione-discreta}
 
-L'idea del Capitolo~\ref{ch:descrizione-progetto}---una rilevanza che decade nel tempo e si propaga tra titoli affini---si formalizza su un grafo di similarità: i nodi sono gli $n$ ticker, i pesi $w_{ij} \geq 0$ la similarità coseno tra gli embedding aziendali (sogliata, con $W$ simmetrica), $d_i = \sum_j w_{ij}$ i gradi e $L = \operatorname{diag}(d_i) - W$ il Laplaciano del grafo.
-La rilevanza $R(t) \in \mathbb{R}^n$ evolve secondo
+\paragraph{Il modello proposto.}
+Si rappresenti ogni contenuto informativo come un punto $x$ di uno spazio semantico (lo spazio degli embedding), e sia $R(x,t)$ la rilevanza attiva in quel punto al tempo $t$.
+Il modello proposto estende il decadimento del Capitolo~\ref{ch:descrizione-progetto} con un termine di diffusione:
 \[
-\frac{dR}{dt} = -(D\,L + \lambda I)\, R,
+\frac{\partial R(x, t)}{\partial t} = \underbrace{D\, \nabla^2 R(x, t)}_{\text{propagazione}} \; - \; \underbrace{\lambda\, R(x, t)}_{\text{decadimento}}.
 \]
-dove $\lambda > 0$ è il tasso di decadimento già in uso e $D \geq 0$ regola quanta rilevanza fluisce verso i titoli vicini.
-Per il sentiment basta una accortezza: insieme a $R$ si fa evolvere, con lo stesso operatore, il \emph{sentiment pesato} $V = S \cdot R$ (la stessa quantità $s \cdot r$ già usata nel KPI), e si definisce $S_i(t) = V_i(t)/R_i(t)$.
+
+\paragraph{Perché ha senso.}
+È l'equazione del calore con dissipazione, e l'analogia è sostanziale, non estetica.
+Il secondo termine è il modello già validato in produzione: in assenza di interazioni, la rilevanza di una notizia si dimezza ogni $h = \ln 2/\lambda$ giorni.
+Il primo termine cattura un fatto empirico che il decadimento da solo ignora: l'informazione rilevante per un titolo lo è, in parte, anche per i titoli semanticamente vicini---una notizia sul principale fornitore di un'azienda ne muove il titolo, un downgrade di settore pesa su tutto il settore.
+Come il calore fluisce da un punto caldo ai punti freddi adiacenti in proporzione alla differenza di temperatura, così la rilevanza fluisce dai titoli molto coperti verso i titoli affini poco coperti, in proporzione al gradiente informativo e alla vicinanza semantica.
+I due parametri hanno un significato fisico immediato---$\lambda$ è la velocità dell'oblio, $D$ la permeabilità semantica del mercato---ed è questa leggibilità a distinguere il modello dalle alternative apprese (GNN), i cui pesi non sono interpretabili: il confronto tra i due approcci costituirebbe il contributo scientifico centrale del progetto.
+
+\paragraph{Soluzione discreta.}
+Lo spazio semantico è però noto solo attraverso un numero finito di punti---gli embedding dei ticker---e su un insieme finito di punti l'operatore $-\nabla^2$ ha un'approssimazione discreta canonica: il Laplaciano di grafo.
+Si costruisce quindi il grafo di similarità con gli $n$ ticker come nodi, pesi $w_{ij} \geq 0$ dati dalla similarità coseno tra embedding (sogliata, $W$ simmetrica), gradi $d_i = \sum_j w_{ij}$ e $L = \operatorname{diag}(d_i) - W$.
+La PDE diventa il sistema di equazioni ordinarie
+\[
+\frac{dR}{dt} = -(D\,L + \lambda I)\, R, \qquad R(t) \in \mathbb{R}^n.
+\]
+Per il sentiment basta un'accortezza: insieme a $R$ si fa evolvere, con lo stesso operatore, il \emph{sentiment pesato} $V = S \cdot R$ (la stessa quantità $s \cdot r$ già usata nel KPI), e si definisce $S_i(t) = V_i(t)/R_i(t)$.
 Così la rilevanza che si sposta da un titolo all'altro porta con sé il proprio tono, invece di gonfiare quello locale.
-Rispetto a una GNN, i due parametri $D$ e $\lambda$ restano fisicamente leggibili: il confronto tra questa diffusione interpretabile e un baseline appreso costituirebbe il contributo scientifico centrale del progetto.
 
 \begin{proposizione}[Correttezza del modello]
 \label{prop:diffusione}
