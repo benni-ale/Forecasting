@@ -1,39 +1,27 @@
 \chapter{Direzioni future}
 \label{ch:direzioni-future}
 
-Alla luce dello stato dell'arte aggiornato (Capitolo~\ref{ch:stato-dell-arte}) e del prototipo operativo (Capitolo~\ref{ch:stato-implementazione}), questo capitolo delinea le direzioni di sviluppo ritenute più promettenti, distinguendo tra quelle di natura scientifica e quelle applicative.
-Le due dimensioni sono complementari: l'applicativo fornisce l'infrastruttura di dati e validazione su cui le domande di ricerca possono essere testate empiricamente.
+Questo capitolo delinea le direzioni di sviluppo più promettenti, scientifiche e applicative: l'applicativo fornisce l'infrastruttura di dati e validazione su cui le domande di ricerca possono essere testate empiricamente.
 
 \section{Direzioni per la ricerca}
 
 \subsection{Stima empirica del parametro di decay}
 
-Nel prototipo l'emivita del relevance score è un parametro configurabile (default: 7 giorni), scelto per plausibilità e non stimato dai dati.
-Una prima domanda di ricerca, a basso costo sperimentale, è la stima ottimale di $h$ (o equivalentemente $\lambda$): si può selezionare il valore che massimizza la correlazione ritardata tra KPI di sentiment e rendimenti successivi, per singolo titolo o per settore.
-L'ipotesi verificabile è che l'emivita informativa non sia costante, ma vari con la capitalizzazione, la copertura mediatica e il regime di mercato---un risultato che avrebbe valore autonomo rispetto alla letteratura sul decay fisso adottato dai provider commerciali.
+Nel prototipo l'emivita del relevance score è configurabile (default: 7 giorni) ma non stimata dai dati.
+Una prima domanda a basso costo sperimentale è la stima ottimale di $h$, selezionando il valore che massimizza la correlazione ritardata tra KPI di sentiment e rendimenti successivi, per titolo o settore.
+L'ipotesi verificabile è che l'emivita informativa non sia costante, ma vari con capitalizzazione, copertura mediatica e regime di mercato---un risultato autonomo rispetto al decay fisso dei provider commerciali.
 
-\subsection{Dalla PDE alla diffusione su grafo}
-
-La formulazione a derivate parziali della diffusione semantica (Capitolo~\ref{ch:descrizione-progetto}) può essere resa operativa nella sua approssimazione discreta: un grafo i cui nodi sono i ticker (o le notizie) e i cui archi sono pesati dalla similarità coseno tra embedding.
-Su questo grafo l'equazione di diffusione--decadimento diventa
-\[
-\frac{d\mathbf{R}(t)}{dt} = -D\, L\, \mathbf{R}(t) - \lambda \mathbf{R}(t),
-\]
-dove $L$ è il Laplaciano del grafo di similarità.
-Il prototipo dispone già dell'ingrediente chiave: la matrice di similarità tra profili aziendali calcolata dagli embedding OpenAI.
-Questa direzione si collega naturalmente alla letteratura recente su sentiment spillover e graph neural network (Capitolo~\ref{ch:stato-dell-arte}), ma mantiene un vantaggio distintivo di interpretabilità: $D$ e $\lambda$ sono parametri fisicamente leggibili, a differenza dei pesi appresi da una GNN.
-Un confronto sistematico tra la diffusione interpretabile e un baseline GNN costituirebbe il contributo scientifico centrale del progetto.
-
-\subsection{Soluzione discreta del modello di diffusione e garanzie di correttezza}
+\subsection{Diffusione su grafo: modello discreto e garanzie di correttezza}
 \label{sec:soluzione-discreta}
 
-Questa sezione rende operativa la proposta precedente: formula il modello discreto completo---includendo il trasporto del sentiment, la cui necessità è discussa nel Capitolo~\ref{ch:descrizione-progetto}---ne fornisce la soluzione in forma chiusa e ne dimostra le proprietà di correttezza rilevanti per l'uso applicativo.
+La formulazione a derivate parziali della diffusione semantica (Capitolo~\ref{ch:descrizione-progetto}) diventa operativa nella sua approssimazione discreta su grafo, di cui il prototipo possiede già l'ingrediente chiave: la matrice di similarità tra profili aziendali.
+Rispetto alla letteratura su sentiment spillover e graph neural network (Capitolo~\ref{ch:stato-dell-arte}), il vantaggio distintivo è l'interpretabilità---$D$ e $\lambda$ sono parametri fisicamente leggibili, a differenza dei pesi appresi da una GNN---e il confronto sistematico tra diffusione interpretabile e baseline GNN costituirebbe il contributo scientifico centrale del progetto.
+Questa sezione formula il modello discreto completo, incluso il trasporto del sentiment la cui necessità è discussa nel Capitolo~\ref{ch:descrizione-progetto}, e ne dimostra le proprietà di correttezza.
 
 \paragraph{Modello.}
-Sia $G$ un grafo non orientato su $n$ nodi (i ticker), con matrice dei pesi $W \in \mathbb{R}^{n \times n}$ simmetrica, a elementi non negativi e diagonale nulla (similarità coseno tra embedding aziendali, sogliata per sparsificare).
+Sia $G$ un grafo non orientato su $n$ nodi (i ticker), con matrice dei pesi $W \in \mathbb{R}^{n \times n}$ simmetrica, a elementi non negativi e diagonale nulla (similarità coseno tra embedding, sogliata per sparsificare).
 Siano $d_i = \sum_j w_{ij}$ i gradi, $D_g = \operatorname{diag}(d_1, \dots, d_n)$ e $L = D_g - W$ il Laplaciano combinatorio.
-Lo stato del sistema è la coppia $(R(t), m(t)) \in \mathbb{R}^n \times \mathbb{R}^n$, dove $R_i$ è la rilevanza aggregata attiva sul nodo $i$ e $m_i$ la sua \emph{massa di sentiment}, inizializzata come $m_i(0) = S_i(0)\, R_i(0)$.
-Entrambe evolvono con lo stesso operatore lineare:
+Lo stato è la coppia $(R(t), m(t))$, dove $R_i$ è la rilevanza attiva sul nodo $i$ e $m_i$ la sua \emph{massa di sentiment}, inizializzata come $m_i(0) = S_i(0)\, R_i(0)$; entrambe evolvono con lo stesso operatore:
 \[
 \frac{dR}{dt} = -(D\,L + \lambda I)\, R,
 \qquad
@@ -41,23 +29,21 @@ Entrambe evolvono con lo stesso operatore lineare:
 \qquad
 S_i(t) := \frac{m_i(t)}{R_i(t)} \quad (R_i(t) > 0),
 \]
-con $D \geq 0$ coefficiente di diffusione e $\lambda > 0$ tasso di decadimento.
-Diffondere $m$ insieme a $R$ garantisce che la rilevanza in movimento trasporti il proprio tono.
+con $D \geq 0$ coefficiente di diffusione e $\lambda > 0$ tasso di decadimento: la rilevanza in movimento trasporta il proprio tono.
 
 \begin{proposizione}[Esistenza, unicità e forma chiusa]
 \label{prop:esistenza}
-Il sistema ammette un'unica soluzione, data da
+Il sistema ammette un'unica soluzione,
 \[
 R(t) = e^{-\lambda t}\, e^{-D t L}\, R(0),
 \qquad
-m(t) = e^{-\lambda t}\, e^{-D t L}\, m(0).
+m(t) = e^{-\lambda t}\, e^{-D t L}\, m(0);
 \]
-Se $L = U \Lambda U^{\top}$ è la decomposizione spettrale ($L$ è simmetrica e semidefinita positiva), allora $e^{-DtL} = U e^{-Dt\Lambda} U^{\top}$.
+se $L = U \Lambda U^{\top}$ è la decomposizione spettrale, $e^{-DtL} = U e^{-Dt\Lambda} U^{\top}$.
 \end{proposizione}
 \begin{proof}
-Il sistema è lineare a coefficienti costanti, dunque la soluzione esiste, è unica ed è data dall'esponenziale di matrice $e^{-t(DL + \lambda I)}$.
-Poiché $\lambda I$ commuta con $L$, l'esponenziale fattorizza nel prodotto indicato.
-La decomposizione spettrale esiste per il teorema spettrale; il costo $O(n^3)$ è sostenuto una sola volta ed è trattabile per $n \sim 2 \cdot 10^3$ ticker.
+Sistema lineare a coefficienti costanti: la soluzione è l'esponenziale di matrice $e^{-t(DL + \lambda I)}$, che fattorizza perché $\lambda I$ commuta con $L$.
+La decomposizione spettrale esiste per il teorema spettrale ($L$ simmetrica semidefinita positiva); il costo $O(n^3)$, una tantum, è trattabile per $n \sim 2 \cdot 10^3$.
 \end{proof}
 
 \begin{proposizione}[Positività]
@@ -65,129 +51,113 @@ La decomposizione spettrale esiste per il teorema spettrale; il costo $O(n^3)$ �
 Se $R(0) \geq 0$ componente per componente, allora $R(t) \geq 0$ per ogni $t \geq 0$.
 \end{proposizione}
 \begin{proof}
-Sia $c \geq \max_i d_i$.
-La matrice $cI - L = W + (cI - D_g)$ ha tutti gli elementi non negativi, e
-\[
-e^{-DtL} = e^{-Dtc}\, e^{Dt\,(cI - L)},
-\]
-dove l'esponenziale di una matrice a elementi non negativi è a elementi non negativi (serie di potenze a termini non negativi) e il fattore scalare $e^{-Dtc}$ è positivo.
-Dunque $e^{-DtL} \geq 0$ come matrice, e $R(t) = e^{-\lambda t} e^{-DtL} R(0) \geq 0$.
+Sia $c \geq \max_i d_i$: la matrice $cI - L = W + (cI - D_g)$ ha elementi non negativi, e
+$e^{-DtL} = e^{-Dtc}\, e^{Dt(cI - L)}$,
+dove l'esponenziale di una matrice a elementi non negativi è a elementi non negativi (serie di potenze a termini non negativi).
+Dunque $e^{-DtL} \geq 0$ e $R(t) \geq 0$.
 \end{proof}
 
 \begin{proposizione}[Bilancio di massa e compatibilità retroattiva]
 \label{prop:massa}
-La massa totale di rilevanza soddisfa $\sum_i R_i(t) = e^{-\lambda t} \sum_i R_i(0)$: la diffusione redistribuisce la rilevanza tra i nodi senza crearne né distruggerne, e solo il decadimento $\lambda$ la dissipa.
-Inoltre, per $D = 0$ il modello si riduce a $R_i(t) = R_i(0) \cdot 0{,}5^{\,t/h}$ con $h = \ln 2 / \lambda$: il sistema attualmente in produzione è esattamente il caso particolare $D = 0$.
+$\sum_i R_i(t) = e^{-\lambda t} \sum_i R_i(0)$: la diffusione redistribuisce la rilevanza senza crearne né distruggerne; solo $\lambda$ la dissipa.
+Per $D = 0$ il modello si riduce a $R_i(t) = R_i(0) \cdot 0{,}5^{\,t/h}$ con $h = \ln 2 / \lambda$: il sistema in produzione è il caso particolare $D = 0$.
 \end{proposizione}
 \begin{proof}
-Per costruzione $L \mathbf{1} = 0$ e, per simmetria, $\mathbf{1}^{\top} L = 0$.
-Quindi $\frac{d}{dt}(\mathbf{1}^{\top} R) = -\mathbf{1}^{\top}(DL + \lambda I) R = -\lambda\, \mathbf{1}^{\top} R$, da cui la prima affermazione.
-Per $D = 0$ le equazioni si disaccoppiano in $R_i' = -\lambda R_i$, la cui soluzione riscritta in emivita coincide con il peso $w = 0{,}5^{\Delta t / h}$ del Capitolo~\ref{ch:stato-implementazione}.
+$L \mathbf{1} = 0$ per costruzione e, per simmetria, $\mathbf{1}^{\top} L = 0$; quindi $\frac{d}{dt}(\mathbf{1}^{\top} R) = -\lambda\, \mathbf{1}^{\top} R$.
+Per $D = 0$ le equazioni si disaccoppiano in $R_i' = -\lambda R_i$, che riscritta in emivita coincide con il peso $w = 0{,}5^{\Delta t / h}$ del Capitolo~\ref{ch:stato-implementazione}.
 \end{proof}
 
-La compatibilità retroattiva fornisce anche il test di validazione naturale dell'implementazione: azzerando $W$ (soglia di similarità massima), la nuova pipeline deve riprodurre esattamente i KPI attuali.
+La compatibilità retroattiva è anche il test di validazione naturale: azzerando $W$, la nuova pipeline deve riprodurre esattamente i KPI attuali.
 
 \begin{proposizione}[Principio del massimo per il sentiment]
 \label{prop:massimo}
-Per ogni nodo $i$ e ogni $t \geq 0$ con $R_i(t) > 0$:
-\[
-\min_j S_j(0) \;\leq\; S_i(t) \;\leq\; \max_j S_j(0).
-\]
+Per ogni nodo $i$ e $t \geq 0$ con $R_i(t) > 0$:
+$\min_j S_j(0) \leq S_i(t) \leq \max_j S_j(0)$.
 \end{proposizione}
 \begin{proof}
-Sia $P(t) = e^{-t(DL + \lambda I)}$, non negativa per la Proposizione~\ref{prop:positivita}.
+Sia $P(t) = e^{-t(DL + \lambda I)} \geq 0$ (Proposizione~\ref{prop:positivita}).
 Allora
 \[
 S_i(t) = \frac{(P(t)\, m(0))_i}{(P(t)\, R(0))_i}
        = \frac{\sum_j P_{ij}(t)\, R_j(0)\, S_j(0)}{\sum_j P_{ij}(t)\, R_j(0)}
        = \sum_j \alpha_j S_j(0),
 \]
-con $\alpha_j = P_{ij}(t) R_j(0) / \sum_k P_{ik}(t) R_k(0) \geq 0$ e $\sum_j \alpha_j = 1$: una combinazione convessa dei sentiment iniziali.
+con $\alpha_j \geq 0$ e $\sum_j \alpha_j = 1$: combinazione convessa dei sentiment iniziali.
 \end{proof}
 
-La Proposizione~\ref{prop:massimo} è la garanzia di correttezza più importante dal punto di vista applicativo: la diffusione semantica \emph{non può fabbricare} un sentiment più estremo di quello effettivamente osservato nelle notizie---nessuna amplificazione spuria, requisito essenziale per un sistema che genera segnali operativi.
+È la garanzia applicativa decisiva: la diffusione \emph{non può fabbricare} un sentiment più estremo di quello osservato nelle notizie---nessuna amplificazione spuria in un sistema che genera segnali operativi.
 
 \begin{proposizione}[Schema numerico: stabilità e positività]
 \label{prop:schema}
-Lo schema di Eulero esplicito $R_{k+1} = \left(I - \Delta t\,(DL + \lambda I)\right) R_k$ è consistente di ordine~1 e, sotto la condizione
-\[
-\Delta t \;\leq\; \frac{1}{\lambda + D\, d_{\max}}, \qquad d_{\max} = \max_i d_i,
-\]
-preserva la positività ed è stabile.
-Lo schema di Eulero implicito $R_{k+1} = \left(I + \Delta t\,(DL + \lambda I)\right)^{-1} R_k$ è incondizionatamente stabile e positivo per ogni $\Delta t > 0$.
+Lo schema di Eulero esplicito $R_{k+1} = (I - \Delta t\,(DL + \lambda I)) R_k$ è consistente di ordine~1 e, se
+$\Delta t \leq 1/(\lambda + D\, d_{\max})$ con $d_{\max} = \max_i d_i$,
+preserva positività e stabilità.
+Lo schema implicito $R_{k+1} = (I + \Delta t\,(DL + \lambda I))^{-1} R_k$ è incondizionatamente stabile e positivo.
 \end{proposizione}
 \begin{proof}
-\emph{Esplicito.} Gli elementi fuori diagonale della matrice di iterazione $M = I - \Delta t (DL + \lambda I)$ valgono $\Delta t D\, w_{ij} \geq 0$; quelli diagonali $1 - \Delta t (D d_i + \lambda)$, non negativi sotto la condizione data: dunque $M \geq 0$ e la positività è preservata.
-Per la stabilità, gli autovalori di $M$ sono $1 - \Delta t(\lambda + D\mu)$ con $\mu \in [0, \lambda_{\max}(L)]$ e $\lambda_{\max}(L) \leq 2 d_{\max}$; sotto la condizione, $\Delta t (\lambda + D \lambda_{\max}) \leq (\lambda + 2 D d_{\max})/(\lambda + D d_{\max}) \leq 2$, quindi lo spettro resta in $[-1, 1]$.
-La convergenza di ordine $O(\Delta t)$ è il risultato classico per sistemi lineari.
-\emph{Implicito.} La matrice $I + \Delta t (DL + \lambda I)$ ha diagonale strettamente dominante ($1 + \Delta t(D d_i + \lambda) > \Delta t D d_i$) e fuori diagonale non positiva: è una M-matrice non singolare, la cui inversa è a elementi non negativi; il raggio spettrale dell'iterazione è $\leq (1 + \lambda \Delta t)^{-1} < 1$.
+\emph{Esplicito.} La matrice di iterazione $M = I - \Delta t (DL + \lambda I)$ ha fuori diagonale $\Delta t D\, w_{ij} \geq 0$ e diagonale $1 - \Delta t (D d_i + \lambda) \geq 0$ sotto la condizione: $M \geq 0$.
+Gli autovalori sono $1 - \Delta t(\lambda + D\mu)$ con $\mu \in [0, \lambda_{\max}(L)]$ e $\lambda_{\max}(L) \leq 2 d_{\max}$; sotto la condizione, $\Delta t (\lambda + D \lambda_{\max}) \leq (\lambda + 2 D d_{\max})/(\lambda + D d_{\max}) \leq 2$, quindi lo spettro resta in $[-1, 1]$; la convergenza $O(\Delta t)$ è classica.
+\emph{Implicito.} $I + \Delta t (DL + \lambda I)$ ha diagonale strettamente dominante e fuori diagonale non positiva: è una M-matrice non singolare con inversa $\geq 0$, e il raggio spettrale dell'iterazione è $\leq (1 + \lambda \Delta t)^{-1} < 1$.
 \end{proof}
 
 \begin{osservazione}[Calibrazione]
-Con passo giornaliero ($\Delta t = 1$) e l'emivita di default $h = 7$ giorni ($\lambda = \ln 2 / 7 \approx 0{,}099$), la condizione della Proposizione~\ref{prop:schema} diventa $D\, d_{\max} \lesssim 0{,}9$: un vincolo esplicito e interpretabile tra l'intensità della diffusione e la densità del grafo, che si controlla in pratica tramite la soglia di similarità con cui si sparsifica $W$.
-In alternativa, lo schema implicito (una soluzione di sistema lineare sparso al giorno) rimuove ogni vincolo sul passo.
+Con passo giornaliero e l'emivita di default ($h = 7$, $\lambda \approx 0{,}099$), la condizione diventa $D\, d_{\max} \lesssim 0{,}9$: un vincolo interpretabile tra intensità della diffusione e densità del grafo, controllabile con la soglia di similarità.
+Lo schema implicito (una soluzione di sistema sparso al giorno) rimuove ogni vincolo sul passo.
 \end{osservazione}
 
-Sul piano implementativo, il popolamento della tabella \texttt{ticker\_cross\_diffused\_sentiment} si riduce quindi a un passo di Eulero implicito al giorno sulle coppie $(R, m)$, con la matrice $W$ già disponibile dalla similarità tra embedding aziendali---nessun ingrediente mancante.
+Il popolamento di \texttt{ticker\_cross\_diffused\_sentiment} si riduce quindi a un passo di Eulero implicito al giorno sulle coppie $(R, m)$: nessun ingrediente mancante.
 
 \subsection{Benchmark multi-scorer del sentiment}
 
-La delega dello scoring ad Alpha Vantage, oggi un limite, può diventare un'opportunità sperimentale: il database contiene decine di migliaia di coppie (articolo, ticker) già etichettate dal provider.
-Si propone un confronto sistematico tra scorer alternativi sullo stesso corpus: FinBERT zero-shot, un LLM open-weight recente (es.\ LLaMA~3 o Qwen) via prompting, e i punteggi del provider.
-Le domande aperte sono due: quanto concordano gli scorer tra loro (affidabilità inter-rater), e quale segnale correla meglio con i rendimenti successivi (validità predittiva).
-La conversione \textit{logit-to-score} di FinDPO \parencite{iacovides2025findpo} offre inoltre una via per ottenere punteggi continui e calibrati da modelli generativi, direttamente confrontabili con la scala $[-1, +1]$ già in uso.
+La delega dello scoring ad Alpha Vantage può diventare un'opportunità: il database contiene decine di migliaia di coppie (articolo, ticker) già etichettate.
+Si propone un confronto sistematico tra scorer sullo stesso corpus---FinBERT zero-shot, un LLM open-weight via prompting, i punteggi del provider---su due domande: la concordanza inter-rater e la validità predittiva rispetto ai rendimenti.
+La conversione \textit{logit-to-score} di FinDPO \parencite{iacovides2025findpo} offre punteggi continui e calibrati, confrontabili con la scala $[-1, +1]$ in uso.
 
 \subsection{Attenzione mediatica come segnale complementare}
 
-Il job di \textit{coverage ingestion} raccoglie sistematicamente il volume di notizie per ticker e topic: questo dato, già disponibile, permette di costruire un indice di attenzione mediatica nello spirito dell'Hype Index \parencite{cao2025hypeindexnlpdrivenmeasure}, senza costi aggiuntivi di acquisizione.
-L'ipotesi da verificare è che picchi di copertura anticipino volatilità indipendentemente dalla polarità del sentiment, e che l'interazione sentiment~$\times$~attenzione sia più informativa dei due segnali separati.
+Il volume di notizie per ticker e topic, già raccolto dalla coverage ingestion, permette di costruire un indice di attenzione mediatica nello spirito dell'Hype Index \parencite{cao2025hypeindexnlpdrivenmeasure} senza costi aggiuntivi.
+L'ipotesi è che i picchi di copertura anticipino volatilità indipendentemente dalla polarità, e che l'interazione sentiment~$\times$~attenzione superi i due segnali separati.
 
 \subsection{Interazione tra sentiment e segnali tecnici}
 
-Con l'introduzione degli indicatori tecnici (Capitolo~\ref{ch:stato-implementazione}, Sezione~\ref{sec:analisi-tecnica}), il prototipo espone per ogni titolo due segnali di natura diversa: uno informativo (il KPI di sentiment) e uno di prezzo (momentum rispetto alla SMA~50, RSI, posizione nelle bande di Bollinger).
-La domanda di ricerca naturale è se il sentiment abbia \emph{valore predittivo incrementale} rispetto ai segnali tecnici: un segnale di sentiment bullish su un titolo già in momentum positivo è ridondante, o i due segnali si rafforzano?
-E, specularmente, le divergenze (sentiment bullish su titolo tecnicamente ipercomprato, o viceversa) anticipano inversioni?
-
-La letteratura offre un precedente diretto: \textcite{neely2014forecasting} mostrano che gli indicatori tecnici prevedono il premio al rischio azionario con potere comparabile alle variabili macroeconomiche, e soprattutto che i due insiemi di predittori catturano \emph{informazione complementare}---usati insieme, migliorano la previsione più di quanto faccia ciascuno da solo.
-La domanda proposta replica questo disegno sostituendo alle variabili macro il sentiment testuale: regressioni dei rendimenti futuri su sentiment, segnale tecnico e loro interazione, per quantificare separatamente i tre effetti prima di delegarli a un modello black-box \parencite{brock1992simple}.
-Il prototipo dispone già di tutti gli ingredienti (KPI giornaliero, indicatori, prezzi persistiti) e il report automatico descritto nel Capitolo~\ref{ch:stato-implementazione} già classifica ogni titolo come \emph{allineato} o \emph{divergente}: le etichette così generate costituiscono le celle del disegno sperimentale, rendendo questa direzione a costo quasi nullo.
+Con gli indicatori tecnici (Sezione~\ref{sec:analisi-tecnica}) il prototipo espone per ogni titolo un segnale informativo e uno di prezzo; la domanda naturale è se il sentiment abbia \emph{valore predittivo incrementale} rispetto ai segnali tecnici, e se le divergenze anticipino inversioni.
+\textcite{neely2014forecasting} offrono il precedente diretto: gli indicatori tecnici prevedono il premio al rischio con potere comparabile e \emph{complementare} alle variabili macroeconomiche.
+Il disegno proposto replica quello schema sostituendo alle variabili macro il sentiment: regressioni dei rendimenti su sentiment, segnale tecnico e interazione \parencite{brock1992simple}.
+Il report automatico del Capitolo~\ref{ch:stato-implementazione} già classifica ogni titolo come allineato o divergente: le etichette costituiscono le celle del disegno sperimentale, a costo quasi nullo.
 
 \subsection{Notizie programmate e non programmate}
 
-Un affinamento della relazione sentiment--prezzo, reso possibile dallo storico pluriennale del cold store, riguarda la natura degli eventi informativi.
-\textcite{boudoukh2019information} mostrano che, una volta identificate e classificate le notizie firm-specific, la frazione di volatilità spiegata dall'informazione pubblica cresce sensibilmente, e che l'impatto differisce tra eventi \emph{programmati} (earnings, guidance) e \emph{non programmati} (M\&A, azioni legali, downgrade).
-La pipeline del prototipo già classifica gli articoli per topic (inclusi \texttt{earnings} e \texttt{mergers\_and\_acquisitions}): separare il KPI di sentiment nei due regimi permetterebbe di verificare se il decay informativo---l'emivita $h$---differisca sistematicamente tra notizie attese dal mercato e sorprese, un'ipotesi che raffina la stima empirica del parametro di decay proposta sopra.
+\textcite{boudoukh2019information} mostrano che l'impatto delle notizie firm-specific differisce tra eventi \emph{programmati} (earnings, guidance) e \emph{non programmati} (M\&A, azioni legali).
+La pipeline già classifica gli articoli per topic (inclusi \texttt{earnings} e \texttt{mergers\_and\_acquisitions}): separare il KPI nei due regimi permetterebbe di verificare se l'emivita informativa $h$ differisca tra notizie attese e sorprese, raffinando la stima empirica del decay proposta sopra---un'analisi resa possibile dallo storico pluriennale del cold store.
 
 \subsection{Foundation model per serie temporali}
 
-La proposta originaria individua nell'LSTM il modello predittivo di riferimento (Capitolo~\ref{ch:descrizione-progetto}).
-Dal 2024 il paradigma sta però cambiando: modelli fondazionali pre-addestrati su grandi corpora di serie temporali eterogenee---Chronos \parencite{ansari2024chronos}, che tokenizza le serie e le tratta come linguaggio, e TimesFM \parencite{das2024timesfm}, un decoder-only addestrato su cento miliardi di punti temporali reali---raggiungono in zero-shot prestazioni comparabili ai modelli supervisionati addestrati sul singolo dataset.
-Per il progetto questo suggerisce una revisione a basso costo del piano: usare un foundation model come baseline zero-shot sulla previsione dei rendimenti, e verificare se il condizionamento sul sentiment (come covariata o tramite fine-tuning leggero) apporti valore incrementale.
-Il confronto ``LSTM addestrato da zero vs.\ foundation model condizionato sul sentiment'' è a sua volta una domanda di ricerca attuale, resa possibile dallo storico dell'archivio.
+La proposta originaria individua nell'LSTM il modello predittivo di riferimento; dal 2024 i modelli fondazionali per serie temporali---Chronos \parencite{ansari2024chronos}, TimesFM \parencite{das2024timesfm}---raggiungono in zero-shot prestazioni comparabili ai modelli supervisionati per singolo dataset.
+La revisione a basso costo del piano: usare un foundation model come baseline zero-shot e verificare se il condizionamento sul sentiment (covariata o fine-tuning leggero) apporti valore incrementale.
+Il confronto ``LSTM da zero vs.\ foundation model condizionato sul sentiment'' è a sua volta una domanda di ricerca attuale.
 
 \subsection{Protocollo di backtesting metodologicamente rigoroso}
 
-La letteratura critica recente \parencite{li2025finsaber} mostra che i vantaggi delle strategie basate su LLM tendono a svanire su orizzonti lunghi e universi ampi di titoli, e che i backtest sono esposti a survivorship bias, look-ahead bias e data-snooping.
-Il piano di backtesting del Capitolo~\ref{ch:descrizione-progetto} sarà quindi vincolato fin dall'inizio a un protocollo esplicito: uso esclusivo di informazione disponibile alla data di segnale, confronto con benchmark passivi, valutazione su più regimi di mercato e reporting dei costi di transazione.
-Per gli scorer basati su LLM andrà inoltre considerato il look-ahead bias ``parametrico'': la valutazione più pulita richiede notizie successive al cutoff di addestramento del modello utilizzato.
+La letteratura critica \parencite{li2025finsaber} mostra che i vantaggi delle strategie LLM svaniscono su orizzonti lunghi e universi ampi, e che i backtest sono esposti a survivorship bias, look-ahead bias e data-snooping.
+Il backtesting sarà quindi vincolato a un protocollo esplicito: solo informazione disponibile alla data di segnale, benchmark passivi, più regimi di mercato, costi di transazione dichiarati.
+Per gli scorer LLM va considerato anche il look-ahead bias ``parametrico'': la valutazione pulita richiede notizie successive al cutoff di addestramento del modello.
 
 \section{Direzioni per l'applicativo}
 
-Le priorità implementative, ordinate per rapporto tra valore e sforzo, sono le seguenti.
+Le priorità implementative, per rapporto valore/sforzo:
 
 \begin{enumerate}
-  \item \textbf{Modulo di scoring interno con FinBERT.} Applicazione batch di FinBERT agli articoli già in database, con persistenza dei punteggi in colonne parallele a quelli del provider: abilita immediatamente il benchmark multi-scorer ed elimina il vincolo monofonte sullo scoring.
-  \item \textbf{Popolamento del cross-diffused sentiment.} La tabella \texttt{ticker\_cross\_diffused\_sentiment}, già predisposta, può essere alimentata con un primo modello di diffusione su grafo che utilizzi la matrice di correlazione tra aziende esistente: è il passo che trasforma la proposta teorica della diffusione semantica in funzionalità osservabile in dashboard.
-  \item \textbf{Analisi statistica sentiment--prezzo.} Un endpoint e una vista che calcolino correlazioni di Pearson e Spearman tra KPI di sentiment e rendimenti, con ritardi temporali configurabili ($0$--$5$ giorni), sostituendo l'attuale confronto visivo tra grafici separati.
-  \item \textbf{Backtester elementare.} Simulazione della strategia long/flat descritta nel Capitolo~\ref{ch:descrizione-progetto} sui dati storici già persistiti (sentiment KPI e prezzi), con rendimento cumulato contro benchmark, hit-rate e Sharpe ratio semplificato, nel rispetto del protocollo anti-bias sopra definito.
-  \item \textbf{Seconda fonte di dati.} Integrazione di una fonte a basso attrito (feed RSS finanziari o scraping mirato) per ridurre la dipendenza da Alpha Vantage; gli articoli senza scoring del provider diventano il banco di prova naturale del modulo FinBERT interno.
-  \item \textbf{LLM-as-annotator per un dataset entity-level.} Utilizzo di un LLM per annotare un sottoinsieme di articoli a livello di entità (nello spirito di FinEntity \parencite{tang-etal-2023-finentity}), con revisione manuale a campione: il dataset risultante abilita il fine-tuning previsto dalla proposta originaria a costi contenuti.
+  \item \textbf{Scoring interno con FinBERT}: applicazione batch agli articoli in database, con punteggi persistiti accanto a quelli del provider---abilita il benchmark multi-scorer;
+  \item \textbf{Popolamento del cross-diffused sentiment} con il modello della Sezione~\ref{sec:soluzione-discreta} e la matrice di correlazione esistente;
+  \item \textbf{Analisi statistica sentiment--prezzo}: correlazioni di Pearson e Spearman con ritardi configurabili ($0$--$5$ giorni), al posto del confronto visivo;
+  \item \textbf{Backtester elementare}: strategia long/flat sui dati persistiti, con rendimento cumulato, hit-rate e Sharpe semplificato, nel rispetto del protocollo anti-bias;
+  \item \textbf{Seconda fonte di dati} a basso attrito (RSS o scraping mirato); gli articoli senza scoring del provider sono il banco di prova del modulo FinBERT;
+  \item \textbf{LLM-as-annotator} per un dataset entity-level nello spirito di FinEntity \parencite{tang-etal-2023-finentity}, con revisione manuale a campione, per abilitare il fine-tuning a costi contenuti.
 \end{enumerate}
 
-Rispetto alla prima stesura di questo elenco, il vincolo pratico più stringente --- la disponibilità di uno storico ampio e stabile su cui addestrare e validare --- è stato rimosso: il cold store descritto nel Capitolo~\ref{ch:stato-implementazione} (Sezione~\ref{sec:cold-storage}) accumula senza limiti di ritenzione l'intero flusso di articoli etichettati, con storico dal 2018.
-Il fine-tuning e il benchmark multi-scorer possono quindi essere pianificati su un corpus dell'ordine delle centinaia di migliaia di esempi, anziché sulla finestra rolling di 30 giorni.
+Il vincolo pratico più stringente---uno storico ampio su cui addestrare e validare---è stato rimosso dal cold store (Sezione~\ref{sec:cold-storage}), che accumula senza limiti di ritenzione il flusso di articoli etichettati dal 2018: fine-tuning e benchmark possono essere pianificati su centinaia di migliaia di esempi.
 
 \section{Sintesi}
 
-Il filo conduttore delle direzioni proposte è la trasformazione del prototipo da strumento di monitoraggio a piattaforma sperimentale: ogni componente applicativa (scoring interno, diffusione su grafo, correlazioni, backtester) corrisponde a una domanda di ricerca verificabile con i dati già raccolti.
-L'elemento di maggiore originalità resta la modellazione della rilevanza informativa come campo dinamico che decade e si diffonde nello spazio semantico, per la quale il prototipo dispone ormai di tutti gli ingredienti infrastrutturali.
+Il filo conduttore è la trasformazione del prototipo da strumento di monitoraggio a piattaforma sperimentale: ogni componente applicativa corrisponde a una domanda di ricerca verificabile con i dati già raccolti.
+L'elemento di maggiore originalità resta la modellazione della rilevanza informativa come campo dinamico che decade e si diffonde nello spazio semantico---ora dotata di formulazione discreta, soluzione in forma chiusa e garanzie di correttezza dimostrate.

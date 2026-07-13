@@ -1,188 +1,86 @@
 \chapter{Stato dell'implementazione}
 \label{ch:stato-implementazione}
 
-Il presente capitolo documenta lo stato attuale del prototipo operativo \textit{Forecasting}, sviluppato in parallelo alla proposta descritta nel Capitolo~\ref{ch:descrizione-progetto}.
-L'obiettivo è rendere esplicito cosa è già funzionante, con quale architettura e quali limiti, distinguendo le componenti implementate da quelle ancora pianificate.
+Questo capitolo documenta lo stato del prototipo operativo, distinguendo le componenti implementate da quelle pianificate.
 
 \section{Architettura e stack tecnologico}
 
-Il codice sorgente è organizzato in un repository Git e implementato interamente in \textbf{Python}.
-L'applicazione è containerizzata con Docker e composta da tre elementi principali:
-
-\begin{itemize}
-  \item \textbf{PostgreSQL} per la persistenza strutturata degli articoli, dei prezzi e dei metadati aziendali;
-  \item \textbf{Flask} (\texttt{app.py}) come server web e API REST;
-  \item \textbf{Gunicorn} per il deploy in produzione su Heroku.
-\end{itemize}
-
-La configurazione locale avviene tramite \texttt{docker-compose.yml}; in produzione l'applicazione è esposta pubblicamente su Heroku all'indirizzo:
-\url{https://dollarpunk-26786f215068.herokuapp.com/dashboard}
-
-Rispetto al disegno iniziale, non sono stati ancora introdotti moduli in Rust o JavaScript dedicati, né pipeline di training su infrastrutture GPU (RunPod, Databricks).
-L'approccio attuale privilegia un \textit{MVP} orientato all'ingestion, alla persistenza e alla visualizzazione.
+Il prototipo è interamente in \textbf{Python}: PostgreSQL per la persistenza, Flask come server web e API REST, Gunicorn per il deploy.
+La configurazione locale avviene tramite Docker Compose; in produzione l'applicazione è esposta su Heroku (\url{https://dollarpunk-26786f215068.herokuapp.com/dashboard}).
+Rispetto al disegno iniziale non sono ancora presenti moduli in altri linguaggi né pipeline di training su GPU: l'approccio privilegia un MVP orientato a ingestion, persistenza e visualizzazione.
 
 \section{Raccolta dati}
 
-\subsection{Fonte attuale: Alpha Vantage}
+La raccolta testuale si appoggia esclusivamente all'endpoint \texttt{NEWS\_SENTIMENT} di Alpha Vantage: per ogni articolo l'API restituisce metadati (titolo, URL, fonte, timestamp, summary) e, per ciascun ticker menzionato, \emph{relevance score}, \emph{sentiment score} ed etichetta qualitativa, persistiti in database nel formato JSON del provider---coerente con l'output atteso nel Capitolo~\ref{ch:descrizione-progetto}.
 
-Al momento la raccolta testuale si appoggia esclusivamente all'endpoint \texttt{NEWS\_SENTIMENT} di Alpha Vantage, orchestrato dal modulo \texttt{news\_collector.py}.
-Per ogni articolo l'API restituisce metadati (titolo, URL, fonte, timestamp, summary) e, per ciascun ticker menzionato, un punteggio di \emph{relevance} e di \emph{sentiment} già calcolati dal provider.
+L'acquisizione avviene in più modalità, attivabili dalla dashboard amministrativa o da job schedulati: raccolta manuale parametrizzata (ticker, topic, intervallo), \emph{deep ingestion} estesa con tracciamento dello stato, \emph{coverage ingestion} sistematica degli ultimi $N$ giorni su tutti i topic e i ticker noti (con ripresa automatica), e \emph{prune} periodico che mantiene la finestra rolling.
+Ogni esecuzione è registrata nella tabella \texttt{job\_executions}.
 
-La struttura salvata in database replica il formato JSON dell'API, coerente con l'output atteso nel Capitolo~\ref{ch:descrizione-progetto}:
-
-\begin{itemize}
-  \item \texttt{stocks\_mentioned} e \texttt{ticker\_sentiments} (campo JSONB \texttt{ticker\_sentiment});
-  \item \texttt{relevance\_score} e \texttt{sentiment\_score} per ticker;
-  \item etichetta qualitativa (\texttt{Bullish}, \texttt{Bearish}, \texttt{Neutral}, ecc.).
-\end{itemize}
-
-\subsection{Modalità di ingestion}
-
-Sono disponibili più modalità di acquisizione, attivabili dalla dashboard amministrativa o da job schedulati:
-
-\begin{itemize}
-  \item \textbf{Collect manuale}: raccolta parametrizzata per ticker, topic e intervallo temporale;
-  \item \textbf{Deep ingestion / deep research}: acquisizione estesa su ticker o topic con tracciamento dello stato in tempo reale;
-  \item \textbf{Coverage ingestion} (\texttt{coverage\_ingestion\_job.py}): scansione sistematica degli ultimi $N$ giorni su tutti i topic supportati dall'API e sui ticker presenti nel database, con progresso salvato su file e ripresa automatica;
-  \item \textbf{Prune old news} (\texttt{prune\_old\_news.py}): manutenzione del database per mantenere una finestra temporale rolling degli articoli.
-\end{itemize}
-
-Tutte le esecuzioni significative sono registrate nella tabella \texttt{job\_executions}, consultabile dalla pagina \textit{Job Executions}.
-
-\subsection{Scostamento rispetto al disegno iniziale}
-
-Non sono ancora integrate le fonti eterogenee descritte nel Capitolo~\ref{ch:descrizione-progetto} (Bloomberg, Reuters, social media, Reddit, scraping con \texttt{newspaper}, motori di ricerca).
-La raccolta attuale è quindi \textbf{monofonte} e dipendente dai limiti di rate dell'API Alpha Vantage (5 chiamate/minuto nel tier gratuito, fino a 75/minuto nel tier premium).
+La raccolta attuale è quindi \textbf{monofonte} e dipendente dai limiti di rate dell'API (5 chiamate/minuto nel tier gratuito, 75 nel premium): le fonti eterogenee del Capitolo~\ref{ch:descrizione-progetto} (social, scraping, motori di ricerca) non sono ancora integrate.
 
 \section{Persistenza e modello dati}
 
-Il modello relazionale principale è definito in \texttt{schema.sql}.
 La tabella centrale \texttt{articles} memorizza ogni notizia con inserimento \textbf{idempotente} sulla chiave \texttt{url}.
-
-Oltre agli articoli, il database include:
-
-\begin{itemize}
-  \item \texttt{stock\_prices}: prezzi di chiusura e volumi giornalieri per ticker, recuperati lazy da Alpha Vantage e cachati localmente;
-  \item \texttt{companies}: anagrafica e descrizione del business per ticker (Alpha Vantage OVERVIEW e, opzionalmente, FMP);
-  \item \texttt{company\_embeddings}: vettori embedding OpenAI (\texttt{text-embedding-3-small}) delle descrizioni aziendali;
-  \item \texttt{company\_correlation\_matrix}: matrice di similarità coseno tra embedding aziendali, con cache in database;
-  \item \texttt{job\_executions}: log strutturato dei job di background.
-\end{itemize}
-
-Sono inoltre presenti tabelle predisposte per estensioni future (\texttt{ticker\_decayed\_sentiment}, \texttt{ticker\_cross\_diffused\_sentiment}) la cui logica di popolamento non è ancora implementata.
-
-\subsection{Viste analitiche SQL}
-
-Per l'aggregazione del sentiment a livello di ticker sono state definite due viste:
-
-\begin{itemize}
-  \item \texttt{article\_ticker\_sentiment\_view}: espande il JSONB \texttt{ticker\_sentiment} in una riga per coppia (articolo, ticker);
-  \item \texttt{ticker\_daily\_sentiment\_view}: aggrega per ticker e giorno, con decadimento temporale del \emph{relevance score} e media ponderata del sentiment.
-\end{itemize}
+La affiancano: \texttt{stock\_prices} (chiusure e volumi giornalieri, recuperati lazy e cachati), \texttt{companies} (anagrafica e descrizione del business), \texttt{company\_embeddings} (vettori OpenAI \texttt{text-embedding-3-small} delle descrizioni), \texttt{company\_correlation\_matrix} (similarità coseno tra embedding, cachata) e \texttt{job\_executions}.
+Due viste SQL supportano l'analisi: \texttt{article\_ticker\_sentiment\_view} espande il JSONB in una riga per coppia (articolo, ticker); \texttt{ticker\_daily\_sentiment\_view} aggrega per ticker e giorno con decadimento temporale.
+Sono predisposte, ma non ancora popolate, le tabelle \texttt{ticker\_decayed\_sentiment} e \texttt{ticker\_cross\_diffused\_sentiment}.
 
 \subsection{Archiviazione cold-storage}
 \label{sec:cold-storage}
 
-La finestra rolling di 30 giorni, imposta dai limiti del piano PostgreSQL in produzione (1~GB), comportava originariamente la perdita definitiva degli articoli rimossi dal job di prune.
-Per eliminare questa perdita informativa è stata introdotta un'architettura a due livelli:
+La finestra rolling di 30 giorni, imposta dai limiti del piano PostgreSQL in produzione (1~GB), comportava originariamente la perdita definitiva degli articoli rimossi dal prune.
+È stata quindi introdotta un'architettura a due livelli: il PostgreSQL di produzione come \emph{hot store} (ultimi 30 giorni, serve dashboard e API) e un archivio analitico \textbf{DuckDB} su MotherDuck come \emph{cold store}, alimentato quotidianamente e privo di limiti pratici di crescita.
+Il job di archiviazione copia articoli e prezzi con \textbf{inserimento idempotente} tramite anti-join sulla chiave naturale, e nello scheduler precede il prune: nessun articolo viene cancellato prima di essere stato archiviato.
 
-\begin{itemize}
-  \item \textbf{Hot store}: il PostgreSQL di produzione, limitato agli ultimi 30 giorni, che serve dashboard e API con tempi di risposta contenuti;
-  \item \textbf{Cold store}: un archivio analitico \textbf{DuckDB} ospitato su MotherDuck, alimentato quotidianamente e privo di limiti pratici di crescita.
-\end{itemize}
-
-Il job di archiviazione (\texttt{archive\_job.py}) copia articoli e prezzi giornalieri dal database operativo all'archivio con \textbf{inserimento idempotente} tramite anti-join sulla chiave naturale (\texttt{url} per gli articoli, coppia ticker--data per i prezzi): l'esecuzione ripetuta non produce duplicati.
-Nello scheduler di produzione il job precede il prune, garantendo che nessun articolo venga cancellato prima di essere stato archiviato.
-
-Al momento del bootstrap (luglio 2026) l'archivio conteneva \textbf{758\,817 articoli} con scoring per ticker --- con storico dal novembre 2018, recuperato in parte da un'istanza locale del database --- e 24\,758 osservazioni di prezzo.
-Questo dataset costituisce la base empirica per due componenti della proposta originaria rimaste finora teoriche: il \emph{fine-tuning} di modelli open-source su coppie (testo, sentiment per ticker) già etichettate, e il backtesting su orizzonti pluriennali richiesto dal protocollo anti-bias del Capitolo~\ref{ch:direzioni-future}.
+Al bootstrap (luglio 2026) l'archivio conteneva \textbf{758\,817 articoli} con scoring per ticker---storico dal novembre 2018, recuperato in parte da un'istanza locale---e 24\,758 osservazioni di prezzo.
+Questo dataset è la base empirica per due componenti finora teoriche della proposta: il fine-tuning su coppie (testo, sentiment) già etichettate e il backtesting su orizzonti pluriennali richiesto dal protocollo anti-bias del Capitolo~\ref{ch:direzioni-future}.
 
 \section{Scoring del sentiment: delega al provider}
 
-Una distinzione importante rispetto al Capitolo~\ref{ch:descrizione-progetto}: al momento \textbf{non esiste una pipeline NLP proprietaria}.
-L'estrazione dei ticker, il \emph{relevance score} e il \emph{sentiment score} sono calcolati interamente da Alpha Vantage e persistiti così come ricevuti.
-
-Di conseguenza, non sono ancora stati implementati:
-
-\begin{itemize}
-  \item modelli FinBERT, GPT-4 o LLM open-source per scoring interno;
-  \item approcci RAG (FAISS, LangChain);
-  \item fine-tuning su dataset annotati;
-  \item NER, pattern matching e \emph{confidence score} proprietari per l'associazione testo--ticker.
-\end{itemize}
-
-Questa scelta consente di validare rapidamente il flusso ETL, lo storage e le visualizzazioni, rimandando lo sviluppo del modulo NLP a una fase successiva.
+Al momento \textbf{non esiste una pipeline NLP proprietaria}: estrazione dei ticker, relevance e sentiment sono calcolati da Alpha Vantage e persistiti così come ricevuti; FinBERT, RAG, fine-tuning e NER proprietario restano da implementare.
+La scelta ha permesso di validare rapidamente ETL, storage e visualizzazioni, rimandando il modulo NLP a una fase successiva.
 
 \section{Decay temporale e KPI di sentiment}
 
-Il decadimento temporale descritto nel Capitolo~\ref{ch:descrizione-progetto} è stato implementato in forma operativa, con una parametrizzazione basata su \textbf{emivita} (\textit{half-life}) anziché sul parametro $\lambda$ esplicito del modello teorico.
-
+Il decadimento del Capitolo~\ref{ch:descrizione-progetto} è operativo, parametrizzato tramite \textbf{emivita}.
 Per ogni ticker, il KPI giornaliero calcolato in dashboard e nelle API pubbliche è:
-
 \[
 \text{KPI}_d = \frac{\sum_i s_i \cdot r_i \cdot w_i}{\sum_i r_i \cdot w_i},
 \qquad
 w_i = 0{,}5^{\,\Delta t_i / h}
 \]
+dove $s_i$ e $r_i$ sono sentiment e relevance dell'articolo $i$, $\Delta t_i$ i giorni dalla pubblicazione e $h$ l'emivita configurabile (default: 7 giorni), equivalente a $\lambda = \ln(2)/h$.
 
-dove $s_i$ e $r_i$ sono rispettivamente \emph{sentiment score} e \emph{relevance score} dell'articolo $i$, $\Delta t_i$ i giorni trascorsi dalla pubblicazione e $h$ l'emivita configurabile (default: 7 giorni).
-Il fattore $0{,}5^{\Delta t / h}$ equivale a un decadimento esponenziale con $\lambda = \ln(2)/h$.
+La stessa logica è replicata nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi} e nella pagina portfolio.
+La vista SQL \texttt{ticker\_daily\_sentiment\_view} adotta invece la variante \emph{non normalizzata} (somma decayed dei contributi): come discusso nel Capitolo~\ref{ch:descrizione-progetto}, la media normalizzata misura la \emph{direzione} del sentiment attivo, la somma decayed la sua \emph{intensità}---la coesistenza è una scelta informativa, non una duplicazione.
 
-La stessa logica è replicata nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi} e nella pagina portfolio (sentiment decayed su intervalli configurabili).
-La vista SQL \texttt{ticker\_daily\_sentiment\_view} (lookback 30 giorni) adotta invece la variante \emph{non normalizzata}: una somma dei contributi giornalieri con decadimento, senza divisione per la somma dei pesi.
-Le due grandezze non sono intercambiabili: come discusso nel Capitolo~\ref{ch:descrizione-progetto}, la media normalizzata misura la direzione del sentiment attivo ed è confinata nell'intervallo dei sentiment osservati, mentre la somma decayed ne misura l'intensità e tende a zero in assenza di notizie.
-La coesistenza delle due varianti è quindi una scelta informativa, non una duplicazione.
-
-\subsection{Diffusione semantica}
-
-La proposta di diffusione del \emph{relevance} nello spazio semantico (equazione alle derivate parziali del Capitolo~\ref{ch:descrizione-progetto}) non è ancora operativa sulle notizie.
-Esiste tuttavia un \textbf{primo passo parziale} sulle aziende: le descrizioni di business vengono vettorizzate con OpenAI e confrontate tramite similarità coseno, producendo una matrice di correlazione tra ticker consultabile dalla sezione \textit{Companies}.
-Questa matrice misura affinità tra profili aziendali, non tra articoli di news, e non alimenta ancora la tabella \texttt{ticker\_cross\_diffused\_sentiment}.
+La diffusione semantica non è ancora operativa; esiste però l'ingrediente chiave: la matrice di similarità coseno tra i profili aziendali (embedding OpenAI), consultabile dalla sezione \textit{Companies}, che non alimenta ancora \texttt{ticker\_cross\_diffused\_sentiment}.
 
 \section{Indicatori di analisi tecnica}
 \label{sec:analisi-tecnica}
 
-Accanto al KPI di sentiment, il prototipo calcola un insieme di indicatori tecnici classici a partire dalle chiusure giornaliere già persistite in \texttt{stock\_prices}, senza chiamate API aggiuntive.
-L'obiettivo è affiancare al segnale informativo (``cosa dicono le notizie'') un segnale di prezzo (``cosa sta facendo il titolo''), abilitando la lettura congiunta dei due.
-Benché l'analisi tecnica sia storicamente controversa, la sua fondazione statistica è stata riabilitata in letteratura: \textcite{lo2000foundations} mostrano su dati di decenni che i pattern tecnici contengono informazione incrementale, e \textcite{neely2014forecasting} che gli indicatori tecnici prevedono il premio al rischio azionario con potere comparabile---e complementare---alle variabili macroeconomiche.
+Accanto al KPI di sentiment, il prototipo calcola indicatori tecnici classici dalle chiusure già persistite, senza chiamate API aggiuntive: l'obiettivo è affiancare al segnale informativo (``cosa dicono le notizie'') un segnale di prezzo (``cosa sta facendo il titolo'').
+Benché storicamente controversa, l'analisi tecnica ha una fondazione statistica riabilitata in letteratura: \textcite{lo2000foundations} mostrano che i pattern tecnici contengono informazione incrementale, e \textcite{neely2014forecasting} che gli indicatori tecnici prevedono il premio al rischio con potere comparabile---e complementare---alle variabili macroeconomiche.
 
 \begin{itemize}
-  \item \textbf{Medie mobili semplici} a 20 e 50 giorni, con la distanza percentuale del prezzo dalla SMA~50 come indicatore sintetico di momentum;
-  \item \textbf{Bande di Bollinger} \parencite{bollinger2001bollinger}: $\text{SMA}_{20} \pm 2\sigma_{20}$, dove $\sigma_{20}$ è la deviazione standard mobile a 20 giorni; la posizione del prezzo all'interno della banda, normalizzata in $[0,1]$, segnala movimenti anomali rispetto alla volatilità recente;
-  \item \textbf{RSI a 14 giorni} \parencite{wilder1978new}, con smoothing di Wilder, e le soglie convenzionali di ipercomprato ($>70$) e ipervenduto ($<30$);
-  \item \textbf{Volatilità realizzata a 20 giorni}, deviazione standard dei log-rendimenti giornalieri annualizzata con fattore $\sqrt{252}$.
+  \item \textbf{Medie mobili semplici} a 20 e 50 giorni, con la distanza percentuale dalla SMA~50 come momentum sintetico;
+  \item \textbf{Bande di Bollinger} \parencite{bollinger2001bollinger}: $\text{SMA}_{20} \pm 2\sigma_{20}$, con la posizione del prezzo nella banda normalizzata in $[0,1]$;
+  \item \textbf{RSI a 14 giorni} \parencite{wilder1978new}, con soglie convenzionali di ipercomprato ($>70$) e ipervenduto ($<30$);
+  \item \textbf{Volatilità realizzata a 20 giorni}, annualizzata con fattore $\sqrt{252}$.
 \end{itemize}
 
-Gli indicatori sono esposti da un endpoint dedicato (\texttt{/api/tickers/<ticker>/technicals}) e visualizzati in due punti dell'interfaccia: nella pagina di dettaglio del ticker, come overlay attivabili sul grafico prezzo--volume con uno snapshot dei valori correnti, e nella dashboard pubblica, come badge sintetici (direzione rispetto alla SMA~50, RSI) accanto al KPI di sentiment di ciascun titolo in classifica.
-
-Sopra questi valori è costruito un \textbf{report tecnico automatico}: un generatore deterministico a regole che traduce gli indicatori in una lettura testuale (momentum, incroci di medie mobili, condizioni di ipercomprato/ipervenduto, \textit{squeeze} di volatilità) e la conclude con un confronto esplicito tra la direzione tecnica e il KPI di sentiment corrente, segnalando l'\emph{allineamento} o la \emph{divergenza} dei due segnali.
-La rilevazione automatica delle divergenze (notizie bullish su un titolo tecnicamente debole, o viceversa) rende osservabile per ogni titolo, in tempo reale, il fenomeno al centro della domanda di ricerca del Capitolo~\ref{ch:direzioni-future}.
-
-La co-presenza dei due segnali sulla stessa vista non è solo una scelta di interfaccia: prepara la domanda di ricerca sull'\emph{interazione} tra sentiment e segnali tecnici discussa nel Capitolo~\ref{ch:direzioni-future}, in linea con la letteratura che documenta il valore predittivo congiunto di regole tecniche e variabili informative \parencite{brock1992simple}.
+Gli indicatori sono esposti da un endpoint dedicato e visualizzati come overlay sul grafico prezzo--volume nella pagina di dettaglio e come badge sintetici accanto al KPI di sentiment in dashboard.
+Sopra di essi è costruito un \textbf{report tecnico automatico}: un generatore deterministico a regole che traduce gli indicatori in una lettura testuale (momentum, incroci di medie, ipercomprato/ipervenduto, \textit{squeeze} di volatilità) e la conclude confrontando la direzione tecnica con il KPI di sentiment corrente, segnalandone l'\emph{allineamento} o la \emph{divergenza}.
+La rilevazione automatica delle divergenze rende osservabile in tempo reale, per ogni titolo, il fenomeno al centro della domanda di ricerca sull'interazione tra i due segnali \parencite{brock1992simple} sviluppata nel Capitolo~\ref{ch:direzioni-future}.
 
 \section{Interfaccia web e funzionalità utente}
 
-L'applicazione Flask espone due livelli di accesso:
-
-\paragraph{Area amministrativa} (autenticata)
-Pannello di controllo per lanciare job di ingestion, consultare statistiche globali, esplorare articoli, eseguire query SQL e gestire l'anagrafica aziende con vectorizzazione batch.
-
-\paragraph{Area pubblica} (read-only)
-Dashboard giornaliera (\texttt{/dashboard}) con ranking dei ticker per KPI di sentiment decayed, filtri per direzione (bullish/bearish) e finestra temporale.
-Per ogni ticker è disponibile una pagina di dettaglio con:
-
-\begin{itemize}
-  \item grafico prezzo e volume (Alpha Vantage, tabella \texttt{stock\_prices});
-  \item serie temporale del KPI di sentiment;
-  \item elenco delle ultime notizie che menzionano il ticker;
-  \item metadati aziendali (settore, industry, descrizione).
-\end{itemize}
-
-La pagina \textit{Portfolio} consente di monitorare una watchlist personalizzata (persistita lato client) con quote, storico prezzi, sentiment decayed e ultime news per i ticker selezionati.
+L'area amministrativa (autenticata) permette di lanciare job di ingestion, consultare statistiche, esplorare articoli, eseguire query SQL e gestire l'anagrafica aziende con vettorizzazione batch.
+L'area pubblica (read-only) offre la dashboard giornaliera con ranking dei ticker per KPI di sentiment e filtri configurabili; per ogni ticker una pagina di dettaglio con grafico prezzo--volume e indicatori, serie del KPI, ultime notizie e profilo aziendale; la pagina \textit{Portfolio} monitora una watchlist personalizzata con storico prezzi, sentiment decayed e news.
 
 \section{Confronto sintetico: previsto vs.\ implementato}
 
-La Tabella~\ref{tab:previsto-implementato} riassume lo scostamento tra la proposta del Capitolo~\ref{ch:descrizione-progetto} e lo stato corrente del codice.
+La Tabella~\ref{tab:previsto-implementato} riassume lo scostamento tra proposta e stato corrente del codice.
 
 \begin{table}[H]
 \centering
@@ -222,15 +120,14 @@ Deploy & Docker, PaaS & Docker + Heroku operativi \\
 
 \section{Prossimi passi}
 
-Sulla base del prototipo attuale, le priorità di sviluppo coerenti con la proposta di ricerca sono:
+Le priorità di sviluppo coerenti con la proposta sono:
 
 \begin{enumerate}
-  \item introdurre almeno una fonte dati aggiuntiva (scraping o social) per ridurre la dipendenza da un unico provider;
-  \item implementare un modulo NLP interno (es.\ FinBERT zero-shot) per confronto con i punteggi Alpha Vantage, sfruttando il dataset etichettato ormai accumulato nel cold store (Sezione~\ref{sec:cold-storage});
-  \item popolare e validare le tabelle di \emph{cross-diffused sentiment} sfruttando la matrice di correlazione tra aziende;
-  \item aggiungere analisi esplorativa sentiment--prezzo con correlazioni e ritardi temporali, estesa all'interazione con gli indicatori tecnici (Sezione~\ref{sec:analisi-tecnica});
-  \item costruire un backtester elementare prima di passare a modelli LSTM.
+  \item introdurre almeno una fonte dati aggiuntiva per ridurre la dipendenza dal singolo provider;
+  \item implementare un modulo NLP interno (es.\ FinBERT zero-shot) per confronto con i punteggi Alpha Vantage, sfruttando il dataset del cold store (Sezione~\ref{sec:cold-storage});
+  \item popolare e validare le tabelle di \emph{cross-diffused sentiment} con la matrice di correlazione esistente;
+  \item aggiungere l'analisi statistica sentiment--prezzo con ritardi temporali, estesa all'interazione con gli indicatori tecnici (Sezione~\ref{sec:analisi-tecnica});
+  \item costruire un backtester elementare prima di passare ai modelli predittivi.
 \end{enumerate}
 
-Il prototipo dimostra la fattibilità della catena \emph{raccolta $\rightarrow$ persistenza $\rightarrow$ decay $\rightarrow$ visualizzazione}, che costituisce il substrato su cui innestare le componenti analitiche e predittive descritte nel capitolo precedente.
-Le priorità qui elencate sono sviluppate in dettaglio, insieme alle corrispondenti domande di ricerca, nel Capitolo~\ref{ch:direzioni-future}.
+Il prototipo dimostra la fattibilità della catena \emph{raccolta $\rightarrow$ persistenza $\rightarrow$ decay $\rightarrow$ visualizzazione}; le priorità elencate sono sviluppate, con le corrispondenti domande di ricerca, nel Capitolo~\ref{ch:direzioni-future}.

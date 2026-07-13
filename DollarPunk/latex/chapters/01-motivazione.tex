@@ -1,17 +1,13 @@
 \chapter{Motivazione}
+\label{ch:motivazione}
 
-Durante la mia carriera professionale ho lavorato per tre anni in consulenza informatica
-nel campo dell'ingegneria dati, con particolare attenzione all'organizzazione e alla gestione
-dei flussi dati tramite processi ETL al servizio di alcune delle più grandi aziende italiane.
-Ho avuto la possibilità di osservare direttamente quali dati vengono utilizzati e ho partecipato
-a numerose migrazioni di codice da piattaforme on-premises a ambienti cloud.
-Questa esperienza mi ha permesso di comprendere da vicino la complessità che tali sistemi possono raggiungere.
+Ogni giorno i mercati finanziari vengono raccontati da un flusso di testo---notizie, comunicati, analisi, discussioni social---che eccede di ordini di grandezza la capacità di lettura di qualunque analista.
+La letteratura ha mostrato che questo flusso contiene informazione predittiva misurabile (Capitolo~\ref{ch:stato-dell-arte}), e l'industria lo ha trasformato in prodotti commerciali di \textit{news analytics}.
+Questi sistemi, tuttavia, sono opachi: punteggi di sentiment e di rilevanza vengono forniti come scatole nere, con parametri (ad esempio il decadimento temporale dell'informazione) fissati e non ispezionabili, e le interazioni tra notizie relative ad aziende collegate sono generalmente ignorate o delegate a modelli non interpretabili.
 
-A partire da tali esperienze, ho iniziato a formulare alcune domande fondamentali:
+La presente proposta nasce dall'incrocio tra questa osservazione e la mia esperienza professionale: tre anni in consulenza informatica nel campo dell'ingegneria dati, tra processi ETL e migrazioni cloud per grandi aziende italiane, mi hanno insegnato quanto valore analitico resti intrappolato nei dati non strutturati e quanto conti disporre di pipeline trasparenti e verificabili.
 
-\begin{itemize}
-  \item In quali contesti la tecnologia può essere spinta al limite delle proprie capacità?
-  \item In che modo i dati non strutturati---come notizie dei media o post sui social---possono essere trasformati in valore analitico?
-\end{itemize}
-
-Con la presente proposta di ricerca si intende sviluppare un applicativo che supporti l'utente nel monitoraggio del sentiment digitale relativo a un insieme di titoli finanziari.
+L'obiettivo è quindi duplice.
+Sul piano applicativo, sviluppare un sistema aperto che raccolga notizie finanziarie, ne aggreghi il sentiment per titolo con un modello di decadimento temporale esplicito e parametrizzabile, e lo esponga accanto ai segnali di prezzo.
+Sul piano scientifico, colmare un vuoto specifico della letteratura: la modellazione della rilevanza informativa come \emph{campo dinamico} che decade nel tempo e si \emph{diffonde} tra titoli semanticamente collegati, formulata in modo interpretabile---con parametri fisicamente leggibili e garanzie formali di correttezza---anziché appresa da architetture black-box.
+Il prototipo operativo descritto nel Capitolo~\ref{ch:stato-implementazione} costituisce l'infrastruttura di dati e validazione su cui queste domande possono essere testate empiricamente.
