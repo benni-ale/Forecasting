@@ -16,7 +16,8 @@ La raccolta testuale si appoggia esclusivamente all'endpoint \texttt{NEWS\_SENTI
 L'acquisizione avviene in più modalità, attivabili dalla dashboard amministrativa o da job schedulati: raccolta manuale parametrizzata (ticker, topic, intervallo), \emph{deep ingestion} estesa con tracciamento dello stato, \emph{coverage ingestion} sistematica degli ultimi $N$ giorni su tutti i topic e i ticker noti (con ripresa automatica), e \emph{prune} periodico che mantiene la finestra rolling.
 Ogni esecuzione è registrata nella tabella \texttt{job\_executions}.
 
-La raccolta attuale è quindi \textbf{monofonte} e dipendente dai limiti di rate dell'API (5 chiamate/minuto nel tier gratuito, 75 nel premium): le fonti eterogenee del Capitolo~\ref{ch:descrizione-progetto} (social, scraping, motori di ricerca) non sono ancora integrate.
+La raccolta \emph{con scoring} è quindi monofonte e dipendente dai limiti di rate dell'API (5 chiamate/minuto nel tier gratuito, 75 nel premium).
+Una seconda fonte---senza scoring---è operativa da luglio 2026: un collector RSS di testate finanziarie italiane, descritto nel Capitolo~\ref{ch:direzioni-future} (Sezione~\ref{sec:mercato-italiano}); le altre fonti eterogenee del Capitolo~\ref{ch:descrizione-progetto} (social, scraping, motori di ricerca) non sono ancora integrate.
 
 \section{Persistenza e modello dati}
 

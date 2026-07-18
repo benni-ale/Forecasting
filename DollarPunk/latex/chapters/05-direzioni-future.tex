@@ -85,6 +85,17 @@ La proposta originaria individua nell'LSTM il modello predittivo di riferimento;
 La revisione a basso costo del piano: usare un foundation model come baseline zero-shot e verificare se il condizionamento sul sentiment (covariata o fine-tuning leggero) apporti valore incrementale.
 Il confronto ``LSTM da zero vs.\ foundation model condizionato sul sentiment'' è a sua volta una domanda di ricerca attuale.
 
+\subsection{Estensione al mercato italiano}
+\label{sec:mercato-italiano}
+
+La pipeline a valle dell'ingestion---decay, KPI, diffusione, archivio, indicatori tecnici---è agnostica rispetto al mercato: estendere il sistema a Piazza Affari richiede di sostituire tre soli componenti.
+Le \emph{fonti}: non esiste un provider che etichetti le news italiane, ma i feed RSS delle testate finanziarie e i comunicati price-sensitive (dove l'emittente coincide con l'entità, fornendo etichette di rilevanza esatte per costruzione) offrono materia prima abbondante.
+I \emph{prezzi}: i titoli di Borsa Italiana sono coperti dai data provider gratuiti.
+Lo \emph{scoring}, il nodo vero: la strategia proposta è il bootstrap con LLM-as-annotator su un sottoinsieme di news italiane, seguito dal fine-tuning di un modello multilingue sul mix tra il corpus inglese già etichettato del cold store e il sottoinsieme italiano annotato, con l'anagrafica degli alias societari (``Intesa'', ``Intesa Sanpaolo'', ``ISP'') come punto critico dell'entity linking.
+
+Il primo passo è già operativo: un collector RSS (\texttt{italian\_news\_collector.py}) ingerisce quotidianamente gli articoli di sei testate italiane (ANSA, Il Sole 24 Ore, Investing.com Italia e altre) con inserimento idempotente e \emph{senza} scoring---gli articoli non alimentano i KPI, ma si accumulano nel cold store costruendo il corpus per la futura fase di annotazione.
+La prospettiva di ricerca è distintiva: la sentiment analysis finanziaria è quasi esclusivamente anglocentrica, e un dataset entity-level italiano validato sul FTSE~MIB---mercato con dinamiche di copertura mediatica diverse da quelle statunitensi---costituirebbe un contributo autonomo nel filone del financial NLP a basse risorse.
+
 \subsection{Protocollo di backtesting metodologicamente rigoroso}
 
 La letteratura critica \parencite{li2025finsaber} mostra che i vantaggi delle strategie LLM svaniscono su orizzonti lunghi e universi ampi, e che i backtest sono esposti a survivorship bias, look-ahead bias e data-snooping.
@@ -100,7 +111,7 @@ Le priorità implementative, per rapporto valore/sforzo:
   \item \textbf{Popolamento del cross-diffused sentiment} con il modello della Sezione~\ref{sec:soluzione-discreta} e la matrice di correlazione esistente;
   \item \textbf{Analisi statistica sentiment--prezzo}: correlazioni di Pearson e Spearman con ritardi configurabili ($0$--$5$ giorni), al posto del confronto visivo;
   \item \textbf{Backtester elementare}: strategia long/flat sui dati persistiti, con rendimento cumulato, hit-rate e Sharpe semplificato, nel rispetto del protocollo anti-bias;
-  \item \textbf{Seconda fonte di dati} a basso attrito (RSS o scraping mirato); gli articoli senza scoring del provider sono il banco di prova del modulo FinBERT;
+  \item \textbf{Seconda fonte di dati}: primo passo compiuto con il collector RSS italiano (Sezione~\ref{sec:mercato-italiano}); gli articoli senza scoring del provider sono il banco di prova naturale del futuro modulo di scoring interno;
   \item \textbf{LLM-as-annotator} per un dataset entity-level nello spirito di FinEntity \parencite{tang-etal-2023-finentity}, con revisione manuale a campione, per abilitare il fine-tuning a costi contenuti.
 \end{enumerate}
 
