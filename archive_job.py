@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS articles (
     topics JSON,
     banner_image TEXT,
     source_domain TEXT,
+    provider TEXT,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     archived_from TEXT,
@@ -100,6 +101,8 @@ def _ensure_schema(con):
             .replace("url TEXT PRIMARY KEY", "url TEXT")
             .replace(",\n    PRIMARY KEY (ticker, price_date)", "")
         )
+    # Migrazione per archivi creati prima dell'introduzione della colonna provider.
+    con.execute("ALTER TABLE articles ADD COLUMN IF NOT EXISTS provider TEXT")
 
 
 def _connect_archive():
@@ -142,13 +145,13 @@ def merge_from_attached(con, label):
             url, title, source, time_published, summary,
             overall_sentiment_score, overall_sentiment_label,
             ticker_sentiment, topics, banner_image, source_domain,
-            created_at, updated_at, archived_from
+            provider, created_at, updated_at, archived_from
         )
         SELECT
             s.url, s.title, s.source, s.time_published, s.summary,
             s.overall_sentiment_score, s.overall_sentiment_label,
             s.ticker_sentiment::JSON, s.topics::JSON, s.banner_image, s.source_domain,
-            s.created_at, s.updated_at, ?
+            s.provider, s.created_at, s.updated_at, ?
         FROM src.articles s
         WHERE s.url IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM articles a WHERE a.url = s.url)

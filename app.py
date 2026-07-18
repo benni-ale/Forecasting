@@ -3000,15 +3000,17 @@ def view_articles():
     sentiment_filter = request.args.get('sentiment', '')
     ticker_filter = request.args.get('ticker', '')
     search_query = request.args.get('search', '')
-    
+    provider_filter = request.args.get('provider', '')
+
     logger.info(f"Articles page accessed: page={page}, per_page={per_page}, "
-                f"sentiment={sentiment_filter}, ticker={ticker_filter}, search={search_query}")
-    
+                f"sentiment={sentiment_filter}, ticker={ticker_filter}, search={search_query}, "
+                f"provider={provider_filter}")
+
     try:
         db_manager = get_db_manager(readonly=True)
         with db_manager:
             articles, total, stats = get_articles_paginated(
-                db_manager, page, per_page, sentiment_filter, ticker_filter, search_query
+                db_manager, page, per_page, sentiment_filter, ticker_filter, search_query, provider_filter
             )
         logger.info(f"Loaded {len(articles)} articles (total: {total})")
         
@@ -3021,6 +3023,7 @@ def view_articles():
                              sentiment_filter=sentiment_filter,
                              ticker_filter=ticker_filter,
                              search_query=search_query,
+                             provider_filter=provider_filter,
                              stats=stats)
     except Exception as e:
         logger.error(f"Error loading articles: {str(e)}", exc_info=True)
@@ -3028,21 +3031,26 @@ def view_articles():
         return redirect(url_for('index'))
 
 
-def get_articles_paginated(db_manager, page, per_page, sentiment_filter='', ticker_filter='', search_query=''):
+def get_articles_paginated(db_manager, page, per_page, sentiment_filter='', ticker_filter='', search_query='', provider_filter=''):
     """Get paginated articles from database."""
     if not db_manager.conn:
         raise ConnectionError("Database connection not established")
-    
+
     cursor = db_manager.conn.cursor()
-    
+
     try:
         # Build WHERE clause
         conditions = []
         params = []
-        
+
         if sentiment_filter:
             conditions.append("overall_sentiment_label = %s")
             params.append(sentiment_filter)
+
+        if provider_filter:
+            # Legacy rows may predate the provider column: treat NULL as alpha_vantage.
+            conditions.append("COALESCE(provider, 'alpha_vantage') = %s")
+            params.append(provider_filter)
         
         if ticker_filter:
             conditions.append("ticker_sentiment::text LIKE %s")
@@ -3065,6 +3073,7 @@ def get_articles_paginated(db_manager, page, per_page, sentiment_filter='', tick
             SELECT id, url, title, source, time_published, summary,
                    overall_sentiment_score, overall_sentiment_label,
                    ticker_sentiment, topics, banner_image, source_domain,
+                   COALESCE(provider, 'alpha_vantage') AS provider,
                    created_at, updated_at
             FROM articles
             {where_clause}
@@ -3205,12 +3214,13 @@ def api_articles():
     per_page = int(request.args.get('per_page', 20))
     sentiment_filter = request.args.get('sentiment', '')
     ticker_filter = request.args.get('ticker', '')
-    
+    provider_filter = request.args.get('provider', '')
+
     try:
         db_manager = get_db_manager(readonly=True)
         with db_manager:
             articles, total, _ = get_articles_paginated(
-                db_manager, page, per_page, sentiment_filter, ticker_filter, ''
+                db_manager, page, per_page, sentiment_filter, ticker_filter, '', provider_filter
             )
         
         return jsonify({

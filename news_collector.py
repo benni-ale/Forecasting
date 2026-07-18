@@ -477,8 +477,12 @@ class DatabaseManager:
         skipped = 0
         
         cursor = self.conn.cursor()
-        
+
         try:
+            # Migrazione leggera: la colonna provider distingue la pipeline di
+            # ingestion (es. 'alpha_vantage', 'rss_italia') dalla testata (source).
+            cursor.execute("ALTER TABLE articles ADD COLUMN IF NOT EXISTS provider TEXT")
+
             for article in articles:
                 url = article.get('url')
                 if not url:
@@ -519,12 +523,13 @@ class DatabaseManager:
                     INSERT INTO articles (
                         url, title, source, time_published, summary,
                         overall_sentiment_score, overall_sentiment_label,
-                        ticker_sentiment, topics, banner_image, source_domain
+                        ticker_sentiment, topics, banner_image, source_domain,
+                        provider
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                 """
-                
+
                 cursor.execute(insert_query, (
                     url,
                     article.get('title', ''),
@@ -536,7 +541,8 @@ class DatabaseManager:
                     ticker_sentiment,
                     topics,
                     article.get('banner_image', ''),
-                    article.get('source_domain', '')
+                    article.get('source_domain', ''),
+                    article.get('provider', 'alpha_vantage')
                 ))
                 
                 inserted += 1

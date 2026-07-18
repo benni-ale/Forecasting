@@ -12,9 +12,13 @@ CREATE TABLE IF NOT EXISTS articles (
     topics JSONB,
     banner_image TEXT,
     source_domain TEXT,
+    provider TEXT,  -- pipeline di ingestion: 'alpha_vantage', 'rss_italia', ...
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Index on provider for ingestion-pipeline filtering
+CREATE INDEX IF NOT EXISTS idx_articles_provider ON articles(provider);
 
 -- Create index on URL for fast lookups (idempotency check)
 CREATE INDEX IF NOT EXISTS idx_articles_url ON articles(url);

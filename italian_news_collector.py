@@ -115,6 +115,7 @@ def parse_feed(source_name, content):
             "topics": [{"topic": "mercato_italiano", "relevance_score": "1.0"}],
             "banner_image": "",
             "source_domain": urlparse(link).netloc,
+            "provider": "rss_italia",
         })
     return articles
 
