@@ -21,6 +21,7 @@ Connection: DATABASE_URL (Heroku) when present, otherwise local DB_* env vars.
 """
 import argparse
 import html
+import json
 import logging
 import os
 import re
@@ -54,6 +55,45 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; DollarPunkBot/1.0; +https://d
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 TAG_RE = re.compile(r"<[^>]+>")
 
+# FTSE MIB constituents and conservative aliases, checked against the official
+# Borsa Italiana list in July 2026. This is deliberately a small, auditable
+# universe for the bootstrap phase; aliases can later move to a database table.
+# https://www.borsaitaliana.it/borsa/azioni/ftse-mib/lista.html
+ITALIAN_COMPANIES = {
+    "A2A.MI": ("A2A",), "AMP.MI": ("Amplifon",), "AVIO.MI": ("Avio",),
+    "AZM.MI": ("Azimut",), "BMED.MI": ("Banca Mediolanum", "Mediolanum"),
+    "BMPS.MI": ("Banca Monte dei Paschi di Siena", "Monte dei Paschi", "MPS"),
+    "BAMI.MI": ("Banco BPM",), "BPE.MI": ("BPER Banca", "BPER"),
+    "BC.MI": ("Brunello Cucinelli",), "BZU.MI": ("Buzzi",),
+    "CPR.MI": ("Campari",), "DIA.MI": ("DiaSorin",), "ENEL.MI": ("Enel",),
+    "ENI.MI": ("Eni",), "RACE.MI": ("Ferrari",), "FCT.MI": ("Fincantieri",),
+    "FBK.MI": ("FinecoBank", "Fineco"),
+    "G.MI": ("Assicurazioni Generali", "Generali"), "HER.MI": ("Hera",),
+    "ISP.MI": ("Intesa Sanpaolo",), "INW.MI": ("Inwit",),
+    "IG.MI": ("Italgas",), "IVG.MI": ("Iveco Group", "Iveco"),
+    "LDO.MI": ("Leonardo",), "LTMC.MI": ("Lottomatica",),
+    "MB.MI": ("Mediobanca",), "MONC.MI": ("Moncler",), "NEXI.MI": ("Nexi",),
+    "PST.MI": ("Poste Italiane",), "PRY.MI": ("Prysmian",),
+    "REC.MI": ("Recordati",), "SPM.MI": ("Saipem",), "SRG.MI": ("Snam",),
+    "STLAM.MI": ("Stellantis",),
+    "STMMI.MI": ("STMicroelectronics", "STMicro", "STM"),
+    "TIT.MI": ("Telecom Italia", "TIM"), "TEN.MI": ("Tenaris",),
+    "TRN.MI": ("Terna",), "UCG.MI": ("UniCredit",), "UNI.MI": ("Unipol",),
+}
+
+
+def detect_companies(title, summary=""):
+    """Return FTSE MIB tickers explicitly mentioned in title or summary."""
+    text = f"{title or ''} {summary or ''}"
+    matches = []
+    for ticker, aliases in ITALIAN_COMPANIES.items():
+        if any(
+            re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text, re.IGNORECASE)
+            for alias in aliases
+        ):
+            matches.append(ticker)
+    return matches
+
 
 def _clean(text):
     """Strip HTML tags and collapse whitespace from feed fields."""
@@ -84,7 +124,7 @@ def _parse_pubdate(item):
     return dt.strftime("%Y%m%dT%H%M%S")
 
 
-def parse_feed(source_name, content):
+def parse_feed(source_name, content, include_macro=False):
     """Parse an RSS 2.0 or Atom feed into Alpha Vantage-shaped article dicts."""
     root = ET.fromstring(content)
     items = root.findall(".//item") or root.findall(f".//{ATOM_NS}entry")
@@ -101,6 +141,18 @@ def parse_feed(source_name, content):
         summary = _clean(
             item.findtext("description") or item.findtext(f"{ATOM_NS}summary") or ""
         )
+        detected_tickers = detect_companies(title, summary)
+        if not detected_tickers and not include_macro:
+            continue
+        scope = "azienda_quotata" if detected_tickers else "macro_italia"
+        topics = [
+            {"topic": "mercato_italiano", "relevance_score": "1.0"},
+            {"topic": scope, "relevance_score": "1.0"},
+        ]
+        topics.extend(
+            {"topic": f"candidate_ticker:{ticker}", "relevance_score": "1.0"}
+            for ticker in detected_tickers
+        )
         articles.append({
             "url": link,
             "title": title,
@@ -112,7 +164,7 @@ def parse_feed(source_name, content):
             # Nessuno scoring in questa fase: il campo resta vuoto e gli
             # articoli non entrano nei KPI (le viste filtrano su ticker_sentiment).
             "ticker_sentiment": [],
-            "topics": [{"topic": "mercato_italiano", "relevance_score": "1.0"}],
+            "topics": topics,
             "banner_image": "",
             "source_domain": urlparse(link).netloc,
             "provider": "rss_italia",
@@ -127,11 +179,59 @@ def _db():
     return DatabaseManager(dsn=dsn) if dsn else DatabaseManager()
 
 
+def reclassify_existing(db):
+    """Tag existing rss_italia rows as company-specific or macro, without deleting."""
+    cur = db.conn.cursor()
+    counts = {"azienda_quotata": 0, "macro_italia": 0}
+    try:
+        cur.execute(
+            "SELECT id, title, summary FROM articles WHERE provider = 'rss_italia'"
+        )
+        rows = cur.fetchall()
+        for article_id, title, summary in rows:
+            detected_tickers = detect_companies(title, summary)
+            scope = "azienda_quotata" if detected_tickers else "macro_italia"
+            topics = [
+                {"topic": "mercato_italiano", "relevance_score": "1.0"},
+                {"topic": scope, "relevance_score": "1.0"},
+            ]
+            topics.extend(
+                {"topic": f"candidate_ticker:{ticker}", "relevance_score": "1.0"}
+                for ticker in detected_tickers
+            )
+            cur.execute(
+                "UPDATE articles SET topics = %s::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (json.dumps(topics), article_id),
+            )
+            counts[scope] += 1
+        db.conn.commit()
+    except Exception:
+        db.conn.rollback()
+        raise
+    finally:
+        cur.close()
+    logger.info(
+        "Riclassificati %s RSS Italia: %s aziendali, %s macro",
+        sum(counts.values()), counts["azienda_quotata"], counts["macro_italia"],
+    )
+    return counts
+
+
 def main():
     parser = argparse.ArgumentParser(description="Collect Italian financial news from RSS feeds")
     parser.add_argument(
         "--feeds",
         help="Comma-separated feed keys (default: all). Available: " + ", ".join(DEFAULT_FEEDS),
+    )
+    parser.add_argument(
+        "--include-macro",
+        action="store_true",
+        help="Also save general Italian macro news (default: company-specific only)",
+    )
+    parser.add_argument(
+        "--reclassify-existing",
+        action="store_true",
+        help="Re-tag existing rss_italia rows as company-specific or macro",
     )
     args = parser.parse_args()
 
@@ -156,8 +256,8 @@ def main():
             try:
                 resp = requests.get(url, headers=HEADERS, timeout=20)
                 resp.raise_for_status()
-                parsed = parse_feed(source_name, resp.content)
-                logger.info("[%s] %s articoli dal feed", key, len(parsed))
+                parsed = parse_feed(source_name, resp.content, include_macro=args.include_macro)
+                logger.info("[%s] %s articoli rilevanti dal feed", key, len(parsed))
                 articles.extend(parsed)
             except Exception as e:
                 # Un feed rotto non deve fermare gli altri.
@@ -168,6 +268,8 @@ def main():
         db = _db()
         with db:
             result = db.save_articles(articles)
+            if args.reclassify_existing:
+                reclassify_existing(db)
         totals["inserted"] = result["inserted"]
         totals["skipped"] = result["skipped"]
 
@@ -184,7 +286,11 @@ def main():
             articles_inserted=totals["inserted"],
             articles_skipped=totals["skipped"],
             summary_message=summary,
-            extra_metrics={"feeds": keys, "feed_errors": feed_errors},
+            extra_metrics={
+                "feeds": keys,
+                "feed_errors": feed_errors,
+                "include_macro": args.include_macro,
+            },
         )
     except Exception as e:
         finish_execution(

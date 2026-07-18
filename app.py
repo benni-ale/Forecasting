@@ -3001,16 +3001,18 @@ def view_articles():
     ticker_filter = request.args.get('ticker', '')
     search_query = request.args.get('search', '')
     provider_filter = request.args.get('provider', '')
+    scope_filter = request.args.get('scope', '')
 
     logger.info(f"Articles page accessed: page={page}, per_page={per_page}, "
                 f"sentiment={sentiment_filter}, ticker={ticker_filter}, search={search_query}, "
-                f"provider={provider_filter}")
+                f"provider={provider_filter}, scope={scope_filter}")
 
     try:
         db_manager = get_db_manager(readonly=True)
         with db_manager:
             articles, total, stats = get_articles_paginated(
-                db_manager, page, per_page, sentiment_filter, ticker_filter, search_query, provider_filter
+                db_manager, page, per_page, sentiment_filter, ticker_filter,
+                search_query, provider_filter, scope_filter
             )
         logger.info(f"Loaded {len(articles)} articles (total: {total})")
         
@@ -3024,6 +3026,7 @@ def view_articles():
                              ticker_filter=ticker_filter,
                              search_query=search_query,
                              provider_filter=provider_filter,
+                             scope_filter=scope_filter,
                              stats=stats)
     except Exception as e:
         logger.error(f"Error loading articles: {str(e)}", exc_info=True)
@@ -3031,7 +3034,9 @@ def view_articles():
         return redirect(url_for('index'))
 
 
-def get_articles_paginated(db_manager, page, per_page, sentiment_filter='', ticker_filter='', search_query='', provider_filter=''):
+def get_articles_paginated(db_manager, page, per_page, sentiment_filter='',
+                           ticker_filter='', search_query='', provider_filter='',
+                           scope_filter=''):
     """Get paginated articles from database."""
     if not db_manager.conn:
         raise ConnectionError("Database connection not established")
@@ -3051,6 +3056,10 @@ def get_articles_paginated(db_manager, page, per_page, sentiment_filter='', tick
             # Legacy rows may predate the provider column: treat NULL as alpha_vantage.
             conditions.append("COALESCE(provider, 'alpha_vantage') = %s")
             params.append(provider_filter)
+
+        if scope_filter:
+            conditions.append("topics @> %s::jsonb")
+            params.append(json.dumps([{"topic": scope_filter}]))
         
         if ticker_filter:
             conditions.append("ticker_sentiment::text LIKE %s")
@@ -3215,12 +3224,14 @@ def api_articles():
     sentiment_filter = request.args.get('sentiment', '')
     ticker_filter = request.args.get('ticker', '')
     provider_filter = request.args.get('provider', '')
+    scope_filter = request.args.get('scope', '')
 
     try:
         db_manager = get_db_manager(readonly=True)
         with db_manager:
             articles, total, _ = get_articles_paginated(
-                db_manager, page, per_page, sentiment_filter, ticker_filter, '', provider_filter
+                db_manager, page, per_page, sentiment_filter, ticker_filter,
+                '', provider_filter, scope_filter
             )
         
         return jsonify({
@@ -6047,4 +6058,3 @@ if __name__ == '__main__':
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug)
-

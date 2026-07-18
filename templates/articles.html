@@ -42,6 +42,13 @@
                             </select>
                         </div>
                         <div class="col-md-2">
+                            <select class="form-select" name="scope">
+                                <option value="">All scopes</option>
+                                <option value="azienda_quotata" {% if scope_filter == 'azienda_quotata' %}selected{% endif %}>Company-specific</option>
+                                <option value="macro_italia" {% if scope_filter == 'macro_italia' %}selected{% endif %}>Italian macro</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
                             <select class="form-select" name="per_page">
                                 <option value="10" {% if per_page == 10 %}selected{% endif %}>10 per page</option>
                                 <option value="20" {% if per_page == 20 %}selected{% endif %}>20 per page</option>
@@ -139,12 +146,12 @@
                     <nav aria-label="Page navigation">
                         <ul class="pagination justify-content-center">
                             <li class="page-item {% if page == 1 %}disabled{% endif %}">
-                                <a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}{% if provider_filter %}&provider={{ provider_filter }}{% endif %}">Previous</a>
+                                <a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}{% if provider_filter %}&provider={{ provider_filter }}{% endif %}{% if scope_filter %}&scope={{ scope_filter }}{% endif %}">Previous</a>
                             </li>
                             {% for p in range(1, total_pages + 1) %}
                                 {% if p == page or p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
                                 <li class="page-item {% if p == page %}active{% endif %}">
-                                    <a class="page-link" href="?page={{ p }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}{% if provider_filter %}&provider={{ provider_filter }}{% endif %}">{{ p }}</a>
+                                    <a class="page-link" href="?page={{ p }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}{% if provider_filter %}&provider={{ provider_filter }}{% endif %}{% if scope_filter %}&scope={{ scope_filter }}{% endif %}">{{ p }}</a>
                                 </li>
                                 {% elif p == page - 3 or p == page + 3 %}
                                 <li class="page-item disabled">
@@ -153,7 +160,7 @@
                                 {% endif %}
                             {% endfor %}
                             <li class="page-item {% if page == total_pages %}disabled{% endif %}">
-                                <a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}{% if provider_filter %}&provider={{ provider_filter }}{% endif %}">Next</a>
+                                <a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}{% if sentiment_filter %}&sentiment={{ sentiment_filter }}{% endif %}{% if ticker_filter %}&ticker={{ ticker_filter }}{% endif %}{% if search_query %}&search={{ search_query }}{% endif %}{% if provider_filter %}&provider={{ provider_filter }}{% endif %}{% if scope_filter %}&scope={{ scope_filter }}{% endif %}">Next</a>
                             </li>
                         </ul>
                     </nav>
