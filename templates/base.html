@@ -218,11 +218,9 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/about' %}active{% endif %}" href="/about"><i class="bi bi-info-circle"></i> About</a>
                     </li>
-                    {% if current_user %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/holdings' %}active{% endif %}" href="/holdings"><i class="bi bi-wallet2"></i> My Holdings</a>
                     </li>
-                    {% endif %}
                     {% if is_admin %}
                     <li class="nav-item">
                         <a class="nav-link" href="/">Admin</a>

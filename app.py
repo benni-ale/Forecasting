@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import math
+import re
 import requests
 import subprocess
 from datetime import datetime, timedelta
@@ -56,9 +57,7 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)  # Reduce Flask request 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
 
-# Behind Heroku's HTTPS-terminating router: trust X-Forwarded-Proto/Host so that
-# url_for(_external=True) builds https:// callback URLs (required for the Google
-# OAuth redirect_uri to match what's registered).
+# Behind Heroku's HTTPS-terminating router, trust the forwarded scheme and host.
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
@@ -73,29 +72,6 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
 AUTH_ENABLED = bool(ADMIN_PASSWORD)
 
-# Optional "Sign in with Google" for invited users. Enabled only when both
-# client id and secret are configured; otherwise the app runs exactly as before
-# (password-only), so the code can ship before the OAuth client exists.
-GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
-GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
-GOOGLE_OAUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
-oauth = None
-if GOOGLE_OAUTH_ENABLED:
-    try:
-        from authlib.integrations.flask_client import OAuth
-        oauth = OAuth(app)
-        oauth.register(
-            name='google',
-            client_id=GOOGLE_CLIENT_ID,
-            client_secret=GOOGLE_CLIENT_SECRET,
-            server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-            client_kwargs={'scope': 'openid email profile'},
-        )
-        logger.info("Google OAuth enabled")
-    except Exception as e:
-        logger.warning(f"Google OAuth disabled (init failed): {e}")
-        GOOGLE_OAUTH_ENABLED = False
-
 # Endpoints reachable without an admin session (everything else is admin-only
 # when AUTH_ENABLED). 'static' is needed for assets; the others are the public
 # dashboard and the login/logout flow.
@@ -106,15 +82,15 @@ PUBLIC_ENDPOINTS = {
     'about',
     'login', 'logout', 'static',
     'account_login', 'account_logout',
-    'account_google', 'account_google_callback',
+    'holdings_page', 'api_holdings_preview',
 }
 
 # Endpoints reachable by any logged-in *user* (not just admin). Used for the
-# personal holdings tracker: they need a user session but not admin rights.
+# account-backed holdings APIs: they need a user session but not admin rights.
 USER_ENDPOINTS = {
     'holdings_page',
     'api_holdings_list', 'api_holdings_create',
-    'api_holdings_update', 'api_holdings_delete',
+    'api_holdings_update', 'api_holdings_delete', 'api_holdings_import',
 }
 
 
@@ -145,8 +121,12 @@ def inject_auth():
     elif not AUTH_ENABLED:
         # Local dev: a stable implicit user so the holdings tracker just works.
         user = {'id': None, 'email': 'dev@local', 'display_name': 'Dev'}
-    return {'is_admin': is_admin(), 'auth_enabled': AUTH_ENABLED, 'current_user': user,
-            'google_enabled': GOOGLE_OAUTH_ENABLED}
+    return {
+        'is_admin': is_admin(),
+        'auth_enabled': AUTH_ENABLED,
+        'current_user': user,
+        'account_user': bool(session.get('user_id')),
+    }
 
 
 @app.before_request
@@ -205,7 +185,7 @@ def logout():
 
 
 # ---------------------------------------------------------------------------
-# Multi-user accounts (invite-only) + per-user holdings
+# Multi-user accounts + per-user holdings
 # ---------------------------------------------------------------------------
 # Admins create accounts from /admin/users; users log in at /account/login and
 # manage their own holdings (with buy price/date) at /holdings. Passwords are
@@ -228,17 +208,12 @@ def _ensure_user_tables():
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT,
+                    password_hash TEXT NOT NULL,
                     display_name TEXT,
-                    google_sub TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            # Migrate pre-existing installs: password becomes optional (Google-only
-            # invites) and we track the linked Google account id.
-            cur.execute("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_holdings (
                     id SERIAL PRIMARY KEY,
@@ -377,90 +352,18 @@ def account_logout():
     return redirect(url_for('public_dashboard'))
 
 
-@app.route('/account/google')
-def account_google():
-    """Start the Google OAuth flow (only for invited emails)."""
-    if not GOOGLE_OAUTH_ENABLED:
-        flash('Accesso con Google non configurato.', 'error')
-        return redirect(url_for('account_login'))
-    nxt = request.args.get('next', '')
-    session['oauth_next'] = nxt if nxt.startswith('/') else ''
-    redirect_uri = url_for('account_google_callback', _external=True)
-    return oauth.google.authorize_redirect(redirect_uri)
-
-
-@app.route('/account/google/callback')
-def account_google_callback():
-    """Handle Google's redirect: log in the user iff their verified email was
-    invited by an admin (present + active in the users table)."""
-    if not GOOGLE_OAUTH_ENABLED:
-        return redirect(url_for('account_login'))
-    try:
-        token = oauth.google.authorize_access_token()
-    except Exception as e:
-        logger.warning(f"Google OAuth callback failed: {e}")
-        flash('Accesso con Google non riuscito.', 'error')
-        return redirect(url_for('account_login'))
-    info = token.get('userinfo') or {}
-    email = (info.get('email') or '').strip().lower()
-    if not email or not info.get('email_verified'):
-        flash('Google non ha fornito un indirizzo email verificato.', 'error')
-        return redirect(url_for('account_login'))
-    sub = info.get('sub')
-    name = info.get('name')
-
-    _ensure_user_tables()
-    db = get_db_manager()
-    row = None
-    with db:
-        cur = db.conn.cursor()
-        try:
-            cur.execute(
-                "SELECT id, email, display_name, is_active FROM users WHERE email = %s",
-                (email,)
-            )
-            row = cur.fetchone()
-            if row and row[3]:
-                # Link the Google account id and backfill the display name.
-                cur.execute(
-                    "UPDATE users SET google_sub = %s, display_name = COALESCE(display_name, %s) "
-                    "WHERE id = %s", (sub, name, row[0])
-                )
-                db.conn.commit()
-        finally:
-            cur.close()
-
-    if not row:
-        logger.warning(f"Google login denied (not invited): {email}")
-        flash("Questo indirizzo non e' stato invitato. Chiedi un invito all'amministratore.", 'error')
-        return redirect(url_for('account_login'))
-    if not row[3]:
-        flash('Account disattivato.', 'error')
-        return redirect(url_for('account_login'))
-
-    session['user_id'] = row[0]
-    session['user_email'] = row[1]
-    session['user_name'] = row[2] or name or row[1]
-    session.permanent = True
-    logger.info(f"User login via Google: {email}")
-    next_url = session.pop('oauth_next', '') or url_for('holdings_page')
-    if not next_url.startswith('/'):
-        next_url = url_for('holdings_page')
-    return redirect(next_url)
-
-
 @app.route('/admin/users', methods=['GET', 'POST'])
 def admin_users():
-    """Admin-only: list users and create new (invite-only) accounts."""
+    """Admin-only: list users and create password accounts."""
     _ensure_user_tables()
     if request.method == 'POST':
         email = (request.form.get('email') or '').strip().lower()
         display_name = (request.form.get('display_name') or '').strip()
         password = request.form.get('password') or ''
-        if not email:
-            flash("L'email e' obbligatoria.", 'error')
+        if not email or len(password) < 8:
+            flash("Email e password (almeno 8 caratteri) sono obbligatorie.", 'error')
         else:
-            pw_hash = generate_password_hash(password) if password else None
+            pw_hash = generate_password_hash(password)
             db = get_db_manager()
             try:
                 with db:
@@ -472,10 +375,7 @@ def admin_users():
                             (email, pw_hash, display_name or None)
                         )
                         db.conn.commit()
-                        if pw_hash:
-                            flash(f'Utente {email} creato (accesso con password o Google).', 'info')
-                        else:
-                            flash(f'Invito creato per {email} (accesso solo con Google).', 'info')
+                        flash(f'Account {email} creato.', 'info')
                     finally:
                         cur.close()
             except Exception as e:
@@ -490,8 +390,7 @@ def admin_users():
         try:
             cur.execute(
                 "SELECT u.id, u.email, u.display_name, u.is_active, u.created_at, "
-                "(SELECT COUNT(*) FROM user_holdings h WHERE h.user_id = u.id), "
-                "(u.password_hash IS NOT NULL), (u.google_sub IS NOT NULL) "
+                "(SELECT COUNT(*) FROM user_holdings h WHERE h.user_id = u.id) "
                 "FROM users u ORDER BY u.created_at DESC"
             )
             users = cur.fetchall()
@@ -677,6 +576,8 @@ def public_dashboard():
     min_mentions = max(1, min(min_mentions, 100000))
 
     ticker_filter = (request.args.get('ticker', '') or '').strip().upper()
+    sector_filter = (request.args.get('sector', '') or '').strip()
+    industry_filter = (request.args.get('industry', '') or '').strip()
     direction = (request.args.get('direction', 'all') or 'all').lower()
     if direction not in ('all', 'bullish', 'bearish'):
         direction = 'all'
@@ -699,26 +600,43 @@ def public_dashboard():
     stats = {}
     error = None
     penultimate_last_seen = ''
+    sectors = []
+    industries = []
     try:
         db_manager = get_db_manager(readonly=True)
         with db_manager:
             cursor = db_manager.conn.cursor()
             try:
                 cursor.execute(
+                    "SELECT DISTINCT TRIM(sector) FROM companies "
+                    "WHERE NULLIF(TRIM(sector), '') IS NOT NULL ORDER BY 1"
+                )
+                sectors = [r[0] for r in cursor.fetchall()]
+                cursor.execute(
+                    "SELECT DISTINCT TRIM(industry) FROM companies "
+                    "WHERE NULLIF(TRIM(industry), '') IS NOT NULL ORDER BY 1"
+                )
+                industries = [r[0] for r in cursor.fetchall()]
+                cursor.execute(
                     """
                     SELECT
-                        ticker,
-                        SUM(ticker_sentiment_score * relevance_score
-                            * POWER(0.5, (CURRENT_DATE - article_time_published::date) / %(hl)s))
-                          / NULLIF(SUM(relevance_score
-                            * POWER(0.5, (CURRENT_DATE - article_time_published::date) / %(hl)s)), 0)
+                        v.ticker,
+                        SUM(v.ticker_sentiment_score * v.relevance_score
+                            * POWER(0.5, (CURRENT_DATE - v.article_time_published::date) / %(hl)s))
+                          / NULLIF(SUM(v.relevance_score
+                            * POWER(0.5, (CURRENT_DATE - v.article_time_published::date) / %(hl)s)), 0)
                             AS kpi,
-                        MAX(article_time_published::date) AS last_seen,
-                        COUNT(*) AS mentions
-                    FROM article_ticker_sentiment_view
-                    WHERE article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
-                      AND (%(ticker)s = '' OR ticker ILIKE %(tickerlike)s)
-                    GROUP BY ticker
+                        MAX(v.article_time_published::date) AS last_seen,
+                        COUNT(*) AS mentions,
+                        c.sector,
+                        c.industry
+                    FROM article_ticker_sentiment_view v
+                    LEFT JOIN companies c ON UPPER(c.ticker) = UPPER(v.ticker)
+                    WHERE v.article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
+                      AND (%(ticker)s = '' OR v.ticker ILIKE %(tickerlike)s)
+                      AND (%(sector)s = '' OR c.sector = %(sector)s)
+                      AND (%(industry)s = '' OR c.industry = %(industry)s)
+                    GROUP BY v.ticker, c.sector, c.industry
                     HAVING COUNT(*) >= %(min_mentions)s
                     ORDER BY kpi DESC
                     """,
@@ -728,14 +646,18 @@ def public_dashboard():
                         'min_mentions': min_mentions,
                         'ticker': ticker_filter,
                         'tickerlike': f'%{ticker_filter}%',
+                        'sector': sector_filter,
+                        'industry': industry_filter,
                     }
                 )
-                for ticker, kpi, last_seen, mentions in cursor.fetchall():
+                for ticker, kpi, last_seen, mentions, sector, industry in cursor.fetchall():
                     rows.append({
                         'ticker': ticker,
                         'kpi': float(kpi) if kpi is not None else None,
                         'last_seen': last_seen.isoformat() if last_seen else None,
                         'mentions': int(mentions),
+                        'sector': sector,
+                        'industry': industry,
                     })
 
                 # Overall + window statistics (same read-only cursor).
@@ -811,6 +733,10 @@ def public_dashboard():
         half_life=half_life,
         min_mentions=min_mentions,
         ticker_filter=ticker_filter,
+        sector_filter=sector_filter,
+        industry_filter=industry_filter,
+        sectors=sectors,
+        industries=industries,
         direction=direction,
         last_seen_from=last_seen_from,
         error=error,
@@ -6489,8 +6415,87 @@ def _decision_signal(pnl_pct, sentiment_kpi, rsi, dist_sma50_pct, bb_position):
 
 @app.route('/holdings')
 def holdings_page():
-    """Personal holdings tracker page (per logged-in user)."""
+    """Holdings tracker: account-backed when logged in, browser-local otherwise."""
     return render_template('holdings.html')
+
+
+def _enrich_holding_rows(rows):
+    """Add market data, P&L and decision signals to normalized holding dicts."""
+    holdings = []
+    totals = {'cost': 0.0, 'market': 0.0}
+    for row in rows:
+        ticker = row['ticker']
+        qty = float(row['quantity'])
+        buy_price = float(row['buy_price'])
+        info = _holding_market_info(ticker)
+        cp = info['current_price']
+        cost = qty * buy_price
+        mkt = qty * cp if cp is not None else None
+        pnl_abs = (mkt - cost) if mkt is not None else None
+        pnl_pct = ((cp / buy_price - 1.0) * 100.0) if (cp is not None and buy_price) else None
+        signal = _decision_signal(pnl_pct, info['sentiment_kpi'], info['rsi'],
+                                  info['dist_sma50_pct'], info['bb_position'])
+        totals['cost'] += cost
+        if mkt is not None:
+            totals['market'] += mkt
+        holdings.append({
+            **row,
+            'quantity': qty,
+            'buy_price': buy_price,
+            'current_price': round(cp, 4) if cp is not None else None,
+            'cost_basis': round(cost, 2),
+            'market_value': round(mkt, 2) if mkt is not None else None,
+            'pnl_abs': round(pnl_abs, 2) if pnl_abs is not None else None,
+            'pnl_pct': round(pnl_pct, 2) if pnl_pct is not None else None,
+            'sentiment_kpi': info['sentiment_kpi'],
+            'rsi': info['rsi'],
+            'dist_sma50_pct': info['dist_sma50_pct'],
+            'signal': signal,
+        })
+    tot_pnl = totals['market'] - totals['cost'] if totals['market'] else None
+    return {
+        'holdings': holdings,
+        'totals': {
+            'cost_basis': round(totals['cost'], 2),
+            'market_value': round(totals['market'], 2) if totals['market'] else None,
+            'pnl_abs': round(tot_pnl, 2) if tot_pnl is not None else None,
+            'pnl_pct': round((tot_pnl / totals['cost']) * 100.0, 2)
+            if (tot_pnl is not None and totals['cost']) else None,
+        },
+    }
+
+
+def _valid_holding_ticker(ticker):
+    return bool(re.fullmatch(r'[A-Z0-9.^-]{1,16}', ticker))
+
+
+@app.route('/api/holdings/preview', methods=['POST'])
+def api_holdings_preview():
+    """Enrich guest holdings without persisting them on the server."""
+    payload = request.get_json(silent=True) or {}
+    items = payload.get('holdings') or []
+    if not isinstance(items, list) or len(items) > 50:
+        return jsonify({'error': 'holdings non validi (massimo 50)'}), 400
+    rows = []
+    try:
+        for item in items:
+            ticker = (item.get('ticker') or '').strip().upper()
+            qty = float(item.get('quantity'))
+            buy_price = float(item.get('buy_price'))
+            if not _valid_holding_ticker(ticker) or qty <= 0 or buy_price < 0:
+                raise ValueError
+            rows.append({
+                'id': str(item.get('id') or ''),
+                'ticker': ticker,
+                'quantity': qty,
+                'buy_price': buy_price,
+                'buy_currency': (item.get('buy_currency') or 'USD').strip().upper()[:8],
+                'buy_date': (item.get('buy_date') or '').strip() or None,
+                'notes': (item.get('notes') or '').strip() or None,
+            })
+    except (AttributeError, TypeError, ValueError):
+        return jsonify({'error': 'dati posizione non validi'}), 400
+    return jsonify(_enrich_holding_rows(rows))
 
 
 @app.route('/api/holdings', methods=['GET'])
@@ -6513,48 +6518,16 @@ def api_holdings_list():
             rows = cur.fetchall()
         finally:
             cur.close()
-    holdings = []
-    totals = {'cost': 0.0, 'market': 0.0}
+    normalized = []
     for r in rows:
         hid, ticker, qty, buy_price, ccy, buy_date, notes = r
-        qty = float(qty)
-        buy_price = float(buy_price)
-        info = _holding_market_info(ticker)
-        cp = info['current_price']
-        cost = qty * buy_price
-        mkt = qty * cp if cp is not None else None
-        pnl_abs = (mkt - cost) if mkt is not None else None
-        pnl_pct = ((cp / buy_price - 1.0) * 100.0) if (cp is not None and buy_price) else None
-        signal = _decision_signal(pnl_pct, info['sentiment_kpi'], info['rsi'],
-                                  info['dist_sma50_pct'], info['bb_position'])
-        totals['cost'] += cost
-        if mkt is not None:
-            totals['market'] += mkt
-        holdings.append({
-            'id': hid, 'ticker': ticker, 'quantity': qty,
-            'buy_price': buy_price, 'buy_currency': ccy,
+        normalized.append({
+            'id': hid, 'ticker': ticker, 'quantity': float(qty),
+            'buy_price': float(buy_price), 'buy_currency': ccy,
             'buy_date': buy_date.isoformat() if buy_date else None,
             'notes': notes,
-            'current_price': round(cp, 4) if cp is not None else None,
-            'cost_basis': round(cost, 2),
-            'market_value': round(mkt, 2) if mkt is not None else None,
-            'pnl_abs': round(pnl_abs, 2) if pnl_abs is not None else None,
-            'pnl_pct': round(pnl_pct, 2) if pnl_pct is not None else None,
-            'sentiment_kpi': info['sentiment_kpi'],
-            'rsi': info['rsi'],
-            'dist_sma50_pct': info['dist_sma50_pct'],
-            'signal': signal,
         })
-    tot_pnl = totals['market'] - totals['cost'] if totals['market'] else None
-    return jsonify({
-        'holdings': holdings,
-        'totals': {
-            'cost_basis': round(totals['cost'], 2),
-            'market_value': round(totals['market'], 2) if totals['market'] else None,
-            'pnl_abs': round(tot_pnl, 2) if tot_pnl is not None else None,
-            'pnl_pct': round((tot_pnl / totals['cost']) * 100.0, 2) if (tot_pnl is not None and totals['cost']) else None,
-        },
-    })
+    return jsonify(_enrich_holding_rows(normalized))
 
 
 @app.route('/api/holdings', methods=['POST'])
@@ -6570,7 +6543,7 @@ def api_holdings_create():
         buy_price = float(d.get('buy_price'))
     except (TypeError, ValueError):
         return jsonify({'error': 'quantity e buy_price devono essere numerici'}), 400
-    if not ticker or qty <= 0 or buy_price < 0:
+    if not _valid_holding_ticker(ticker) or qty <= 0 or buy_price < 0:
         return jsonify({'error': 'dati non validi'}), 400
     buy_currency = (d.get('buy_currency') or 'USD').strip().upper()[:8]
     buy_date = (d.get('buy_date') or '').strip() or None
@@ -6591,6 +6564,48 @@ def api_holdings_create():
         finally:
             cur.close()
     return jsonify({'ok': True, 'id': new_id})
+
+
+@app.route('/api/holdings/import', methods=['POST'])
+def api_holdings_import():
+    """Atomically import guest holdings into the logged-in account."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'login required'}), 401
+    payload = request.get_json(silent=True) or {}
+    items = payload.get('holdings') or []
+    if not isinstance(items, list) or not items or len(items) > 50:
+        return jsonify({'error': 'holdings non validi (massimo 50)'}), 400
+    values = []
+    try:
+        for item in items:
+            ticker = (item.get('ticker') or '').strip().upper()
+            qty = float(item.get('quantity'))
+            buy_price = float(item.get('buy_price'))
+            if not _valid_holding_ticker(ticker) or qty <= 0 or buy_price < 0:
+                raise ValueError
+            values.append((
+                uid, ticker, qty, buy_price,
+                (item.get('buy_currency') or 'USD').strip().upper()[:8],
+                (item.get('buy_date') or '').strip() or None,
+                (item.get('notes') or '').strip() or None,
+            ))
+    except (AttributeError, TypeError, ValueError):
+        return jsonify({'error': 'dati posizione non validi'}), 400
+    _ensure_user_tables()
+    db = get_db_manager()
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.executemany(
+                "INSERT INTO user_holdings (user_id, ticker, quantity, buy_price, "
+                "buy_currency, buy_date, notes) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                values,
+            )
+            db.conn.commit()
+        finally:
+            cur.close()
+    return jsonify({'ok': True, 'imported': len(values)})
 
 
 @app.route('/api/holdings/<int:hid>', methods=['PATCH'])

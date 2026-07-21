@@ -6,7 +6,7 @@
 <div class="row">
     <div class="col-lg-5">
         <div class="card mb-4">
-            <div class="card-header"><i class="bi bi-person-plus"></i> Crea account (su invito)</div>
+            <div class="card-header"><i class="bi bi-person-plus"></i> Crea account</div>
             <div class="card-body">
                 <form method="post" action="{{ url_for('admin_users') }}">
                     <div class="mb-3">
@@ -18,9 +18,9 @@
                         <input type="text" class="form-control" name="display_name">
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Password iniziale (opzionale)</label>
-                        <input type="text" class="form-control" name="password">
-                        <div class="form-text">Se la lasci vuota, l'utente accede <strong>solo con Google</strong> (Gmail). Se la imposti, potra' usare password o Google.</div>
+                        <label class="form-label">Password iniziale</label>
+                        <input type="text" class="form-control" name="password" minlength="8" required>
+                        <div class="form-text">Comunicala direttamente all'utente. Non viene inviata alcuna email.</div>
                     </div>
                     <button type="submit" class="btn btn-primary w-100"><i class="bi bi-check2"></i> Crea utente</button>
                 </form>
@@ -33,24 +33,19 @@
             <div class="card-body p-0">
                 <table class="table table-sm mb-0">
                     <thead>
-                        <tr><th>Email</th><th>Nome</th><th>Accesso</th><th>Attivo</th><th>Holdings</th><th>Creato</th></tr>
+                        <tr><th>Email</th><th>Nome</th><th>Attivo</th><th>Holdings</th><th>Creato</th></tr>
                     </thead>
                     <tbody>
                         {% for u in users %}
                         <tr>
                             <td>{{ u[1] }}</td>
                             <td>{{ u[2] or '-' }}</td>
-                            <td>
-                                {% if u[6] %}<span class="badge bg-primary" title="Password impostata">pwd</span>{% endif %}
-                                {% if u[7] %}<span class="badge bg-danger" title="Google collegato">Google</span>{% endif %}
-                                {% if not u[6] and not u[7] %}<span class="badge bg-warning text-dark" title="Invitato: accede solo con Google">invito</span>{% endif %}
-                            </td>
                             <td>{% if u[3] %}<span class="badge bg-success">si</span>{% else %}<span class="badge bg-secondary">no</span>{% endif %}</td>
                             <td>{{ u[5] }}</td>
                             <td class="text-muted small">{{ u[4].strftime('%Y-%m-%d') if u[4] else '-' }}</td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="6" class="text-center text-muted">Nessun utente ancora.</td></tr>
+                        <tr><td colspan="5" class="text-center text-muted">Nessun utente ancora.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

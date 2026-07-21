@@ -331,7 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_ticker_decayed_date ON ticker_decayed_sentiment(d
 CREATE INDEX IF NOT EXISTS idx_ticker_decayed_ticker_date ON ticker_decayed_sentiment(ticker, date);
 
 -- ---------------------------------------------------------------------------
--- Multi-user accounts (invite-only) + per-user holdings
+-- Admin-created accounts + per-user holdings
 -- ---------------------------------------------------------------------------
 -- Users are created by an admin (no open self-registration). Passwords are
 -- stored as salted hashes (werkzeug.security), never in clear text.

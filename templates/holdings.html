@@ -5,8 +5,27 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h3 class="mb-0"><i class="bi bi-wallet2"></i> I miei titoli</h3>
-    {% if current_user %}<span class="text-muted small">{{ current_user.display_name }}</span>{% endif %}
+    <span class="text-muted small">
+        {% if current_user %}Account: {{ current_user.display_name }}{% else %}Modalità ospite - dati in questo browser{% endif %}
+    </span>
 </div>
+
+{% if not current_user %}
+<div class="alert alert-info small d-flex justify-content-between align-items-center gap-3 flex-wrap">
+    <span>Il portafoglio è salvato solo su questo browser. Accedi per sincronizzarlo tra dispositivi.</span>
+    <a class="btn btn-sm btn-primary" href="{{ url_for('account_login', next='/holdings') }}">Accedi</a>
+</div>
+{% elif account_user %}
+<div id="import-local-alert" class="alert alert-info small" style="display:none">
+    <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+        <span>Hai un portafoglio salvato in questo browser. Vuoi importarlo nel tuo account?</span>
+        <div>
+            <button id="import-local-btn" class="btn btn-sm btn-primary">Importa</button>
+            <button id="dismiss-local-btn" class="btn btn-sm btn-outline-secondary">Non ora</button>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <div class="alert alert-secondary small">
     Il <strong>segnale</strong> combina in modo trasparente il tuo P&amp;L (prezzo attuale vs prezzo di carico),
@@ -70,8 +89,22 @@
 
 {% block extra_js %}
 <script>
+const USE_SERVER_HOLDINGS = {{ 'true' if current_user else 'false' }};
+const CAN_IMPORT_LOCAL = {{ 'true' if account_user else 'false' }};
+const GUEST_HOLDINGS_KEY = 'dollarpunk_guest_holdings_v1';
+let renderedRows = [];
 const fmt = (v, d=2) => (v === null || v === undefined) ? 'n/d' : Number(v).toLocaleString('it-IT', {minimumFractionDigits: d, maximumFractionDigits: d});
 const cls = (v) => v === null || v === undefined ? '' : (v >= 0 ? 'text-success' : 'text-danger');
+const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+
+function readLocalHoldings() {
+    try { return JSON.parse(localStorage.getItem(GUEST_HOLDINGS_KEY) || '[]'); }
+    catch (_) { return []; }
+}
+
+function writeLocalHoldings(rows) {
+    localStorage.setItem(GUEST_HOLDINGS_KEY, JSON.stringify(rows));
+}
 
 function signalBadge(sig) {
     if (!sig) return '';
@@ -86,26 +119,31 @@ function signalBadge(sig) {
 }
 
 async function loadHoldings() {
-    const res = await fetch('/api/holdings');
-    if (res.status === 401) { window.location.href = '/account/login?next=/holdings'; return; }
+    const res = USE_SERVER_HOLDINGS
+        ? await fetch('/api/holdings')
+        : await fetch('/api/holdings/preview', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({holdings: readLocalHoldings()})
+        });
     const data = await res.json();
     const body = document.getElementById('holdings-body');
     const rows = data.holdings || [];
+    renderedRows = rows;
     if (!rows.length) {
         body.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Nessuna posizione. Aggiungine una sopra.</td></tr>';
     } else {
-        body.innerHTML = rows.map(h => `
+        body.innerHTML = rows.map((h, index) => `
             <tr>
-                <td><strong>${h.ticker}</strong>${h.buy_date ? `<div class="text-muted small">dal ${h.buy_date}</div>` : ''}</td>
+                <td><strong>${esc(h.ticker)}</strong>${h.buy_date ? `<div class="text-muted small">dal ${esc(h.buy_date)}</div>` : ''}</td>
                 <td class="text-end">${fmt(h.quantity, 0)}</td>
-                <td class="text-end">${fmt(h.buy_price)} ${h.buy_currency || ''}</td>
+                <td class="text-end">${fmt(h.buy_price)} ${esc(h.buy_currency)}</td>
                 <td class="text-end">${fmt(h.current_price)}</td>
                 <td class="text-end ${cls(h.pnl_abs)}">${fmt(h.pnl_abs)}</td>
                 <td class="text-end ${cls(h.pnl_pct)}">${h.pnl_pct === null ? 'n/d' : fmt(h.pnl_pct) + '%'}</td>
                 <td class="text-center ${cls(h.sentiment_kpi)}">${h.sentiment_kpi === null ? 'n/d' : fmt(h.sentiment_kpi)}</td>
                 <td class="text-center">${h.rsi === null ? 'n/d' : fmt(h.rsi, 0)}</td>
                 <td class="text-center">${signalBadge(h.signal)}</td>
-                <td class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="delHolding(${h.id})"><i class="bi bi-trash"></i></button></td>
+                <td class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="delHolding(renderedRows[${index}].id)"><i class="bi bi-trash"></i></button></td>
             </tr>`).join('');
     }
     const t = data.totals || {};
@@ -119,7 +157,11 @@ async function loadHoldings() {
 
 async function delHolding(id) {
     if (!confirm('Rimuovere questa posizione?')) return;
-    await fetch(`/api/holdings/${id}`, {method: 'DELETE'});
+    if (USE_SERVER_HOLDINGS) {
+        await fetch(`/api/holdings/${id}`, {method: 'DELETE'});
+    } else {
+        writeLocalHoldings(readLocalHoldings().filter(row => String(row.id) !== String(id)));
+    }
     loadHoldings();
 }
 
@@ -132,20 +174,56 @@ document.getElementById('add-form').addEventListener('submit', async (e) => {
         buy_currency: document.getElementById('f-ccy').value,
         buy_date: document.getElementById('f-date').value,
     };
-    const res = await fetch('/api/holdings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
-    });
-    if (res.ok) {
+    let ok = false;
+    if (USE_SERVER_HOLDINGS) {
+        const res = await fetch('/api/holdings', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        ok = res.ok;
+        if (!ok) {
+            const err = await res.json();
+            alert('Errore: ' + (err.error || 'imprevisto'));
+        }
+    } else {
+        const rows = readLocalHoldings();
+        rows.push({...payload, id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`});
+        writeLocalHoldings(rows);
+        ok = true;
+    }
+    if (ok) {
         e.target.reset();
         document.getElementById('f-ccy').value = 'USD';
         loadHoldings();
-    } else {
-        const err = await res.json();
-        alert('Errore: ' + (err.error || 'imprevisto'));
     }
 });
+
+async function importLocalHoldings() {
+    const rows = readLocalHoldings();
+    const button = document.getElementById('import-local-btn');
+    button.disabled = true;
+    button.textContent = 'Importazione...';
+    const res = await fetch('/api/holdings/import', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({holdings: rows})
+    });
+    if (!res.ok) {
+        button.disabled = false;
+        button.textContent = 'Riprova';
+        alert('Importazione non riuscita. I dati locali sono rimasti intatti.');
+        return;
+    }
+    localStorage.removeItem(GUEST_HOLDINGS_KEY);
+    document.getElementById('import-local-alert').style.display = 'none';
+    loadHoldings();
+}
+
+if (CAN_IMPORT_LOCAL && readLocalHoldings().length) {
+    const alertBox = document.getElementById('import-local-alert');
+    alertBox.style.display = 'block';
+    document.getElementById('import-local-btn').addEventListener('click', importLocalHoldings);
+    document.getElementById('dismiss-local-btn').addEventListener('click', () => { alertBox.style.display = 'none'; });
+}
 
 loadHoldings();
 </script>

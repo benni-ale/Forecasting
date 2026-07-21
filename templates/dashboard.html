@@ -84,6 +84,24 @@
         <input type="text" class="form-control" id="ticker" name="ticker" placeholder="e.g. NVDA" value="{{ ticker_filter }}">
     </div>
     <div class="col-auto">
+        <label class="form-label mb-1" for="sector">Sector</label>
+        <select class="form-select" id="sector" name="sector">
+            <option value="">All sectors</option>
+            {% for value in sectors %}
+            <option value="{{ value }}" {% if sector_filter == value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1" for="industry">Industry</label>
+        <select class="form-select" id="industry" name="industry">
+            <option value="">All industries</option>
+            {% for value in industries %}
+            <option value="{{ value }}" {% if industry_filter == value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-auto">
         <label class="form-label mb-1" for="direction">Sentiment</label>
         <select class="form-select" id="direction" name="direction">
             <option value="all" {% if direction == 'all' %}selected{% endif %}>All</option>
@@ -125,7 +143,6 @@
 
 <div class="row" id="stocksCharts"></div>
 
-{% if current_user %}
 <div id="addHoldingModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:1050;"
      onclick="if(event.target===this)window.closeAddHolding()">
   <div class="card shadow" style="max-width:420px; margin:10vh auto;">
@@ -166,7 +183,6 @@
     </div>
   </div>
 </div>
-{% endif %}
 {% endblock %}
 
 {% block extra_js %}
@@ -174,7 +190,9 @@
 (function () {
     const status = document.getElementById('stocksStatus');
     const container = document.getElementById('stocksCharts');
-    const CAN_TRACK = {{ 'true' if current_user else 'false' }};
+    const CAN_TRACK = true;
+    const USE_SERVER_HOLDINGS = {{ 'true' if current_user else 'false' }};
+    const GUEST_HOLDINGS_KEY = 'dollarpunk_guest_holdings_v1';
 
     const views = {
         sentiment: {{ by_sentiment|tojson }},
@@ -186,6 +204,9 @@
     let activeView = 'sentiment';
     let renderToken = 0;
 
+    function esc(value) {
+        return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    }
     function fmtKpi(v) { return (v === null || v === undefined) ? '-' : Number(v).toFixed(4); }
     function kpiClass(v) {
         if (v === null || v === undefined) return 'sentiment-neutral';
@@ -336,7 +357,8 @@
             <span>Sentiment KPI <span class="${kpiClass(row.kpi)}">${fmtKpi(row.kpi)}</span></span>
             <span class="text-muted">Mentions <strong>${row.mentions}</strong></span>
             <span class="text-muted">Last seen ${row.last_seen || '-'}</span>
-        </div>${badges ? `<div class="px-3 pt-1 small d-flex flex-wrap gap-3">${badges}</div>` : ''}`;
+        </div><div class="px-3 pt-1 small text-muted">${esc(row.sector || 'Sector n/d')}${row.industry ? ` · ${esc(row.industry)}` : ''}</div>
+        ${badges ? `<div class="px-3 pt-1 small d-flex flex-wrap gap-3">${badges}</div>` : ''}`;
 
         const addBtn = CAN_TRACK
             ? `<button type="button" class="btn btn-sm btn-outline-success py-0 px-1" title="Add to portfolio"
@@ -476,20 +498,28 @@
             msg.className = 'small mt-1 text-muted';
             msg.textContent = 'Saving...';
             try {
-                const r = await fetch('/api/holdings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                if (r.status === 401) { window.location.href = '/account/login?next=/dashboard'; return; }
-                const d = await r.json();
-                if (d.ok) {
+                let saved = false;
+                if (USE_SERVER_HOLDINGS) {
+                    const r = await fetch('/api/holdings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const d = await r.json();
+                    saved = r.ok && d.ok;
+                } else {
+                    const rows = JSON.parse(localStorage.getItem(GUEST_HOLDINGS_KEY) || '[]');
+                    rows.push({...body, id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`});
+                    localStorage.setItem(GUEST_HOLDINGS_KEY, JSON.stringify(rows));
+                    saved = true;
+                }
+                if (saved) {
                     msg.className = 'small mt-1 text-success';
-                    msg.textContent = 'Added to portfolio ✓';
+                    msg.textContent = USE_SERVER_HOLDINGS ? 'Added to your account.' : 'Saved in this browser.';
                     setTimeout(window.closeAddHolding, 800);
                 } else {
                     msg.className = 'small mt-1 text-danger';
-                    msg.textContent = d.error || 'Could not add.';
+                    msg.textContent = 'Could not add.';
                 }
             } catch (err) {
                 msg.className = 'small mt-1 text-danger';
