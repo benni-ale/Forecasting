@@ -109,6 +109,9 @@ def inject_auth():
             'email': session.get('user_email'),
             'display_name': session.get('user_name') or session.get('user_email'),
         }
+    elif session.get('is_admin'):
+        # Admin can use the holdings tracker via a dedicated admin@local bucket.
+        user = {'id': None, 'email': 'admin', 'display_name': 'Admin'}
     elif not AUTH_ENABLED:
         # Local dev: a stable implicit user so the holdings tracker just works.
         user = {'id': None, 'email': 'dev@local', 'display_name': 'Dev'}
@@ -178,6 +181,7 @@ def logout():
 # stored as salted hashes via werkzeug.
 _USER_TABLES_READY = False
 _DEV_USER_ID = None
+_ADMIN_USER_ID = None
 
 
 def _ensure_user_tables():
@@ -247,11 +251,45 @@ def _dev_user_id():
     return _DEV_USER_ID
 
 
+def _admin_user_id():
+    """Resolve (creating once) a stable 'admin@local' user so an admin can use
+    the holdings tracker directly, without a separate account. Not loginable via
+    the user form (random password hash)."""
+    global _ADMIN_USER_ID
+    if _ADMIN_USER_ID is not None:
+        return _ADMIN_USER_ID
+    _ensure_user_tables()
+    db = get_db_manager()
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute("SELECT id FROM users WHERE email = %s", ('admin@local',))
+            row = cur.fetchone()
+            if not row:
+                cur.execute(
+                    "INSERT INTO users (email, password_hash, display_name) "
+                    "VALUES (%s, %s, %s) RETURNING id",
+                    ('admin@local', generate_password_hash(os.urandom(16).hex()), 'Admin')
+                )
+                row = cur.fetchone()
+                db.conn.commit()
+            _ADMIN_USER_ID = row[0]
+        finally:
+            cur.close()
+    return _ADMIN_USER_ID
+
+
 def current_user_id():
-    """Logged-in user's id, or the implicit dev user when auth is disabled."""
+    """Logged-in user's id. Falls back to a dedicated admin user for admins, or
+    the implicit dev user when auth is disabled."""
     uid = session.get('user_id')
     if uid:
         return uid
+    if session.get('is_admin'):
+        try:
+            return _admin_user_id()
+        except Exception as e:
+            logger.warning(f"Could not resolve admin user: {e}")
     if not AUTH_ENABLED:
         try:
             return _dev_user_id()

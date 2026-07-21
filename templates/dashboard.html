@@ -124,6 +124,49 @@
 </div>
 
 <div class="row" id="stocksCharts"></div>
+
+{% if current_user %}
+<div id="addHoldingModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:1050;"
+     onclick="if(event.target===this)window.closeAddHolding()">
+  <div class="card shadow" style="max-width:420px; margin:10vh auto;">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong><i class="bi bi-plus-circle"></i> Add to portfolio</strong>
+      <button type="button" class="btn-close" aria-label="Close" onclick="window.closeAddHolding()"></button>
+    </div>
+    <div class="card-body">
+      <form id="addHoldingForm">
+        <input type="hidden" id="ah_ticker">
+        <div class="mb-2">
+          <label class="form-label mb-0 small">Ticker</label>
+          <input class="form-control" id="ah_ticker_display" readonly>
+        </div>
+        <div class="row g-2">
+          <div class="col mb-2">
+            <label class="form-label mb-0 small">Quantity</label>
+            <input class="form-control" id="ah_qty" type="number" step="any" min="0" required>
+          </div>
+          <div class="col mb-2">
+            <label class="form-label mb-0 small">Buy price</label>
+            <input class="form-control" id="ah_price" type="number" step="any" min="0" required>
+          </div>
+        </div>
+        <div class="row g-2">
+          <div class="col-4 mb-2">
+            <label class="form-label mb-0 small">Currency</label>
+            <input class="form-control" id="ah_ccy" value="USD" maxlength="8">
+          </div>
+          <div class="col mb-2">
+            <label class="form-label mb-0 small">Buy date</label>
+            <input class="form-control" id="ah_date" type="date">
+          </div>
+        </div>
+        <div id="ah_msg" class="small mt-1"></div>
+        <button type="submit" class="btn btn-success w-100 mt-2"><i class="bi bi-plus-lg"></i> Add to portfolio</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
@@ -131,6 +174,7 @@
 (function () {
     const status = document.getElementById('stocksStatus');
     const container = document.getElementById('stocksCharts');
+    const CAN_TRACK = {{ 'true' if current_user else 'false' }};
 
     const views = {
         sentiment: {{ by_sentiment|tojson }},
@@ -294,9 +338,16 @@
             <span class="text-muted">Last seen ${row.last_seen || '-'}</span>
         </div>${badges ? `<div class="px-3 pt-1 small d-flex flex-wrap gap-3">${badges}</div>` : ''}`;
 
+        const addBtn = CAN_TRACK
+            ? `<button type="button" class="btn btn-sm btn-outline-success py-0 px-1" title="Add to portfolio"
+                   onclick="window.addToPortfolio('${ticker}')"><i class="bi bi-plus-lg"></i></button>`
+            : '';
         const header = `<div class="card-header py-2 d-flex justify-content-between align-items-center">
             <a href="${tickerUrl}" class="text-decoration-none"><span class="badge bg-secondary">${ticker}</span></a>
-            <a href="${tickerUrl}" class="small text-muted text-decoration-none">details <i class="bi bi-arrow-right-short"></i></a>
+            <span class="d-flex align-items-center gap-2">
+                <a href="${tickerUrl}" class="small text-muted text-decoration-none">details <i class="bi bi-arrow-right-short"></i></a>
+                ${addBtn}
+            </span>
         </div>`;
 
         const priceBlock = s.error
@@ -387,6 +438,63 @@
                 if (p < 1) requestAnimationFrame(tick);
             }
             requestAnimationFrame(tick);
+        });
+    }
+
+    // --- Add-to-portfolio modal (only wired when the user can track holdings) ---
+    if (CAN_TRACK) {
+        const modal = document.getElementById('addHoldingModal');
+        const form = document.getElementById('addHoldingForm');
+        const msg = document.getElementById('ah_msg');
+
+        window.addToPortfolio = function (ticker) {
+            document.getElementById('ah_ticker').value = ticker;
+            document.getElementById('ah_ticker_display').value = ticker;
+            msg.textContent = '';
+            msg.className = 'small mt-1';
+            form.reset();
+            document.getElementById('ah_ticker').value = ticker;
+            document.getElementById('ah_ticker_display').value = ticker;
+            document.getElementById('ah_ccy').value = 'USD';
+            modal.style.display = 'block';
+            document.getElementById('ah_qty').focus();
+        };
+        window.closeAddHolding = function () { modal.style.display = 'none'; };
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.style.display === 'block') window.closeAddHolding();
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const body = {
+                ticker: document.getElementById('ah_ticker').value,
+                quantity: document.getElementById('ah_qty').value,
+                buy_price: document.getElementById('ah_price').value,
+                buy_currency: document.getElementById('ah_ccy').value || 'USD',
+                buy_date: document.getElementById('ah_date').value || null,
+            };
+            msg.className = 'small mt-1 text-muted';
+            msg.textContent = 'Saving...';
+            try {
+                const r = await fetch('/api/holdings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (r.status === 401) { window.location.href = '/account/login?next=/dashboard'; return; }
+                const d = await r.json();
+                if (d.ok) {
+                    msg.className = 'small mt-1 text-success';
+                    msg.textContent = 'Added to portfolio ✓';
+                    setTimeout(window.closeAddHolding, 800);
+                } else {
+                    msg.className = 'small mt-1 text-danger';
+                    msg.textContent = d.error || 'Could not add.';
+                }
+            } catch (err) {
+                msg.className = 'small mt-1 text-danger';
+                msg.textContent = 'Network error.';
+            }
         });
     }
 
