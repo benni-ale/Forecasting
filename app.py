@@ -82,15 +82,15 @@ PUBLIC_ENDPOINTS = {
     'about',
     'login', 'logout', 'static',
     'account_login', 'account_logout',
-    'holdings_page', 'api_holdings_preview',
+    'holdings_page',
 }
 
 # Endpoints reachable by any logged-in *user* (not just admin). Used for the
-# account-backed holdings APIs: they need a user session but not admin rights.
+# account-backed favorites APIs: they need a user session but not admin rights.
 USER_ENDPOINTS = {
     'holdings_page',
-    'api_holdings_list', 'api_holdings_create',
-    'api_holdings_update', 'api_holdings_delete', 'api_holdings_import',
+    'api_favorites_list', 'api_favorites_create',
+    'api_favorites_delete', 'api_favorites_import',
 }
 
 
@@ -185,10 +185,10 @@ def logout():
 
 
 # ---------------------------------------------------------------------------
-# Multi-user accounts + per-user holdings
+# Multi-user accounts + per-user favorites
 # ---------------------------------------------------------------------------
 # Admins create accounts from /admin/users; users log in at /account/login and
-# manage their own holdings (with buy price/date) at /holdings. Passwords are
+# manage their own ticker favorites at /holdings. Passwords are
 # stored as salted hashes via werkzeug.
 _USER_TABLES_READY = False
 _DEV_USER_ID = None
@@ -196,7 +196,7 @@ _ADMIN_USER_ID = None
 
 
 def _ensure_user_tables():
-    """Create users + user_holdings tables if missing (idempotent, run once)."""
+    """Create users + favorites tables and migrate legacy holdings once."""
     global _USER_TABLES_READY
     if _USER_TABLES_READY:
         return
@@ -229,6 +229,25 @@ def _ensure_user_tables():
                 );
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_user_holdings_user ON user_holdings(user_id);")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_favorites (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    ticker TEXT NOT NULL,
+                    added_on DATE NOT NULL DEFAULT CURRENT_DATE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, ticker)
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_user_favorites_user ON user_favorites(user_id);")
+            cur.execute("""
+                INSERT INTO user_favorites (user_id, ticker, added_on)
+                SELECT user_id, ticker,
+                       COALESCE(MIN(buy_date), MIN(created_at)::date, CURRENT_DATE)
+                FROM user_holdings
+                GROUP BY user_id, ticker
+                ON CONFLICT (user_id, ticker) DO NOTHING
+            """)
             db.conn.commit()
             _USER_TABLES_READY = True
         finally:
@@ -390,7 +409,7 @@ def admin_users():
         try:
             cur.execute(
                 "SELECT u.id, u.email, u.display_name, u.is_active, u.created_at, "
-                "(SELECT COUNT(*) FROM user_holdings h WHERE h.user_id = u.id) "
+                "(SELECT COUNT(*) FROM user_favorites f WHERE f.user_id = u.id) "
                 "FROM users u ORDER BY u.created_at DESC"
             )
             users = cur.fetchall()
@@ -6329,10 +6348,10 @@ def get_vectorized_companies():
 
 
 # ---------------------------------------------------------------------------
-# Personal holdings tracker (per-user): P&L vs buy price + sell-decision signal
+# Favorites dashboard: browser-local for guests, account-backed with daily insight
 # ---------------------------------------------------------------------------
 
-def _holding_market_info(ticker):
+def _favorite_market_info(ticker):
     """Current price + technical/sentiment snapshot for one ticker, all from the
     cached daily series (no extra Alpha Vantage calls beyond the lazy price cache).
     """
@@ -6357,22 +6376,18 @@ def _holding_market_info(ticker):
                     if width > 0:
                         out['bb_position'] = round((last - bb_lower[-1]) / width, 2)
     except Exception as e:
-        logger.warning(f"Holding market info failed for {ticker}: {e}")
+        logger.warning(f"Favorite market info failed for {ticker}: {e}")
     try:
         series = _compute_ticker_kpi_series(ticker)
         if series:
             out['sentiment_kpi'] = series[-1].get('kpi')
     except Exception as e:
-        logger.warning(f"Holding sentiment KPI failed for {ticker}: {e}")
+        logger.warning(f"Favorite sentiment KPI failed for {ticker}: {e}")
     return out
 
 
-def _decision_signal(pnl_pct, sentiment_kpi, rsi, dist_sma50_pct, bb_position):
-    """Transparent, rule-based sell-decision helper. NOT financial advice: it
-    just summarizes P&L + sentiment + technicals into a label with the reasons
-    that fired, so the user can decide. Each bearish condition adds sell
-    pressure, each bullish one adds hold pressure.
-    """
+def _daily_favorite_signal(sentiment_kpi, rsi, dist_sma50_pct, bb_position):
+    """Transparent daily summary of sentiment and technical indicators."""
     reasons = []
     sell = 0
     hold = 0
@@ -6396,11 +6411,6 @@ def _decision_signal(pnl_pct, sentiment_kpi, rsi, dist_sma50_pct, bb_position):
             sell += 1; reasons.append("Prezzo al limite superiore delle Bollinger")
         elif bb_position <= 0.05:
             hold += 1; reasons.append("Prezzo al limite inferiore delle Bollinger")
-    if pnl_pct is not None:
-        if pnl_pct >= 25 and sell >= 1:
-            sell += 1; reasons.append(f"Guadagno ampio (+{pnl_pct:.0f}%) con segnali di debolezza: valuta presa di profitto")
-        elif pnl_pct <= -15 and sell >= 1:
-            sell += 1; reasons.append(f"Perdita rilevante ({pnl_pct:.0f}%) con segnali negativi: valuta stop")
     net = sell - hold
     if net >= 2:
         label = 'VALUTA USCITA'
@@ -6415,93 +6425,37 @@ def _decision_signal(pnl_pct, sentiment_kpi, rsi, dist_sma50_pct, bb_position):
 
 @app.route('/holdings')
 def holdings_page():
-    """Holdings tracker: account-backed when logged in, browser-local otherwise."""
+    """Favorites: account-backed when logged in, browser-local otherwise."""
     return render_template('holdings.html')
 
 
-def _enrich_holding_rows(rows):
-    """Add market data, P&L and decision signals to normalized holding dicts."""
-    holdings = []
-    totals = {'cost': 0.0, 'market': 0.0}
+def _enrich_favorite_rows(rows):
+    """Add current market data and a daily insight to account favorites."""
+    favorites = []
     for row in rows:
         ticker = row['ticker']
-        qty = float(row['quantity'])
-        buy_price = float(row['buy_price'])
-        info = _holding_market_info(ticker)
+        info = _favorite_market_info(ticker)
         cp = info['current_price']
-        cost = qty * buy_price
-        mkt = qty * cp if cp is not None else None
-        pnl_abs = (mkt - cost) if mkt is not None else None
-        pnl_pct = ((cp / buy_price - 1.0) * 100.0) if (cp is not None and buy_price) else None
-        signal = _decision_signal(pnl_pct, info['sentiment_kpi'], info['rsi'],
-                                  info['dist_sma50_pct'], info['bb_position'])
-        totals['cost'] += cost
-        if mkt is not None:
-            totals['market'] += mkt
-        holdings.append({
+        signal = _daily_favorite_signal(info['sentiment_kpi'], info['rsi'],
+                                        info['dist_sma50_pct'], info['bb_position'])
+        favorites.append({
             **row,
-            'quantity': qty,
-            'buy_price': buy_price,
             'current_price': round(cp, 4) if cp is not None else None,
-            'cost_basis': round(cost, 2),
-            'market_value': round(mkt, 2) if mkt is not None else None,
-            'pnl_abs': round(pnl_abs, 2) if pnl_abs is not None else None,
-            'pnl_pct': round(pnl_pct, 2) if pnl_pct is not None else None,
             'sentiment_kpi': info['sentiment_kpi'],
             'rsi': info['rsi'],
             'dist_sma50_pct': info['dist_sma50_pct'],
             'signal': signal,
         })
-    tot_pnl = totals['market'] - totals['cost'] if totals['market'] else None
-    return {
-        'holdings': holdings,
-        'totals': {
-            'cost_basis': round(totals['cost'], 2),
-            'market_value': round(totals['market'], 2) if totals['market'] else None,
-            'pnl_abs': round(tot_pnl, 2) if tot_pnl is not None else None,
-            'pnl_pct': round((tot_pnl / totals['cost']) * 100.0, 2)
-            if (tot_pnl is not None and totals['cost']) else None,
-        },
-    }
+    return {'favorites': favorites, 'as_of': datetime.now().date().isoformat()}
 
 
-def _valid_holding_ticker(ticker):
+def _valid_favorite_ticker(ticker):
     return bool(re.fullmatch(r'[A-Z0-9.^-]{1,16}', ticker))
 
 
-@app.route('/api/holdings/preview', methods=['POST'])
-def api_holdings_preview():
-    """Enrich guest holdings without persisting them on the server."""
-    payload = request.get_json(silent=True) or {}
-    items = payload.get('holdings') or []
-    if not isinstance(items, list) or len(items) > 50:
-        return jsonify({'error': 'holdings non validi (massimo 50)'}), 400
-    rows = []
-    try:
-        for item in items:
-            ticker = (item.get('ticker') or '').strip().upper()
-            qty = float(item.get('quantity'))
-            buy_price = float(item.get('buy_price'))
-            if not _valid_holding_ticker(ticker) or qty <= 0 or buy_price < 0:
-                raise ValueError
-            rows.append({
-                'id': str(item.get('id') or ''),
-                'ticker': ticker,
-                'quantity': qty,
-                'buy_price': buy_price,
-                'buy_currency': (item.get('buy_currency') or 'USD').strip().upper()[:8],
-                'buy_date': (item.get('buy_date') or '').strip() or None,
-                'notes': (item.get('notes') or '').strip() or None,
-            })
-    except (AttributeError, TypeError, ValueError):
-        return jsonify({'error': 'dati posizione non validi'}), 400
-    return jsonify(_enrich_holding_rows(rows))
-
-
-@app.route('/api/holdings', methods=['GET'])
-def api_holdings_list():
-    """List the current user's holdings, each enriched with live P&L, sentiment,
-    technicals and the sell-decision signal."""
+@app.route('/api/favorites', methods=['GET'])
+def api_favorites_list():
+    """List account favorites with the current day's market insight."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'login required'}), 401
@@ -6512,42 +6466,42 @@ def api_holdings_list():
         cur = db.conn.cursor()
         try:
             cur.execute(
-                "SELECT id, ticker, quantity, buy_price, buy_currency, buy_date, notes "
-                "FROM user_holdings WHERE user_id = %s ORDER BY ticker", (uid,)
+                "SELECT id, ticker, added_on FROM user_favorites "
+                "WHERE user_id = %s ORDER BY ticker", (uid,)
             )
             rows = cur.fetchall()
         finally:
             cur.close()
     normalized = []
-    for r in rows:
-        hid, ticker, qty, buy_price, ccy, buy_date, notes = r
+    for fid, ticker, added_on in rows:
         normalized.append({
-            'id': hid, 'ticker': ticker, 'quantity': float(qty),
-            'buy_price': float(buy_price), 'buy_currency': ccy,
-            'buy_date': buy_date.isoformat() if buy_date else None,
-            'notes': notes,
+            'id': fid, 'ticker': ticker,
+            'added_on': added_on.isoformat() if added_on else None,
         })
-    return jsonify(_enrich_holding_rows(normalized))
+    return jsonify(_enrich_favorite_rows(normalized))
 
 
-@app.route('/api/holdings', methods=['POST'])
-def api_holdings_create():
-    """Add a holding for the current user."""
+def _favorite_date(value):
+    value = (value or '').strip()
+    if not value:
+        return datetime.now().date().isoformat()
+    return datetime.strptime(value, '%Y-%m-%d').date().isoformat()
+
+
+@app.route('/api/favorites', methods=['POST'])
+def api_favorites_create():
+    """Add or retain a ticker in the current user's favorites."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'login required'}), 401
     d = request.get_json(silent=True) or request.form
     ticker = (d.get('ticker') or '').strip().upper()
-    try:
-        qty = float(d.get('quantity'))
-        buy_price = float(d.get('buy_price'))
-    except (TypeError, ValueError):
-        return jsonify({'error': 'quantity e buy_price devono essere numerici'}), 400
-    if not _valid_holding_ticker(ticker) or qty <= 0 or buy_price < 0:
+    if not _valid_favorite_ticker(ticker):
         return jsonify({'error': 'dati non validi'}), 400
-    buy_currency = (d.get('buy_currency') or 'USD').strip().upper()[:8]
-    buy_date = (d.get('buy_date') or '').strip() or None
-    notes = (d.get('notes') or '').strip() or None
+    try:
+        added_on = _favorite_date(d.get('added_on'))
+    except (AttributeError, ValueError):
+        return jsonify({'error': 'data non valida'}), 400
     _ensure_user_tables()
     db = get_db_manager()
     new_id = None
@@ -6555,9 +6509,10 @@ def api_holdings_create():
         cur = db.conn.cursor()
         try:
             cur.execute(
-                "INSERT INTO user_holdings (user_id, ticker, quantity, buy_price, "
-                "buy_currency, buy_date, notes) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (uid, ticker, qty, buy_price, buy_currency, buy_date, notes)
+                "INSERT INTO user_favorites (user_id, ticker, added_on) VALUES (%s,%s,%s) "
+                "ON CONFLICT (user_id, ticker) DO UPDATE SET added_on = "
+                "LEAST(user_favorites.added_on, EXCLUDED.added_on) RETURNING id",
+                (uid, ticker, added_on)
             )
             new_id = cur.fetchone()[0]
             db.conn.commit()
@@ -6566,83 +6521,45 @@ def api_holdings_create():
     return jsonify({'ok': True, 'id': new_id})
 
 
-@app.route('/api/holdings/import', methods=['POST'])
-def api_holdings_import():
-    """Atomically import guest holdings into the logged-in account."""
+@app.route('/api/favorites/import', methods=['POST'])
+def api_favorites_import():
+    """Atomically import browser favorites into the logged-in account."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'login required'}), 401
     payload = request.get_json(silent=True) or {}
-    items = payload.get('holdings') or []
+    items = payload.get('favorites') or []
     if not isinstance(items, list) or not items or len(items) > 50:
-        return jsonify({'error': 'holdings non validi (massimo 50)'}), 400
+        return jsonify({'error': 'preferiti non validi (massimo 50)'}), 400
     values = []
     try:
         for item in items:
             ticker = (item.get('ticker') or '').strip().upper()
-            qty = float(item.get('quantity'))
-            buy_price = float(item.get('buy_price'))
-            if not _valid_holding_ticker(ticker) or qty <= 0 or buy_price < 0:
+            if not _valid_favorite_ticker(ticker):
                 raise ValueError
-            values.append((
-                uid, ticker, qty, buy_price,
-                (item.get('buy_currency') or 'USD').strip().upper()[:8],
-                (item.get('buy_date') or '').strip() or None,
-                (item.get('notes') or '').strip() or None,
-            ))
+            added_on = _favorite_date(item.get('added_on') or item.get('buy_date'))
+            values.append((uid, ticker, added_on))
     except (AttributeError, TypeError, ValueError):
-        return jsonify({'error': 'dati posizione non validi'}), 400
+        return jsonify({'error': 'dati preferito non validi'}), 400
     _ensure_user_tables()
     db = get_db_manager()
     with db:
         cur = db.conn.cursor()
         try:
-            cur.executemany(
-                "INSERT INTO user_holdings (user_id, ticker, quantity, buy_price, "
-                "buy_currency, buy_date, notes) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                values,
-            )
+            for value in values:
+                cur.execute(
+                    "INSERT INTO user_favorites (user_id, ticker, added_on) VALUES (%s,%s,%s) "
+                    "ON CONFLICT (user_id, ticker) DO UPDATE SET added_on = "
+                    "LEAST(user_favorites.added_on, EXCLUDED.added_on)", value)
             db.conn.commit()
         finally:
             cur.close()
     return jsonify({'ok': True, 'imported': len(values)})
 
 
-@app.route('/api/holdings/<int:hid>', methods=['PATCH'])
-def api_holdings_update(hid):
-    """Update fields of a holding owned by the current user."""
-    uid = current_user_id()
-    if not uid:
-        return jsonify({'error': 'login required'}), 401
-    d = request.get_json(silent=True) or {}
-    sets, vals = [], []
-    for k in ('quantity', 'buy_price', 'buy_currency', 'buy_date', 'notes'):
-        if k in d:
-            sets.append(f"{k} = %s")
-            vals.append(d[k] if d[k] != '' else None)
-    if not sets:
-        return jsonify({'error': 'niente da aggiornare'}), 400
-    sets.append("updated_at = CURRENT_TIMESTAMP")
-    vals += [hid, uid]
-    db = get_db_manager()
-    updated = 0
-    with db:
-        cur = db.conn.cursor()
-        try:
-            cur.execute(
-                f"UPDATE user_holdings SET {', '.join(sets)} WHERE id = %s AND user_id = %s",
-                vals
-            )
-            updated = cur.rowcount
-            db.conn.commit()
-        finally:
-            cur.close()
-    return jsonify({'ok': updated > 0})
-
-
-@app.route('/api/holdings/<int:hid>', methods=['DELETE'])
-def api_holdings_delete(hid):
-    """Delete a holding owned by the current user."""
+@app.route('/api/favorites/<int:fid>', methods=['DELETE'])
+def api_favorites_delete(fid):
+    """Delete a favorite owned by the current user."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'login required'}), 401
@@ -6651,7 +6568,7 @@ def api_holdings_delete(hid):
     with db:
         cur = db.conn.cursor()
         try:
-            cur.execute("DELETE FROM user_holdings WHERE id = %s AND user_id = %s", (hid, uid))
+            cur.execute("DELETE FROM user_favorites WHERE id = %s AND user_id = %s", (fid, uid))
             deleted = cur.rowcount
             db.conn.commit()
         finally:

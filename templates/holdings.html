@@ -1,230 +1,179 @@
 {% extends "base.html" %}
-
-{% block title %}My Holdings - DollarPunk{% endblock %}
+{% block title %}Preferiti - DollarPunk{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0"><i class="bi bi-wallet2"></i> I miei titoli</h3>
-    <span class="text-muted small">
-        {% if current_user %}Account: {{ current_user.display_name }}{% else %}Modalità ospite - dati in questo browser{% endif %}
-    </span>
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <div>
+    <h1 class="h3 mb-1"><i class="bi bi-star-fill text-warning"></i> I miei preferiti</h1>
+    <p class="text-muted mb-0">Le aziende che vuoi seguire, senza quantità o prezzo di carico.</p>
+  </div>
+  {% if not current_user %}
+  <a class="btn btn-sm btn-primary" href="{{ url_for('account_login', next='/holdings') }}">Accedi</a>
+  {% endif %}
 </div>
 
-{% if not current_user %}
-<div class="alert alert-info small d-flex justify-content-between align-items-center gap-3 flex-wrap">
-    <span>Il portafoglio è salvato solo su questo browser. Accedi per sincronizzarlo tra dispositivi.</span>
-    <a class="btn btn-sm btn-primary" href="{{ url_for('account_login', next='/holdings') }}">Accedi</a>
+{% if current_user %}
+<div class="alert alert-info py-2 small">
+  <i class="bi bi-lightbulb"></i> Per ogni preferito trovi un'indicazione giornaliera basata su sentiment delle notizie,
+  RSI, media mobile a 50 giorni e bande di Bollinger. È un supporto informativo, non consulenza finanziaria.
 </div>
-{% elif account_user %}
-<div id="import-local-alert" class="alert alert-info small" style="display:none">
-    <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
-        <span>Hai un portafoglio salvato in questo browser. Vuoi importarlo nel tuo account?</span>
-        <div>
-            <button id="import-local-btn" class="btn btn-sm btn-primary">Importa</button>
-            <button id="dismiss-local-btn" class="btn btn-sm btn-outline-secondary">Non ora</button>
-        </div>
-    </div>
+{% else %}
+<div class="alert alert-secondary py-2 small">
+  <i class="bi bi-device-ssd"></i> I preferiti sono salvati solo in questo browser. Accedi per sincronizzarli
+  sul tuo account e ricevere le indicazioni giornaliere.
 </div>
 {% endif %}
 
-<div class="alert alert-secondary small">
-    Il <strong>segnale</strong> combina in modo trasparente il tuo P&amp;L (prezzo attuale vs prezzo di carico),
-    il sentiment delle news e gli indicatori tecnici (RSI, media 50gg, Bollinger). E' un aiuto alla lettura,
-    <strong>non un consiglio finanziario</strong>: passa il mouse sul badge per vedere le motivazioni.
+<div id="import-box" class="alert alert-warning py-2 d-none">
+  Hai preferiti salvati nel browser.
+  <button id="import-local-btn" class="btn btn-sm btn-warning ms-2">Importali nell'account</button>
 </div>
 
 <div class="card mb-4">
-    <div class="card-header"><i class="bi bi-plus-circle"></i> Aggiungi posizione</div>
-    <div class="card-body">
-        <form id="add-form" class="row g-2 align-items-end">
-            <div class="col-6 col-md-2">
-                <label class="form-label small mb-1">Ticker</label>
-                <input type="text" class="form-control" id="f-ticker" placeholder="AAPL" required>
-            </div>
-            <div class="col-6 col-md-2">
-                <label class="form-label small mb-1">Quantita</label>
-                <input type="number" step="any" class="form-control" id="f-qty" required>
-            </div>
-            <div class="col-6 col-md-2">
-                <label class="form-label small mb-1">Prezzo acquisto</label>
-                <input type="number" step="any" class="form-control" id="f-price" required>
-            </div>
-            <div class="col-6 col-md-2">
-                <label class="form-label small mb-1">Valuta</label>
-                <input type="text" class="form-control" id="f-ccy" value="USD">
-            </div>
-            <div class="col-6 col-md-2">
-                <label class="form-label small mb-1">Data acquisto</label>
-                <input type="date" class="form-control" id="f-date">
-            </div>
-            <div class="col-6 col-md-2">
-                <button type="submit" class="btn btn-primary w-100"><i class="bi bi-check2"></i> Aggiungi</button>
-            </div>
-        </form>
-    </div>
+  <div class="card-body">
+    <form id="favorite-form" class="row g-2 align-items-end">
+      <div class="col-sm-5 col-lg-3">
+        <label class="form-label">Ticker</label>
+        <input id="f-ticker" class="form-control text-uppercase" maxlength="16" placeholder="es. AAPL" required>
+      </div>
+      <div class="col-sm-5 col-lg-3">
+        <label class="form-label">Data aggiunta</label>
+        <input id="f-date" class="form-control" type="date">
+      </div>
+      <div class="col-sm-2 col-lg-2">
+        <button class="btn btn-success w-100" type="submit"><i class="bi bi-star"></i> Aggiungi</button>
+      </div>
+    </form>
+    <div id="form-msg" class="small mt-2"></div>
+  </div>
 </div>
 
-<div id="totals" class="mb-3"></div>
-
 <div class="card">
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead>
-                    <tr>
-                        <th>Ticker</th><th class="text-end">Qta</th><th class="text-end">Carico</th>
-                        <th class="text-end">Attuale</th><th class="text-end">P&amp;L</th>
-                        <th class="text-end">P&amp;L %</th><th class="text-center">Sentiment</th>
-                        <th class="text-center">RSI</th><th class="text-center">Segnale</th><th></th>
-                    </tr>
-                </thead>
-                <tbody id="holdings-body">
-                    <tr><td colspan="10" class="text-center text-muted py-4">Caricamento...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Watchlist</strong>
+    {% if current_user %}<span id="as-of" class="small text-muted"></span>{% endif %}
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead><tr>
+        <th>Ticker</th><th>Aggiunto il</th>
+        {% if current_user %}
+        <th class="text-end">Prezzo</th><th class="text-end">Sentiment</th>
+        <th class="text-end">RSI</th><th class="text-end">vs SMA50</th><th>Indicazione</th>
+        {% endif %}
+        <th></th>
+      </tr></thead>
+      <tbody id="favorites-body"><tr><td colspan="8" class="text-center text-muted py-4">Caricamento...</td></tr></tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-const USE_SERVER_HOLDINGS = {{ 'true' if current_user else 'false' }};
-const CAN_IMPORT_LOCAL = {{ 'true' if account_user else 'false' }};
-const GUEST_HOLDINGS_KEY = 'dollarpunk_guest_holdings_v1';
+const USE_ACCOUNT = {{ 'true' if current_user else 'false' }};
+const FAVORITES_KEY = 'dollarpunk_guest_favorites_v1';
+const LEGACY_KEY = 'dollarpunk_guest_holdings_v1';
 let renderedRows = [];
-const fmt = (v, d=2) => (v === null || v === undefined) ? 'n/d' : Number(v).toLocaleString('it-IT', {minimumFractionDigits: d, maximumFractionDigits: d});
-const cls = (v) => v === null || v === undefined ? '' : (v >= 0 ? 'text-success' : 'text-danger');
-const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
-function readLocalHoldings() {
-    try { return JSON.parse(localStorage.getItem(GUEST_HOLDINGS_KEY) || '[]'); }
-    catch (_) { return []; }
+function esc(v) { return String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function today() { return new Date().toISOString().slice(0, 10); }
+function fmt(v, n=2) { return v == null ? '-' : Number(v).toFixed(n); }
+
+function readLocalFavorites() {
+  let rows = [];
+  try { rows = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]'); } catch (_) {}
+  if (!Array.isArray(rows) || !rows.length) {
+    let legacy = [];
+    try { legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || '[]'); } catch (_) {}
+    if (Array.isArray(legacy) && legacy.length) {
+      const seen = new Set();
+      rows = legacy.filter(x => x && x.ticker).map(x => ({
+        id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        ticker: String(x.ticker).toUpperCase(), added_on: x.buy_date || today()
+      })).filter(x => !seen.has(x.ticker) && seen.add(x.ticker));
+      writeLocalFavorites(rows);
+      localStorage.removeItem(LEGACY_KEY);
+    }
+  }
+  return Array.isArray(rows) ? rows : [];
+}
+function writeLocalFavorites(rows) { localStorage.setItem(FAVORITES_KEY, JSON.stringify(rows)); }
+
+function signalBadge(signal) {
+  if (!signal) return '-';
+  const cls = signal.label === 'MANTIENI' ? 'success' : (signal.label === 'VALUTA USCITA' ? 'danger' : 'warning');
+  return `<span class="badge bg-${cls}" title="${esc((signal.reasons || []).join(' · '))}">${esc(signal.label)}</span>
+          <div class="small text-muted mt-1">${esc((signal.reasons || []).join(' · '))}</div>`;
 }
 
-function writeLocalHoldings(rows) {
-    localStorage.setItem(GUEST_HOLDINGS_KEY, JSON.stringify(rows));
+function render(rows, asOf) {
+  renderedRows = rows || [];
+  const body = document.getElementById('favorites-body');
+  if (!renderedRows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">Nessun preferito. Aggiungine uno dalla dashboard o dal modulo qui sopra.</td></tr>`;
+    return;
+  }
+  body.innerHTML = renderedRows.map((f, i) => `<tr>
+    <td><a href="/tickers/${encodeURIComponent(f.ticker)}"><strong>${esc(f.ticker)}</strong></a></td>
+    <td>${esc(f.added_on || '-')}</td>
+    ${USE_ACCOUNT ? `<td class="text-end">${fmt(f.current_price, 2)}</td>
+      <td class="text-end">${fmt(f.sentiment_kpi, 3)}</td><td class="text-end">${fmt(f.rsi, 1)}</td>
+      <td class="text-end">${f.dist_sma50_pct == null ? '-' : `${Number(f.dist_sma50_pct) >= 0 ? '+' : ''}${fmt(f.dist_sma50_pct, 1)}%`}</td>
+      <td style="min-width:240px">${signalBadge(f.signal)}</td>` : ''}
+    <td class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="removeFavorite(${i})" title="Rimuovi"><i class="bi bi-trash"></i></button></td>
+  </tr>`).join('');
+  if (USE_ACCOUNT && asOf) document.getElementById('as-of').textContent = `Aggiornato al ${asOf}`;
 }
 
-function signalBadge(sig) {
-    if (!sig) return '';
-    const map = {
-        'VALUTA USCITA': 'bg-danger',
-        'DA RIVEDERE': 'bg-warning text-dark',
-        'MANTIENI': 'bg-success'
-    };
-    const color = map[sig.label] || 'bg-secondary';
-    const reasons = (sig.reasons || []).join(' &#10;• ');
-    return `<span class="badge ${color}" title="• ${reasons}" style="cursor:help">${sig.label}</span>`;
+async function loadFavorites() {
+  if (!USE_ACCOUNT) { render(readLocalFavorites()); return; }
+  const res = await fetch('/api/favorites');
+  const data = await res.json();
+  if (!res.ok) { render([]); return; }
+  render(data.favorites || [], data.as_of);
 }
 
-async function loadHoldings() {
-    const res = USE_SERVER_HOLDINGS
-        ? await fetch('/api/holdings')
-        : await fetch('/api/holdings/preview', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({holdings: readLocalHoldings()})
-        });
+async function removeFavorite(index) {
+  const item = renderedRows[index];
+  if (!item) return;
+  if (USE_ACCOUNT) await fetch(`/api/favorites/${item.id}`, {method:'DELETE'});
+  else writeLocalFavorites(readLocalFavorites().filter(x => String(x.id) !== String(item.id)));
+  loadFavorites();
+}
+
+document.getElementById('f-date').value = today();
+document.getElementById('favorite-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const ticker = document.getElementById('f-ticker').value.trim().toUpperCase();
+  const added_on = document.getElementById('f-date').value || today();
+  const msg = document.getElementById('form-msg');
+  if (USE_ACCOUNT) {
+    const res = await fetch('/api/favorites', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ticker, added_on})});
     const data = await res.json();
-    const body = document.getElementById('holdings-body');
-    const rows = data.holdings || [];
-    renderedRows = rows;
-    if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Nessuna posizione. Aggiungine una sopra.</td></tr>';
-    } else {
-        body.innerHTML = rows.map((h, index) => `
-            <tr>
-                <td><strong>${esc(h.ticker)}</strong>${h.buy_date ? `<div class="text-muted small">dal ${esc(h.buy_date)}</div>` : ''}</td>
-                <td class="text-end">${fmt(h.quantity, 0)}</td>
-                <td class="text-end">${fmt(h.buy_price)} ${esc(h.buy_currency)}</td>
-                <td class="text-end">${fmt(h.current_price)}</td>
-                <td class="text-end ${cls(h.pnl_abs)}">${fmt(h.pnl_abs)}</td>
-                <td class="text-end ${cls(h.pnl_pct)}">${h.pnl_pct === null ? 'n/d' : fmt(h.pnl_pct) + '%'}</td>
-                <td class="text-center ${cls(h.sentiment_kpi)}">${h.sentiment_kpi === null ? 'n/d' : fmt(h.sentiment_kpi)}</td>
-                <td class="text-center">${h.rsi === null ? 'n/d' : fmt(h.rsi, 0)}</td>
-                <td class="text-center">${signalBadge(h.signal)}</td>
-                <td class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="delHolding(renderedRows[${index}].id)"><i class="bi bi-trash"></i></button></td>
-            </tr>`).join('');
-    }
-    const t = data.totals || {};
-    document.getElementById('totals').innerHTML = t.cost_basis ? `
-        <div class="d-flex gap-4 flex-wrap">
-            <div><span class="text-muted small d-block">Costo totale</span><strong>${fmt(t.cost_basis)}</strong></div>
-            <div><span class="text-muted small d-block">Valore attuale</span><strong>${fmt(t.market_value)}</strong></div>
-            <div><span class="text-muted small d-block">P&L totale</span><strong class="${cls(t.pnl_abs)}">${fmt(t.pnl_abs)} (${t.pnl_pct === null ? 'n/d' : fmt(t.pnl_pct) + '%'})</strong></div>
-        </div>` : '';
-}
-
-async function delHolding(id) {
-    if (!confirm('Rimuovere questa posizione?')) return;
-    if (USE_SERVER_HOLDINGS) {
-        await fetch(`/api/holdings/${id}`, {method: 'DELETE'});
-    } else {
-        writeLocalHoldings(readLocalHoldings().filter(row => String(row.id) !== String(id)));
-    }
-    loadHoldings();
-}
-
-document.getElementById('add-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const payload = {
-        ticker: document.getElementById('f-ticker').value,
-        quantity: document.getElementById('f-qty').value,
-        buy_price: document.getElementById('f-price').value,
-        buy_currency: document.getElementById('f-ccy').value,
-        buy_date: document.getElementById('f-date').value,
-    };
-    let ok = false;
-    if (USE_SERVER_HOLDINGS) {
-        const res = await fetch('/api/holdings', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
-        });
-        ok = res.ok;
-        if (!ok) {
-            const err = await res.json();
-            alert('Errore: ' + (err.error || 'imprevisto'));
-        }
-    } else {
-        const rows = readLocalHoldings();
-        rows.push({...payload, id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`});
-        writeLocalHoldings(rows);
-        ok = true;
-    }
-    if (ok) {
-        e.target.reset();
-        document.getElementById('f-ccy').value = 'USD';
-        loadHoldings();
-    }
+    if (!res.ok) { msg.className='small mt-2 text-danger'; msg.textContent=data.error || 'Errore'; return; }
+  } else {
+    const rows = readLocalFavorites();
+    if (!rows.some(x => x.ticker === ticker)) rows.push({id:`local-${Date.now()}`, ticker, added_on});
+    writeLocalFavorites(rows);
+  }
+  msg.className='small mt-2 text-success'; msg.textContent='Preferito salvato.';
+  document.getElementById('f-ticker').value = '';
+  loadFavorites();
 });
 
-async function importLocalHoldings() {
-    const rows = readLocalHoldings();
-    const button = document.getElementById('import-local-btn');
-    button.disabled = true;
-    button.textContent = 'Importazione...';
-    const res = await fetch('/api/holdings/import', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({holdings: rows})
-    });
-    if (!res.ok) {
-        button.disabled = false;
-        button.textContent = 'Riprova';
-        alert('Importazione non riuscita. I dati locali sono rimasti intatti.');
-        return;
-    }
-    localStorage.removeItem(GUEST_HOLDINGS_KEY);
-    document.getElementById('import-local-alert').style.display = 'none';
-    loadHoldings();
+async function importLocalFavorites() {
+  const favorites = readLocalFavorites();
+  const res = await fetch('/api/favorites/import', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({favorites})});
+  if (!res.ok) return;
+  localStorage.removeItem(FAVORITES_KEY); localStorage.removeItem(LEGACY_KEY);
+  document.getElementById('import-box').classList.add('d-none');
+  loadFavorites();
 }
-
-if (CAN_IMPORT_LOCAL && readLocalHoldings().length) {
-    const alertBox = document.getElementById('import-local-alert');
-    alertBox.style.display = 'block';
-    document.getElementById('import-local-btn').addEventListener('click', importLocalHoldings);
-    document.getElementById('dismiss-local-btn').addEventListener('click', () => { alertBox.style.display = 'none'; });
+if (USE_ACCOUNT && readLocalFavorites().length) {
+  document.getElementById('import-box').classList.remove('d-none');
+  document.getElementById('import-local-btn').addEventListener('click', importLocalFavorites);
 }
-
-loadHoldings();
+loadFavorites();
 </script>
 {% endblock %}

@@ -331,7 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_ticker_decayed_date ON ticker_decayed_sentiment(d
 CREATE INDEX IF NOT EXISTS idx_ticker_decayed_ticker_date ON ticker_decayed_sentiment(ticker, date);
 
 -- ---------------------------------------------------------------------------
--- Admin-created accounts + per-user holdings
+-- Admin-created accounts + per-user favorites
 -- ---------------------------------------------------------------------------
 -- Users are created by an admin (no open self-registration). Passwords are
 -- stored as salted hashes (werkzeug.security), never in clear text.
@@ -361,4 +361,16 @@ CREATE TABLE IF NOT EXISTS user_holdings (
 );
 CREATE INDEX IF NOT EXISTS idx_user_holdings_user ON user_holdings(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_holdings_ticker ON user_holdings(ticker);
+
+-- A favorites list needs only the ticker and the date it was added. The legacy
+-- user_holdings table remains for backward-compatible migration of existing data.
+CREATE TABLE IF NOT EXISTS user_favorites (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ticker TEXT NOT NULL,
+    added_on DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_user_favorites_user ON user_favorites(user_id);
 
