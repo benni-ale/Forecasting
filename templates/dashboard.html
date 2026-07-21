@@ -84,22 +84,52 @@
         <input type="text" class="form-control" id="ticker" name="ticker" placeholder="e.g. NVDA" value="{{ ticker_filter }}">
     </div>
     <div class="col-auto">
-        <label class="form-label mb-1" for="sector">Sector</label>
-        <select class="form-select" id="sector" name="sector">
-            <option value="">All sectors</option>
-            {% for value in sectors %}
-            <option value="{{ value }}" {% if sector_filter == value %}selected{% endif %}>{{ value }}</option>
-            {% endfor %}
-        </select>
+        <label class="form-label mb-1">Sector</label>
+        <div class="dropdown multi-filter" data-filter-label="sectors">
+            <button class="btn btn-outline-secondary dropdown-toggle text-start d-flex justify-content-between align-items-center"
+                    style="min-width:240px" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                <span class="multi-filter-summary">All sectors</span>
+            </button>
+            <div class="dropdown-menu p-2" style="width:300px">
+                <div class="d-flex gap-2 mb-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary select-all">Select all</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary deselect-all">Deselect all</button>
+                </div>
+                <div class="border-top pt-2" style="max-height:280px;overflow-y:auto">
+                    {% for value in sectors %}
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="sector" value="{{ value }}"
+                               id="sector-{{ loop.index }}" {% if value in sector_filters %}checked{% endif %}>
+                        <label class="form-check-label small" for="sector-{{ loop.index }}">{{ value }}</label>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
     </div>
     <div class="col-auto">
-        <label class="form-label mb-1" for="industry">Industry</label>
-        <select class="form-select" id="industry" name="industry">
-            <option value="">All industries</option>
-            {% for value in industries %}
-            <option value="{{ value }}" {% if industry_filter == value %}selected{% endif %}>{{ value }}</option>
-            {% endfor %}
-        </select>
+        <label class="form-label mb-1">Industry</label>
+        <div class="dropdown multi-filter" data-filter-label="industries">
+            <button class="btn btn-outline-secondary dropdown-toggle text-start d-flex justify-content-between align-items-center"
+                    style="min-width:280px" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                <span class="multi-filter-summary">All industries</span>
+            </button>
+            <div class="dropdown-menu p-2" style="width:340px">
+                <div class="d-flex gap-2 mb-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary select-all">Select all</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary deselect-all">Deselect all</button>
+                </div>
+                <div class="border-top pt-2" style="max-height:280px;overflow-y:auto">
+                    {% for value in industries %}
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="industry" value="{{ value }}"
+                               id="industry-{{ loop.index }}" {% if value in industry_filters %}checked{% endif %}>
+                        <label class="form-check-label small" for="industry-{{ loop.index }}">{{ value }}</label>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
     </div>
     <div class="col-auto">
         <label class="form-label mb-1" for="direction">Sentiment</label>
@@ -188,6 +218,32 @@
     let charts = [];           // live Chart instances (destroyed on re-render)
     let activeView = 'sentiment';
     let renderToken = 0;
+
+    document.querySelectorAll('.multi-filter').forEach(filter => {
+        const boxes = [...filter.querySelectorAll('input[type="checkbox"]')];
+        const summary = filter.querySelector('.multi-filter-summary');
+        const noun = filter.dataset.filterLabel;
+        function updateSummary() {
+            const checked = boxes.filter(box => box.checked);
+            if (!checked.length || checked.length === boxes.length) {
+                summary.textContent = `All ${noun}`;
+            } else if (checked.length === 1) {
+                summary.textContent = checked[0].value;
+            } else {
+                summary.textContent = `${checked.length} ${noun} selected`;
+            }
+        }
+        filter.querySelector('.select-all').addEventListener('click', () => {
+            boxes.forEach(box => { box.checked = true; });
+            updateSummary();
+        });
+        filter.querySelector('.deselect-all').addEventListener('click', () => {
+            boxes.forEach(box => { box.checked = false; });
+            updateSummary();
+        });
+        boxes.forEach(box => box.addEventListener('change', updateSummary));
+        updateSummary();
+    });
 
     function esc(value) {
         return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));

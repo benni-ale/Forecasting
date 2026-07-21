@@ -595,8 +595,8 @@ def public_dashboard():
     min_mentions = max(1, min(min_mentions, 100000))
 
     ticker_filter = (request.args.get('ticker', '') or '').strip().upper()
-    sector_filter = (request.args.get('sector', '') or '').strip()
-    industry_filter = (request.args.get('industry', '') or '').strip()
+    sector_filters = [v.strip() for v in request.args.getlist('sector') if v.strip()]
+    industry_filters = [v.strip() for v in request.args.getlist('industry') if v.strip()]
     direction = (request.args.get('direction', 'all') or 'all').lower()
     if direction not in ('all', 'bullish', 'bearish'):
         direction = 'all'
@@ -653,8 +653,8 @@ def public_dashboard():
                     LEFT JOIN companies c ON UPPER(c.ticker) = UPPER(v.ticker)
                     WHERE v.article_time_published::date > (CURRENT_DATE - make_interval(days => %(days)s))
                       AND (%(ticker)s = '' OR v.ticker ILIKE %(tickerlike)s)
-                      AND (%(sector)s = '' OR c.sector = %(sector)s)
-                      AND (%(industry)s = '' OR c.industry = %(industry)s)
+                      AND (%(all_sectors)s OR c.sector = ANY(%(sectors)s))
+                      AND (%(all_industries)s OR c.industry = ANY(%(industries)s))
                     GROUP BY v.ticker, c.sector, c.industry
                     HAVING COUNT(*) >= %(min_mentions)s
                     ORDER BY kpi DESC
@@ -665,8 +665,10 @@ def public_dashboard():
                         'min_mentions': min_mentions,
                         'ticker': ticker_filter,
                         'tickerlike': f'%{ticker_filter}%',
-                        'sector': sector_filter,
-                        'industry': industry_filter,
+                        'all_sectors': not sector_filters,
+                        'sectors': sector_filters,
+                        'all_industries': not industry_filters,
+                        'industries': industry_filters,
                     }
                 )
                 for ticker, kpi, last_seen, mentions, sector, industry in cursor.fetchall():
@@ -752,8 +754,8 @@ def public_dashboard():
         half_life=half_life,
         min_mentions=min_mentions,
         ticker_filter=ticker_filter,
-        sector_filter=sector_filter,
-        industry_filter=industry_filter,
+        sector_filters=sector_filters,
+        industry_filters=industry_filters,
         sectors=sectors,
         industries=industries,
         direction=direction,
