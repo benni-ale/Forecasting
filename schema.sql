@@ -330,3 +330,35 @@ CREATE INDEX IF NOT EXISTS idx_ticker_decayed_ticker ON ticker_decayed_sentiment
 CREATE INDEX IF NOT EXISTS idx_ticker_decayed_date ON ticker_decayed_sentiment(date);
 CREATE INDEX IF NOT EXISTS idx_ticker_decayed_ticker_date ON ticker_decayed_sentiment(ticker, date);
 
+-- ---------------------------------------------------------------------------
+-- Multi-user accounts (invite-only) + per-user holdings
+-- ---------------------------------------------------------------------------
+-- Users are created by an admin (no open self-registration). Passwords are
+-- stored as salted hashes (werkzeug.security), never in clear text.
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Each holding: a stock a user owns, with the buy price/date used to compute
+-- P&L (current price vs buy price) and the sell-decision signal.
+CREATE TABLE IF NOT EXISTS user_holdings (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ticker TEXT NOT NULL,
+    quantity NUMERIC NOT NULL,
+    buy_price NUMERIC NOT NULL,       -- per-share price, in buy_currency
+    buy_currency TEXT DEFAULT 'USD',
+    buy_date DATE,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_holdings_user ON user_holdings(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_holdings_ticker ON user_holdings(ticker);
+

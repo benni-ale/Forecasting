@@ -13,6 +13,7 @@ import subprocess
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from news_collector import AlphaVantageNewsCollector, DatabaseManager
+from werkzeug.security import generate_password_hash, check_password_hash
 import threading
 import time
 from functools import wraps
@@ -75,6 +76,15 @@ PUBLIC_ENDPOINTS = {
     'public_companies', 'public_ticker_detail', 'api_ticker_sentiment_kpi', 'api_ticker_technicals', 'get_companies',
     'about',
     'login', 'logout', 'static',
+    'account_login', 'account_logout',
+}
+
+# Endpoints reachable by any logged-in *user* (not just admin). Used for the
+# personal holdings tracker: they need a user session but not admin rights.
+USER_ENDPOINTS = {
+    'holdings_page',
+    'api_holdings_list', 'api_holdings_create',
+    'api_holdings_update', 'api_holdings_delete',
 }
 
 
@@ -92,21 +102,39 @@ def is_admin():
 @app.context_processor
 def inject_auth():
     """Expose auth state to all templates (used to hide admin-only nav links)."""
-    return {'is_admin': is_admin(), 'auth_enabled': AUTH_ENABLED}
+    user = None
+    if session.get('user_id'):
+        user = {
+            'id': session.get('user_id'),
+            'email': session.get('user_email'),
+            'display_name': session.get('user_name') or session.get('user_email'),
+        }
+    elif not AUTH_ENABLED:
+        # Local dev: a stable implicit user so the holdings tracker just works.
+        user = {'id': None, 'email': 'dev@local', 'display_name': 'Dev'}
+    return {'is_admin': is_admin(), 'auth_enabled': AUTH_ENABLED, 'current_user': user}
 
 
 @app.before_request
 def _enforce_access_control():
-    """Gate all non-public endpoints behind admin auth when AUTH_ENABLED."""
+    """Gate non-public endpoints. Admin endpoints need an admin session; the
+    personal holdings endpoints need any logged-in user; the rest is admin-only.
+    """
     if not AUTH_ENABLED:
         return  # local/dev: no restrictions
-    if request.endpoint in PUBLIC_ENDPOINTS:
+    ep = request.endpoint
+    if ep in PUBLIC_ENDPOINTS:
         return
     if session.get('is_admin'):
         return
-    # Not authenticated and not a public endpoint -> block.
+    # User-level pages: a plain user session is enough.
+    if ep in USER_ENDPOINTS and session.get('user_id'):
+        return
+    # Not authorized -> block (JSON 401 for APIs, redirect to the right login).
     if request.path.startswith('/api/'):
-        return jsonify({'error': 'unauthorized', 'message': 'Admin login required.'}), 401
+        return jsonify({'error': 'unauthorized', 'message': 'Login required.'}), 401
+    if ep in USER_ENDPOINTS:
+        return redirect(url_for('account_login', next=request.path))
     return redirect(url_for('login', next=request.path))
 
 
@@ -140,6 +168,185 @@ def logout():
     session.pop('is_admin', None)
     flash('Logged out.', 'info')
     return redirect(url_for('public_dashboard'))
+
+
+# ---------------------------------------------------------------------------
+# Multi-user accounts (invite-only) + per-user holdings
+# ---------------------------------------------------------------------------
+# Admins create accounts from /admin/users; users log in at /account/login and
+# manage their own holdings (with buy price/date) at /holdings. Passwords are
+# stored as salted hashes via werkzeug.
+_USER_TABLES_READY = False
+_DEV_USER_ID = None
+
+
+def _ensure_user_tables():
+    """Create users + user_holdings tables if missing (idempotent, run once)."""
+    global _USER_TABLES_READY
+    if _USER_TABLES_READY:
+        return
+    db = get_db_manager()
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_holdings (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    ticker TEXT NOT NULL,
+                    quantity NUMERIC NOT NULL,
+                    buy_price NUMERIC NOT NULL,
+                    buy_currency TEXT DEFAULT 'USD',
+                    buy_date DATE,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_user_holdings_user ON user_holdings(user_id);")
+            db.conn.commit()
+            _USER_TABLES_READY = True
+        finally:
+            cur.close()
+
+
+def _dev_user_id():
+    """Resolve (creating once) a stable 'dev@local' user for local dev where
+    ADMIN_PASSWORD is unset and there is no login flow."""
+    global _DEV_USER_ID
+    if _DEV_USER_ID is not None:
+        return _DEV_USER_ID
+    _ensure_user_tables()
+    db = get_db_manager()
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute("SELECT id FROM users WHERE email = %s", ('dev@local',))
+            row = cur.fetchone()
+            if not row:
+                cur.execute(
+                    "INSERT INTO users (email, password_hash, display_name) "
+                    "VALUES (%s, %s, %s) RETURNING id",
+                    ('dev@local', generate_password_hash('dev'), 'Dev User')
+                )
+                row = cur.fetchone()
+                db.conn.commit()
+            _DEV_USER_ID = row[0]
+        finally:
+            cur.close()
+    return _DEV_USER_ID
+
+
+def current_user_id():
+    """Logged-in user's id, or the implicit dev user when auth is disabled."""
+    uid = session.get('user_id')
+    if uid:
+        return uid
+    if not AUTH_ENABLED:
+        try:
+            return _dev_user_id()
+        except Exception as e:
+            logger.warning(f"Could not resolve dev user: {e}")
+    return None
+
+
+@app.route('/account/login', methods=['GET', 'POST'])
+def account_login():
+    """User login (accounts are created by an admin)."""
+    if request.method == 'POST':
+        email = (request.form.get('email') or '').strip().lower()
+        password = request.form.get('password') or ''
+        _ensure_user_tables()
+        db = get_db_manager(readonly=True)
+        row = None
+        with db:
+            cur = db.conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT id, email, display_name, password_hash, is_active "
+                    "FROM users WHERE email = %s", (email,)
+                )
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        if row and row[4] and check_password_hash(row[3], password):
+            session['user_id'] = row[0]
+            session['user_email'] = row[1]
+            session['user_name'] = row[2] or row[1]
+            session.permanent = True
+            logger.info(f"User login: {email}")
+            next_url = request.args.get('next') or request.form.get('next') or url_for('holdings_page')
+            if not next_url.startswith('/'):
+                next_url = url_for('holdings_page')
+            return redirect(next_url)
+        logger.warning(f"User login failed: {email}")
+        flash('Email o password non validi.', 'error')
+    return render_template('account_login.html', next=request.args.get('next', ''))
+
+
+@app.route('/account/logout')
+def account_logout():
+    """Clear the user session."""
+    for k in ('user_id', 'user_email', 'user_name'):
+        session.pop(k, None)
+    flash('Sei uscito dal tuo account.', 'info')
+    return redirect(url_for('public_dashboard'))
+
+
+@app.route('/admin/users', methods=['GET', 'POST'])
+def admin_users():
+    """Admin-only: list users and create new (invite-only) accounts."""
+    _ensure_user_tables()
+    if request.method == 'POST':
+        email = (request.form.get('email') or '').strip().lower()
+        display_name = (request.form.get('display_name') or '').strip()
+        password = request.form.get('password') or ''
+        if not email or not password:
+            flash('Email e password sono obbligatorie.', 'error')
+        else:
+            db = get_db_manager()
+            try:
+                with db:
+                    cur = db.conn.cursor()
+                    try:
+                        cur.execute(
+                            "INSERT INTO users (email, password_hash, display_name) "
+                            "VALUES (%s, %s, %s)",
+                            (email, generate_password_hash(password), display_name or None)
+                        )
+                        db.conn.commit()
+                        flash(f'Utente {email} creato.', 'info')
+                    finally:
+                        cur.close()
+            except Exception as e:
+                logger.error(f"Error creating user {email}: {e}")
+                flash(f'Errore nella creazione utente (email gia\' esistente?): {e}', 'error')
+        return redirect(url_for('admin_users'))
+
+    users = []
+    db = get_db_manager(readonly=True)
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute(
+                "SELECT u.id, u.email, u.display_name, u.is_active, u.created_at, "
+                "(SELECT COUNT(*) FROM user_holdings h WHERE h.user_id = u.id) "
+                "FROM users u ORDER BY u.created_at DESC"
+            )
+            users = cur.fetchall()
+        finally:
+            cur.close()
+    return render_template('admin_users.html', users=users)
 
 # Global state for collection status
 collection_status = {
@@ -6042,6 +6249,248 @@ def get_vectorized_companies():
     except Exception as e:
         logger.error(f"Error fetching vectorized companies: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Personal holdings tracker (per-user): P&L vs buy price + sell-decision signal
+# ---------------------------------------------------------------------------
+
+def _holding_market_info(ticker):
+    """Current price + technical/sentiment snapshot for one ticker, all from the
+    cached daily series (no extra Alpha Vantage calls beyond the lazy price cache).
+    """
+    out = {'current_price': None, 'rsi': None, 'dist_sma50_pct': None,
+           'bb_position': None, 'sentiment_kpi': None}
+    try:
+        data = _fetch_av_daily(ticker, points=120)
+        if not data.get('error'):
+            closes = [c for c in data['closes'] if c is not None]
+            if closes:
+                last = closes[-1]
+                out['current_price'] = last
+                sma50 = _sma(closes, 50)
+                rsi14 = _rsi(closes, 14)
+                _, bb_upper, bb_lower = _bollinger(closes, 20, 2.0)
+                if sma50[-1]:
+                    out['dist_sma50_pct'] = round((last / sma50[-1] - 1.0) * 100.0, 2)
+                if rsi14[-1] is not None:
+                    out['rsi'] = round(rsi14[-1], 1)
+                if bb_upper[-1] is not None and bb_lower[-1] is not None:
+                    width = bb_upper[-1] - bb_lower[-1]
+                    if width > 0:
+                        out['bb_position'] = round((last - bb_lower[-1]) / width, 2)
+    except Exception as e:
+        logger.warning(f"Holding market info failed for {ticker}: {e}")
+    try:
+        series = _compute_ticker_kpi_series(ticker)
+        if series:
+            out['sentiment_kpi'] = series[-1].get('kpi')
+    except Exception as e:
+        logger.warning(f"Holding sentiment KPI failed for {ticker}: {e}")
+    return out
+
+
+def _decision_signal(pnl_pct, sentiment_kpi, rsi, dist_sma50_pct, bb_position):
+    """Transparent, rule-based sell-decision helper. NOT financial advice: it
+    just summarizes P&L + sentiment + technicals into a label with the reasons
+    that fired, so the user can decide. Each bearish condition adds sell
+    pressure, each bullish one adds hold pressure.
+    """
+    reasons = []
+    sell = 0
+    hold = 0
+    if sentiment_kpi is not None:
+        if sentiment_kpi <= -0.15:
+            sell += 1; reasons.append(f"Sentiment news negativo ({sentiment_kpi:+.2f})")
+        elif sentiment_kpi >= 0.15:
+            hold += 1; reasons.append(f"Sentiment news positivo ({sentiment_kpi:+.2f})")
+    if rsi is not None:
+        if rsi >= 70:
+            sell += 1; reasons.append(f"RSI ipercomprato ({rsi:.0f})")
+        elif rsi <= 30:
+            hold += 1; reasons.append(f"RSI ipervenduto ({rsi:.0f}), possibile rimbalzo")
+    if dist_sma50_pct is not None:
+        if dist_sma50_pct <= -5:
+            sell += 1; reasons.append(f"Sotto la media 50gg ({dist_sma50_pct:+.1f}%)")
+        elif dist_sma50_pct >= 5:
+            hold += 1; reasons.append(f"Sopra la media 50gg ({dist_sma50_pct:+.1f}%)")
+    if bb_position is not None:
+        if bb_position >= 0.95:
+            sell += 1; reasons.append("Prezzo al limite superiore delle Bollinger")
+        elif bb_position <= 0.05:
+            hold += 1; reasons.append("Prezzo al limite inferiore delle Bollinger")
+    if pnl_pct is not None:
+        if pnl_pct >= 25 and sell >= 1:
+            sell += 1; reasons.append(f"Guadagno ampio (+{pnl_pct:.0f}%) con segnali di debolezza: valuta presa di profitto")
+        elif pnl_pct <= -15 and sell >= 1:
+            sell += 1; reasons.append(f"Perdita rilevante ({pnl_pct:.0f}%) con segnali negativi: valuta stop")
+    net = sell - hold
+    if net >= 2:
+        label = 'VALUTA USCITA'
+    elif net <= -1:
+        label = 'MANTIENI'
+    else:
+        label = 'DA RIVEDERE'
+    if not reasons:
+        reasons.append("Dati insufficienti per un segnale forte")
+    return {'label': label, 'reasons': reasons, 'sell_pressure': sell, 'hold_pressure': hold}
+
+
+@app.route('/holdings')
+def holdings_page():
+    """Personal holdings tracker page (per logged-in user)."""
+    return render_template('holdings.html')
+
+
+@app.route('/api/holdings', methods=['GET'])
+def api_holdings_list():
+    """List the current user's holdings, each enriched with live P&L, sentiment,
+    technicals and the sell-decision signal."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'login required'}), 401
+    _ensure_user_tables()
+    db = get_db_manager()
+    rows = []
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute(
+                "SELECT id, ticker, quantity, buy_price, buy_currency, buy_date, notes "
+                "FROM user_holdings WHERE user_id = %s ORDER BY ticker", (uid,)
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    holdings = []
+    totals = {'cost': 0.0, 'market': 0.0}
+    for r in rows:
+        hid, ticker, qty, buy_price, ccy, buy_date, notes = r
+        qty = float(qty)
+        buy_price = float(buy_price)
+        info = _holding_market_info(ticker)
+        cp = info['current_price']
+        cost = qty * buy_price
+        mkt = qty * cp if cp is not None else None
+        pnl_abs = (mkt - cost) if mkt is not None else None
+        pnl_pct = ((cp / buy_price - 1.0) * 100.0) if (cp is not None and buy_price) else None
+        signal = _decision_signal(pnl_pct, info['sentiment_kpi'], info['rsi'],
+                                  info['dist_sma50_pct'], info['bb_position'])
+        totals['cost'] += cost
+        if mkt is not None:
+            totals['market'] += mkt
+        holdings.append({
+            'id': hid, 'ticker': ticker, 'quantity': qty,
+            'buy_price': buy_price, 'buy_currency': ccy,
+            'buy_date': buy_date.isoformat() if buy_date else None,
+            'notes': notes,
+            'current_price': round(cp, 4) if cp is not None else None,
+            'cost_basis': round(cost, 2),
+            'market_value': round(mkt, 2) if mkt is not None else None,
+            'pnl_abs': round(pnl_abs, 2) if pnl_abs is not None else None,
+            'pnl_pct': round(pnl_pct, 2) if pnl_pct is not None else None,
+            'sentiment_kpi': info['sentiment_kpi'],
+            'rsi': info['rsi'],
+            'dist_sma50_pct': info['dist_sma50_pct'],
+            'signal': signal,
+        })
+    tot_pnl = totals['market'] - totals['cost'] if totals['market'] else None
+    return jsonify({
+        'holdings': holdings,
+        'totals': {
+            'cost_basis': round(totals['cost'], 2),
+            'market_value': round(totals['market'], 2) if totals['market'] else None,
+            'pnl_abs': round(tot_pnl, 2) if tot_pnl is not None else None,
+            'pnl_pct': round((tot_pnl / totals['cost']) * 100.0, 2) if (tot_pnl is not None and totals['cost']) else None,
+        },
+    })
+
+
+@app.route('/api/holdings', methods=['POST'])
+def api_holdings_create():
+    """Add a holding for the current user."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'login required'}), 401
+    d = request.get_json(silent=True) or request.form
+    ticker = (d.get('ticker') or '').strip().upper()
+    try:
+        qty = float(d.get('quantity'))
+        buy_price = float(d.get('buy_price'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'quantity e buy_price devono essere numerici'}), 400
+    if not ticker or qty <= 0 or buy_price < 0:
+        return jsonify({'error': 'dati non validi'}), 400
+    buy_currency = (d.get('buy_currency') or 'USD').strip().upper()[:8]
+    buy_date = (d.get('buy_date') or '').strip() or None
+    notes = (d.get('notes') or '').strip() or None
+    _ensure_user_tables()
+    db = get_db_manager()
+    new_id = None
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO user_holdings (user_id, ticker, quantity, buy_price, "
+                "buy_currency, buy_date, notes) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (uid, ticker, qty, buy_price, buy_currency, buy_date, notes)
+            )
+            new_id = cur.fetchone()[0]
+            db.conn.commit()
+        finally:
+            cur.close()
+    return jsonify({'ok': True, 'id': new_id})
+
+
+@app.route('/api/holdings/<int:hid>', methods=['PATCH'])
+def api_holdings_update(hid):
+    """Update fields of a holding owned by the current user."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'login required'}), 401
+    d = request.get_json(silent=True) or {}
+    sets, vals = [], []
+    for k in ('quantity', 'buy_price', 'buy_currency', 'buy_date', 'notes'):
+        if k in d:
+            sets.append(f"{k} = %s")
+            vals.append(d[k] if d[k] != '' else None)
+    if not sets:
+        return jsonify({'error': 'niente da aggiornare'}), 400
+    sets.append("updated_at = CURRENT_TIMESTAMP")
+    vals += [hid, uid]
+    db = get_db_manager()
+    updated = 0
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute(
+                f"UPDATE user_holdings SET {', '.join(sets)} WHERE id = %s AND user_id = %s",
+                vals
+            )
+            updated = cur.rowcount
+            db.conn.commit()
+        finally:
+            cur.close()
+    return jsonify({'ok': updated > 0})
+
+
+@app.route('/api/holdings/<int:hid>', methods=['DELETE'])
+def api_holdings_delete(hid):
+    """Delete a holding owned by the current user."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'login required'}), 401
+    db = get_db_manager()
+    deleted = 0
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute("DELETE FROM user_holdings WHERE id = %s AND user_id = %s", (hid, uid))
+            deleted = cur.rowcount
+            db.conn.commit()
+        finally:
+            cur.close()
+    return jsonify({'ok': deleted > 0})
 
 
 if __name__ == '__main__':

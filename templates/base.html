@@ -218,6 +218,11 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/about' %}active{% endif %}" href="/about"><i class="bi bi-info-circle"></i> About</a>
                     </li>
+                    {% if current_user %}
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/holdings' %}active{% endif %}" href="/holdings"><i class="bi bi-wallet2"></i> My Holdings</a>
+                    </li>
+                    {% endif %}
                     {% if is_admin %}
                     <li class="nav-item">
                         <a class="nav-link" href="/">Admin</a>
@@ -232,17 +237,27 @@
                         <a class="nav-link" href="/jobs">Job Executions</a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link" href="/admin/users"><i class="bi bi-people"></i> Users</a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="/sql-query">SQL Query</a>
                     </li>
                     {% endif %}
                     {% if auth_enabled %}
                         {% if is_admin %}
                         <li class="nav-item">
-                            <a class="nav-link" href="/logout">Logout</a>
+                            <a class="nav-link" href="/logout">Logout (admin)</a>
+                        </li>
+                        {% elif current_user %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="/account/logout"><i class="bi bi-box-arrow-right"></i> Logout ({{ current_user.display_name }})</a>
                         </li>
                         {% else %}
                         <li class="nav-item">
-                            <a class="nav-link" href="/login">Admin login</a>
+                            <a class="nav-link" href="/account/login"><i class="bi bi-person"></i> Login</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/login">Admin</a>
                         </li>
                         {% endif %}
                     {% endif %}

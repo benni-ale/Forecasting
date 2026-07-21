@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}My Holdings - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0"><i class="bi bi-wallet2"></i> I miei titoli</h3>
+    {% if current_user %}<span class="text-muted small">{{ current_user.display_name }}</span>{% endif %}
+</div>
+
+<div class="alert alert-secondary small">
+    Il <strong>segnale</strong> combina in modo trasparente il tuo P&amp;L (prezzo attuale vs prezzo di carico),
+    il sentiment delle news e gli indicatori tecnici (RSI, media 50gg, Bollinger). E' un aiuto alla lettura,
+    <strong>non un consiglio finanziario</strong>: passa il mouse sul badge per vedere le motivazioni.
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-plus-circle"></i> Aggiungi posizione</div>
+    <div class="card-body">
+        <form id="add-form" class="row g-2 align-items-end">
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">Ticker</label>
+                <input type="text" class="form-control" id="f-ticker" placeholder="AAPL" required>
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">Quantita</label>
+                <input type="number" step="any" class="form-control" id="f-qty" required>
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">Prezzo acquisto</label>
+                <input type="number" step="any" class="form-control" id="f-price" required>
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">Valuta</label>
+                <input type="text" class="form-control" id="f-ccy" value="USD">
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">Data acquisto</label>
+                <input type="date" class="form-control" id="f-date">
+            </div>
+            <div class="col-6 col-md-2">
+                <button type="submit" class="btn btn-primary w-100"><i class="bi bi-check2"></i> Aggiungi</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="totals" class="mb-3"></div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Ticker</th><th class="text-end">Qta</th><th class="text-end">Carico</th>
+                        <th class="text-end">Attuale</th><th class="text-end">P&amp;L</th>
+                        <th class="text-end">P&amp;L %</th><th class="text-center">Sentiment</th>
+                        <th class="text-center">RSI</th><th class="text-center">Segnale</th><th></th>
+                    </tr>
+                </thead>
+                <tbody id="holdings-body">
+                    <tr><td colspan="10" class="text-center text-muted py-4">Caricamento...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const fmt = (v, d=2) => (v === null || v === undefined) ? 'n/d' : Number(v).toLocaleString('it-IT', {minimumFractionDigits: d, maximumFractionDigits: d});
+const cls = (v) => v === null || v === undefined ? '' : (v >= 0 ? 'text-success' : 'text-danger');
+
+function signalBadge(sig) {
+    if (!sig) return '';
+    const map = {
+        'VALUTA USCITA': 'bg-danger',
+        'DA RIVEDERE': 'bg-warning text-dark',
+        'MANTIENI': 'bg-success'
+    };
+    const color = map[sig.label] || 'bg-secondary';
+    const reasons = (sig.reasons || []).join(' &#10;• ');
+    return `<span class="badge ${color}" title="• ${reasons}" style="cursor:help">${sig.label}</span>`;
+}
+
+async function loadHoldings() {
+    const res = await fetch('/api/holdings');
+    if (res.status === 401) { window.location.href = '/account/login?next=/holdings'; return; }
+    const data = await res.json();
+    const body = document.getElementById('holdings-body');
+    const rows = data.holdings || [];
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Nessuna posizione. Aggiungine una sopra.</td></tr>';
+    } else {
+        body.innerHTML = rows.map(h => `
+            <tr>
+                <td><strong>${h.ticker}</strong>${h.buy_date ? `<div class="text-muted small">dal ${h.buy_date}</div>` : ''}</td>
+                <td class="text-end">${fmt(h.quantity, 0)}</td>
+                <td class="text-end">${fmt(h.buy_price)} ${h.buy_currency || ''}</td>
+                <td class="text-end">${fmt(h.current_price)}</td>
+                <td class="text-end ${cls(h.pnl_abs)}">${fmt(h.pnl_abs)}</td>
+                <td class="text-end ${cls(h.pnl_pct)}">${h.pnl_pct === null ? 'n/d' : fmt(h.pnl_pct) + '%'}</td>
+                <td class="text-center ${cls(h.sentiment_kpi)}">${h.sentiment_kpi === null ? 'n/d' : fmt(h.sentiment_kpi)}</td>
+                <td class="text-center">${h.rsi === null ? 'n/d' : fmt(h.rsi, 0)}</td>
+                <td class="text-center">${signalBadge(h.signal)}</td>
+                <td class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="delHolding(${h.id})"><i class="bi bi-trash"></i></button></td>
+            </tr>`).join('');
+    }
+    const t = data.totals || {};
+    document.getElementById('totals').innerHTML = t.cost_basis ? `
+        <div class="d-flex gap-4 flex-wrap">
+            <div><span class="text-muted small d-block">Costo totale</span><strong>${fmt(t.cost_basis)}</strong></div>
+            <div><span class="text-muted small d-block">Valore attuale</span><strong>${fmt(t.market_value)}</strong></div>
+            <div><span class="text-muted small d-block">P&L totale</span><strong class="${cls(t.pnl_abs)}">${fmt(t.pnl_abs)} (${t.pnl_pct === null ? 'n/d' : fmt(t.pnl_pct) + '%'})</strong></div>
+        </div>` : '';
+}
+
+async function delHolding(id) {
+    if (!confirm('Rimuovere questa posizione?')) return;
+    await fetch(`/api/holdings/${id}`, {method: 'DELETE'});
+    loadHoldings();
+}
+
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = {
+        ticker: document.getElementById('f-ticker').value,
+        quantity: document.getElementById('f-qty').value,
+        buy_price: document.getElementById('f-price').value,
+        buy_currency: document.getElementById('f-ccy').value,
+        buy_date: document.getElementById('f-date').value,
+    };
+    const res = await fetch('/api/holdings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+        e.target.reset();
+        document.getElementById('f-ccy').value = 'USD';
+        loadHoldings();
+    } else {
+        const err = await res.json();
+        alert('Errore: ' + (err.error || 'imprevisto'));
+    }
+});
+
+loadHoldings();
+</script>
+{% endblock %}
