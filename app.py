@@ -56,6 +56,12 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)  # Reduce Flask request 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
 
+# Behind Heroku's HTTPS-terminating router: trust X-Forwarded-Proto/Host so that
+# url_for(_external=True) builds https:// callback URLs (required for the Google
+# OAuth redirect_uri to match what's registered).
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
 # ---------------------------------------------------------------------------
 # Authentication / access control
 # ---------------------------------------------------------------------------
@@ -67,6 +73,29 @@ app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-product
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
 AUTH_ENABLED = bool(ADMIN_PASSWORD)
 
+# Optional "Sign in with Google" for invited users. Enabled only when both
+# client id and secret are configured; otherwise the app runs exactly as before
+# (password-only), so the code can ship before the OAuth client exists.
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_OAUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+oauth = None
+if GOOGLE_OAUTH_ENABLED:
+    try:
+        from authlib.integrations.flask_client import OAuth
+        oauth = OAuth(app)
+        oauth.register(
+            name='google',
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+            client_kwargs={'scope': 'openid email profile'},
+        )
+        logger.info("Google OAuth enabled")
+    except Exception as e:
+        logger.warning(f"Google OAuth disabled (init failed): {e}")
+        GOOGLE_OAUTH_ENABLED = False
+
 # Endpoints reachable without an admin session (everything else is admin-only
 # when AUTH_ENABLED). 'static' is needed for assets; the others are the public
 # dashboard and the login/logout flow.
@@ -77,6 +106,7 @@ PUBLIC_ENDPOINTS = {
     'about',
     'login', 'logout', 'static',
     'account_login', 'account_logout',
+    'account_google', 'account_google_callback',
 }
 
 # Endpoints reachable by any logged-in *user* (not just admin). Used for the
@@ -115,7 +145,8 @@ def inject_auth():
     elif not AUTH_ENABLED:
         # Local dev: a stable implicit user so the holdings tracker just works.
         user = {'id': None, 'email': 'dev@local', 'display_name': 'Dev'}
-    return {'is_admin': is_admin(), 'auth_enabled': AUTH_ENABLED, 'current_user': user}
+    return {'is_admin': is_admin(), 'auth_enabled': AUTH_ENABLED, 'current_user': user,
+            'google_enabled': GOOGLE_OAUTH_ENABLED}
 
 
 @app.before_request
@@ -197,12 +228,17 @@ def _ensure_user_tables():
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
+                    password_hash TEXT,
                     display_name TEXT,
+                    google_sub TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            # Migrate pre-existing installs: password becomes optional (Google-only
+            # invites) and we track the linked Google account id.
+            cur.execute("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_holdings (
                     id SERIAL PRIMARY KEY,
@@ -317,7 +353,7 @@ def account_login():
                 row = cur.fetchone()
             finally:
                 cur.close()
-        if row and row[4] and check_password_hash(row[3], password):
+        if row and row[4] and row[3] and check_password_hash(row[3], password):
             session['user_id'] = row[0]
             session['user_email'] = row[1]
             session['user_name'] = row[2] or row[1]
@@ -341,6 +377,78 @@ def account_logout():
     return redirect(url_for('public_dashboard'))
 
 
+@app.route('/account/google')
+def account_google():
+    """Start the Google OAuth flow (only for invited emails)."""
+    if not GOOGLE_OAUTH_ENABLED:
+        flash('Accesso con Google non configurato.', 'error')
+        return redirect(url_for('account_login'))
+    nxt = request.args.get('next', '')
+    session['oauth_next'] = nxt if nxt.startswith('/') else ''
+    redirect_uri = url_for('account_google_callback', _external=True)
+    return oauth.google.authorize_redirect(redirect_uri)
+
+
+@app.route('/account/google/callback')
+def account_google_callback():
+    """Handle Google's redirect: log in the user iff their verified email was
+    invited by an admin (present + active in the users table)."""
+    if not GOOGLE_OAUTH_ENABLED:
+        return redirect(url_for('account_login'))
+    try:
+        token = oauth.google.authorize_access_token()
+    except Exception as e:
+        logger.warning(f"Google OAuth callback failed: {e}")
+        flash('Accesso con Google non riuscito.', 'error')
+        return redirect(url_for('account_login'))
+    info = token.get('userinfo') or {}
+    email = (info.get('email') or '').strip().lower()
+    if not email or not info.get('email_verified'):
+        flash('Google non ha fornito un indirizzo email verificato.', 'error')
+        return redirect(url_for('account_login'))
+    sub = info.get('sub')
+    name = info.get('name')
+
+    _ensure_user_tables()
+    db = get_db_manager()
+    row = None
+    with db:
+        cur = db.conn.cursor()
+        try:
+            cur.execute(
+                "SELECT id, email, display_name, is_active FROM users WHERE email = %s",
+                (email,)
+            )
+            row = cur.fetchone()
+            if row and row[3]:
+                # Link the Google account id and backfill the display name.
+                cur.execute(
+                    "UPDATE users SET google_sub = %s, display_name = COALESCE(display_name, %s) "
+                    "WHERE id = %s", (sub, name, row[0])
+                )
+                db.conn.commit()
+        finally:
+            cur.close()
+
+    if not row:
+        logger.warning(f"Google login denied (not invited): {email}")
+        flash("Questo indirizzo non e' stato invitato. Chiedi un invito all'amministratore.", 'error')
+        return redirect(url_for('account_login'))
+    if not row[3]:
+        flash('Account disattivato.', 'error')
+        return redirect(url_for('account_login'))
+
+    session['user_id'] = row[0]
+    session['user_email'] = row[1]
+    session['user_name'] = row[2] or name or row[1]
+    session.permanent = True
+    logger.info(f"User login via Google: {email}")
+    next_url = session.pop('oauth_next', '') or url_for('holdings_page')
+    if not next_url.startswith('/'):
+        next_url = url_for('holdings_page')
+    return redirect(next_url)
+
+
 @app.route('/admin/users', methods=['GET', 'POST'])
 def admin_users():
     """Admin-only: list users and create new (invite-only) accounts."""
@@ -349,9 +457,10 @@ def admin_users():
         email = (request.form.get('email') or '').strip().lower()
         display_name = (request.form.get('display_name') or '').strip()
         password = request.form.get('password') or ''
-        if not email or not password:
-            flash('Email e password sono obbligatorie.', 'error')
+        if not email:
+            flash("L'email e' obbligatoria.", 'error')
         else:
+            pw_hash = generate_password_hash(password) if password else None
             db = get_db_manager()
             try:
                 with db:
@@ -360,10 +469,13 @@ def admin_users():
                         cur.execute(
                             "INSERT INTO users (email, password_hash, display_name) "
                             "VALUES (%s, %s, %s)",
-                            (email, generate_password_hash(password), display_name or None)
+                            (email, pw_hash, display_name or None)
                         )
                         db.conn.commit()
-                        flash(f'Utente {email} creato.', 'info')
+                        if pw_hash:
+                            flash(f'Utente {email} creato (accesso con password o Google).', 'info')
+                        else:
+                            flash(f'Invito creato per {email} (accesso solo con Google).', 'info')
                     finally:
                         cur.close()
             except Exception as e:
@@ -378,7 +490,8 @@ def admin_users():
         try:
             cur.execute(
                 "SELECT u.id, u.email, u.display_name, u.is_active, u.created_at, "
-                "(SELECT COUNT(*) FROM user_holdings h WHERE h.user_id = u.id) "
+                "(SELECT COUNT(*) FROM user_holdings h WHERE h.user_id = u.id), "
+                "(u.password_hash IS NOT NULL), (u.google_sub IS NOT NULL) "
                 "FROM users u ORDER BY u.created_at DESC"
             )
             users = cur.fetchall()

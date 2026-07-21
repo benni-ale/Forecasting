@@ -20,8 +20,13 @@
                     </div>
                     <button type="submit" class="btn btn-primary w-100"><i class="bi bi-box-arrow-in-right"></i> Accedi</button>
                 </form>
+                {% if google_enabled %}
+                <div class="text-center text-muted small my-2">oppure</div>
+                <a href="{{ url_for('account_google') }}{% if next %}?next={{ next }}{% endif %}"
+                   class="btn btn-outline-secondary w-100"><i class="bi bi-google"></i> Continua con Google</a>
+                {% endif %}
                 <hr>
-                <p class="text-muted small mb-0">Gli account sono creati dall'amministratore. Se non ne hai uno, chiedi un invito.</p>
+                <p class="text-muted small mb-0">Gli account sono creati dall'amministratore (su invito). Se sei stato invitato puoi accedere con la password ricevuta{% if google_enabled %} o con il tuo account Google{% endif %}. Se non hai un invito, chiedilo all'amministratore.</p>
             </div>
         </div>
     </div>
