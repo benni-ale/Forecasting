@@ -938,10 +938,12 @@ def api_dashboard_stocks():
         top = int(request.args.get('top', 10))
     except (TypeError, ValueError):
         top = 10
-    top = max(1, min(top, 10))
+    # Ranked dashboard views stay compact; an explicit favorites list may
+    # request up to the same 50-ticker limit used by the favorites feature.
+    explicit = (request.args.get('tickers', '') or '').strip()
+    top = max(1, min(top, 50 if explicit else 10))
 
     # Explicit ticker list (from the filtered dashboard table) takes precedence.
-    explicit = (request.args.get('tickers', '') or '').strip()
     if explicit:
         tickers = [t.strip().upper() for t in explicit.split(',') if t.strip()][:top]
         series = [_fetch_av_daily(t) for t in tickers]

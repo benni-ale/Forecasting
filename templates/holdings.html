@@ -48,24 +48,12 @@
   </div>
 </div>
 
-<div class="card">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <strong>Watchlist</strong>
-    {% if current_user %}<span id="as-of" class="small text-muted"></span>{% endif %}
-  </div>
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead><tr>
-        <th>Ticker</th><th>Date added</th>
-        {% if current_user %}
-        <th class="text-end">Price</th><th class="text-end">Sentiment</th>
-        <th class="text-end">RSI</th><th class="text-end">vs SMA50</th><th>Daily insight</th>
-        {% endif %}
-        <th></th>
-      </tr></thead>
-      <tbody id="favorites-body"><tr><td colspan="8" class="text-center text-muted py-4">Loading...</td></tr></tbody>
-    </table>
-  </div>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="h5 mb-0"><i class="bi bi-grid"></i> Favorites dashboard</h2>
+  {% if current_user %}<span id="as-of" class="small text-muted"></span>{% endif %}
+</div>
+<div class="row" id="favorites-grid">
+  <div class="col-12 text-center text-muted py-5">Loading...</div>
 </div>
 {% endblock %}
 
@@ -75,6 +63,7 @@ const USE_ACCOUNT = {{ 'true' if current_user else 'false' }};
 const FAVORITES_KEY = 'dollarpunk_guest_favorites_v1';
 const LEGACY_KEY = 'dollarpunk_guest_holdings_v1';
 let renderedRows = [];
+let favoriteCharts = [];
 
 function esc(v) { return String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function today() { return new Date().toISOString().slice(0, 10); }
@@ -107,23 +96,94 @@ function signalBadge(signal) {
           <div class="small text-muted mt-1">${esc((signal.reasons || []).join(' · '))}</div>`;
 }
 
+function destroyCharts() {
+  favoriteCharts.forEach(chart => chart.destroy());
+  favoriteCharts = [];
+}
+
+function chartOptions(leftLabel, rightLabel) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    interaction: {mode:'index', intersect:false},
+    plugins: {legend: {display:true, labels:{boxWidth:12}}},
+    scales: {
+      x: {ticks:{maxTicksLimit:6, autoSkip:true}},
+      yLeft: {position:'left', title:{display:true, text:leftLabel}},
+      yRight: {position:'right', grid:{drawOnChartArea:false}, title:{display:true, text:rightLabel}}
+    }
+  };
+}
+
+async function loadFavoriteCharts(rows) {
+  if (!rows.length) return;
+  const tickers = rows.map(row => row.ticker);
+  let priceByTicker = {};
+  try {
+    const response = await fetch(`/api/dashboard/stocks?tickers=${encodeURIComponent(tickers.join(','))}&top=50`);
+    const data = await response.json();
+    (data.series || []).forEach(series => { priceByTicker[series.ticker] = series; });
+  } catch (_) {}
+  await Promise.all(rows.map(async (row, index) => {
+    const price = priceByTicker[row.ticker];
+    const priceStatus = document.getElementById(`price-status-${index}`);
+    if (price && !price.error && price.dates?.length) {
+      priceStatus.remove();
+      favoriteCharts.push(new Chart(document.getElementById(`price-chart-${index}`), {
+        data: {labels:price.dates, datasets:[
+          {type:'bar', label:'Volume', data:price.volumes, yAxisID:'yRight', backgroundColor:'rgba(102,217,239,.35)', borderWidth:0, order:2},
+          {type:'line', label:'Close', data:price.closes, yAxisID:'yLeft', borderColor:'#a6e22e', backgroundColor:'rgba(166,226,46,.1)', borderWidth:2, pointRadius:0, tension:.2, order:1}
+        ]}, options:chartOptions('Close ($)', 'Volume')
+      }));
+    } else if (priceStatus) priceStatus.textContent = 'Price history unavailable';
+
+    try {
+      const response = await fetch(`/api/tickers/${encodeURIComponent(row.ticker)}/sentiment-kpi`);
+      const sentiment = await response.json();
+      const sentimentStatus = document.getElementById(`sentiment-status-${index}`);
+      if (!sentiment.error && sentiment.dates?.length) {
+        sentimentStatus.remove();
+        favoriteCharts.push(new Chart(document.getElementById(`sentiment-chart-${index}`), {
+          data:{labels:sentiment.dates, datasets:[
+            {type:'bar', label:'Mentions', data:sentiment.mentions, yAxisID:'yRight', backgroundColor:'rgba(102,217,239,.35)', borderWidth:0, order:2},
+            {type:'line', label:'Sentiment KPI', data:sentiment.kpis, yAxisID:'yLeft', borderColor:'#fd971f', backgroundColor:'rgba(253,151,31,.1)', borderWidth:2, pointRadius:2, tension:.2, spanGaps:true, order:1}
+          ]}, options:chartOptions('KPI', 'Mentions')
+        }));
+      } else if (sentimentStatus) sentimentStatus.textContent = 'Sentiment history unavailable';
+    } catch (_) {
+      const status = document.getElementById(`sentiment-status-${index}`);
+      if (status) status.textContent = 'Sentiment history unavailable';
+    }
+  }));
+}
+
 function render(rows, asOf) {
   renderedRows = rows || [];
-  const body = document.getElementById('favorites-body');
+  destroyCharts();
+  const grid = document.getElementById('favorites-grid');
   if (!renderedRows.length) {
-    body.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">No favorites yet. Add one from the dashboard or the form above.</td></tr>`;
+    grid.innerHTML = `<div class="col-12 text-center text-muted py-5">No favorites yet. Add one from the dashboard or the form above.</div>`;
     return;
   }
-  body.innerHTML = renderedRows.map((f, i) => `<tr>
-    <td><a href="/tickers/${encodeURIComponent(f.ticker)}"><strong>${esc(f.ticker)}</strong></a></td>
-    <td>${esc(f.added_on || '-')}</td>
-    ${USE_ACCOUNT ? `<td class="text-end">${fmt(f.current_price, 2)}</td>
-      <td class="text-end">${fmt(f.sentiment_kpi, 3)}</td><td class="text-end">${fmt(f.rsi, 1)}</td>
-      <td class="text-end">${f.dist_sma50_pct == null ? '-' : `${Number(f.dist_sma50_pct) >= 0 ? '+' : ''}${fmt(f.dist_sma50_pct, 1)}%`}</td>
-      <td style="min-width:240px">${signalBadge(f.signal)}</td>` : ''}
-    <td class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="removeFavorite(${i})" title="Remove"><i class="bi bi-trash"></i></button></td>
-  </tr>`).join('');
+  grid.innerHTML = renderedRows.map((f, i) => `<div class="col-xl-6 mb-4">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div><a href="/tickers/${encodeURIComponent(f.ticker)}" class="text-decoration-none"><span class="badge bg-secondary fs-6">${esc(f.ticker)}</span></a>
+          <span class="small text-muted ms-2">Added ${esc(f.added_on || '-')}</span></div>
+        <button class="btn btn-sm btn-outline-danger" onclick="removeFavorite(${i})" title="Remove"><i class="bi bi-trash"></i></button>
+      </div>
+      ${USE_ACCOUNT ? `<div class="px-3 pt-3 d-flex flex-wrap gap-3 small">
+        <span>Price <strong>${fmt(f.current_price,2)}</strong></span><span>Sentiment <strong>${fmt(f.sentiment_kpi,3)}</strong></span>
+        <span>RSI <strong>${fmt(f.rsi,1)}</strong></span><span>vs SMA50 <strong>${f.dist_sma50_pct == null ? '-' : `${Number(f.dist_sma50_pct)>=0?'+':''}${fmt(f.dist_sma50_pct,1)}%`}</strong></span>
+      </div><div class="px-3 pt-2">${signalBadge(f.signal)}</div>` : ''}
+      <div class="card-body pb-1"><div class="small text-muted mb-1">Price &amp; volume</div>
+        <div style="height:190px;position:relative"><canvas id="price-chart-${i}"></canvas><div id="price-status-${i}" class="text-muted small position-absolute top-50 start-50 translate-middle">Loading...</div></div>
+      </div>
+      <div class="card-body pt-1"><div class="small text-muted mb-1">Sentiment history</div>
+        <div style="height:170px;position:relative"><canvas id="sentiment-chart-${i}"></canvas><div id="sentiment-status-${i}" class="text-muted small position-absolute top-50 start-50 translate-middle">Loading...</div></div>
+      </div>
+    </div></div>`).join('');
   if (USE_ACCOUNT && asOf) document.getElementById('as-of').textContent = `Updated ${asOf}`;
+  loadFavoriteCharts(renderedRows);
 }
 
 async function loadFavorites() {
