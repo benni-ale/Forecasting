@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="it" data-bs-theme="dark">
+<html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -192,6 +192,16 @@
         ::-webkit-scrollbar-track { background: var(--mk-bg); }
         ::-webkit-scrollbar-thumb { background: var(--mk-border); border-radius: 5px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--mk-muted); }
+
+        /* Compact Google Translate widget in the navigation bar. */
+        #google_translate_element { min-width: 150px; }
+        #google_translate_element .goog-te-gadget { color: var(--mk-muted); font-size: 0; }
+        #google_translate_element .goog-te-combo {
+            margin: 0; padding: .3rem 1.8rem .3rem .55rem; color: var(--mk-fg);
+            background: var(--mk-bg-input); border: 1px solid var(--mk-border);
+            border-radius: var(--mk-radius); font: 500 .82rem Inter, sans-serif;
+        }
+        .goog-logo-link, .goog-te-gadget span { display: none !important; }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
@@ -206,6 +216,9 @@
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
+                    <li class="nav-item d-flex align-items-center px-lg-2 py-1 py-lg-0" aria-label="Language selector">
+                        <div id="google_translate_element"></div>
+                    </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/dashboard' %}active{% endif %}" href="/dashboard"><i class="bi bi-graph-up-arrow"></i> Daily Dashboard</a>
                     </li>
@@ -294,12 +307,20 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
     <script>
+        function googleTranslateElementInit() {
+            new google.translate.TranslateElement({
+                pageLanguage: 'en',
+                autoDisplay: false,
+                layout: google.translate.TranslateElement.InlineLayout.SIMPLE
+            }, 'google_translate_element');
+        }
         // Monokai: make Chart.js text/grid readable on the dark background
         if (window.Chart) {
             Chart.defaults.color = '#f8f8f2';
             Chart.defaults.borderColor = '#41423b';
         }
     </script>
+    <script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" async></script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

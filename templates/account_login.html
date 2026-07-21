@@ -6,7 +6,7 @@
 <div class="row justify-content-center">
     <div class="col-md-5 col-lg-4">
         <div class="card mt-5">
-            <div class="card-header"><i class="bi bi-person-circle"></i> Accedi al tuo account</div>
+            <div class="card-header"><i class="bi bi-person-circle"></i> Sign in to your account</div>
             <div class="card-body">
                 <form method="post" action="{{ url_for('account_login') }}{% if next %}?next={{ next }}{% endif %}">
                     <input type="hidden" name="next" value="{{ next }}">
@@ -18,10 +18,10 @@
                         <label for="password" class="form-label">Password</label>
                         <input type="password" class="form-control" id="password" name="password" required>
                     </div>
-                    <button type="submit" class="btn btn-primary w-100"><i class="bi bi-box-arrow-in-right"></i> Accedi</button>
+                    <button type="submit" class="btn btn-primary w-100"><i class="bi bi-box-arrow-in-right"></i> Sign in</button>
                 </form>
                 <hr>
-                <p class="text-muted small mb-0">Gli account sono creati dall'amministratore. Senza account puoi comunque usare il portafoglio locale, salvato solo in questo browser.</p>
+                <p class="text-muted small mb-0">Accounts are created by the administrator. Without an account, you can still use browser-local favorites on this device.</p>
             </div>
         </div>
     </div>

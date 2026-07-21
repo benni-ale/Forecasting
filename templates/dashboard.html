@@ -147,7 +147,7 @@
      onclick="if(event.target===this)window.closeAddHolding()">
   <div class="card shadow" style="max-width:420px; margin:10vh auto;">
     <div class="card-header d-flex justify-content-between align-items-center">
-      <strong><i class="bi bi-star"></i> Aggiungi ai preferiti</strong>
+      <strong><i class="bi bi-star"></i> Add to favorites</strong>
       <button type="button" class="btn-close" aria-label="Close" onclick="window.closeAddHolding()"></button>
     </div>
     <div class="card-body">
@@ -158,11 +158,11 @@
           <input class="form-control" id="ah_ticker_display" readonly>
         </div>
         <div class="mb-2">
-          <label class="form-label mb-0 small">Data aggiunta</label>
+          <label class="form-label mb-0 small">Date added</label>
           <input class="form-control" id="ah_date" type="date">
         </div>
         <div id="ah_msg" class="small mt-1"></div>
-        <button type="submit" class="btn btn-success w-100 mt-2"><i class="bi bi-star"></i> Salva nei preferiti</button>
+        <button type="submit" class="btn btn-success w-100 mt-2"><i class="bi bi-star"></i> Save to favorites</button>
       </form>
     </div>
   </div>
@@ -346,7 +346,7 @@
         ${badges ? `<div class="px-3 pt-1 small d-flex flex-wrap gap-3">${badges}</div>` : ''}`;
 
         const addBtn = CAN_TRACK
-            ? `<button type="button" class="btn btn-sm btn-outline-warning py-0 px-1" title="Aggiungi ai preferiti"
+            ? `<button type="button" class="btn btn-sm btn-outline-warning py-0 px-1" title="Add to favorites"
                    onclick="window.addToPortfolio('${ticker}')"><i class="bi bi-plus-lg"></i></button>`
             : '';
         const header = `<div class="card-header py-2 d-flex justify-content-between align-items-center">
@@ -508,7 +508,7 @@
                 }
                 if (saved) {
                     msg.className = 'small mt-1 text-success';
-                    msg.textContent = USE_SERVER_FAVORITES ? 'Salvato nel tuo account.' : 'Salvato in questo browser.';
+                    msg.textContent = USE_SERVER_FAVORITES ? 'Saved to your account.' : 'Saved in this browser.';
                     setTimeout(window.closeAddHolding, 800);
                 } else {
                     msg.className = 'small mt-1 text-danger';

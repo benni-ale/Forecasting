@@ -358,7 +358,7 @@ def account_login():
                 next_url = url_for('holdings_page')
             return redirect(next_url)
         logger.warning(f"User login failed: {email}")
-        flash('Email o password non validi.', 'error')
+        flash('Invalid email or password.', 'error')
     return render_template('account_login.html', next=request.args.get('next', ''))
 
 
@@ -367,7 +367,7 @@ def account_logout():
     """Clear the user session."""
     for k in ('user_id', 'user_email', 'user_name'):
         session.pop(k, None)
-    flash('Sei uscito dal tuo account.', 'info')
+    flash('You have signed out of your account.', 'info')
     return redirect(url_for('public_dashboard'))
 
 
@@ -380,7 +380,7 @@ def admin_users():
         display_name = (request.form.get('display_name') or '').strip()
         password = request.form.get('password') or ''
         if not email or len(password) < 8:
-            flash("Email e password (almeno 8 caratteri) sono obbligatorie.", 'error')
+            flash("Email and password (at least 8 characters) are required.", 'error')
         else:
             pw_hash = generate_password_hash(password)
             db = get_db_manager()
@@ -394,12 +394,12 @@ def admin_users():
                             (email, pw_hash, display_name or None)
                         )
                         db.conn.commit()
-                        flash(f'Account {email} creato.', 'info')
+                        flash(f'Account {email} created.', 'info')
                     finally:
                         cur.close()
             except Exception as e:
                 logger.error(f"Error creating user {email}: {e}")
-                flash(f'Errore nella creazione utente (email gia\' esistente?): {e}', 'error')
+                flash(f'Could not create user (does the email already exist?): {e}', 'error')
         return redirect(url_for('admin_users'))
 
     users = []
@@ -6393,33 +6393,33 @@ def _daily_favorite_signal(sentiment_kpi, rsi, dist_sma50_pct, bb_position):
     hold = 0
     if sentiment_kpi is not None:
         if sentiment_kpi <= -0.15:
-            sell += 1; reasons.append(f"Sentiment news negativo ({sentiment_kpi:+.2f})")
+            sell += 1; reasons.append(f"Negative news sentiment ({sentiment_kpi:+.2f})")
         elif sentiment_kpi >= 0.15:
-            hold += 1; reasons.append(f"Sentiment news positivo ({sentiment_kpi:+.2f})")
+            hold += 1; reasons.append(f"Positive news sentiment ({sentiment_kpi:+.2f})")
     if rsi is not None:
         if rsi >= 70:
-            sell += 1; reasons.append(f"RSI ipercomprato ({rsi:.0f})")
+            sell += 1; reasons.append(f"Overbought RSI ({rsi:.0f})")
         elif rsi <= 30:
-            hold += 1; reasons.append(f"RSI ipervenduto ({rsi:.0f}), possibile rimbalzo")
+            hold += 1; reasons.append(f"Oversold RSI ({rsi:.0f}), possible rebound")
     if dist_sma50_pct is not None:
         if dist_sma50_pct <= -5:
-            sell += 1; reasons.append(f"Sotto la media 50gg ({dist_sma50_pct:+.1f}%)")
+            sell += 1; reasons.append(f"Below the 50-day average ({dist_sma50_pct:+.1f}%)")
         elif dist_sma50_pct >= 5:
-            hold += 1; reasons.append(f"Sopra la media 50gg ({dist_sma50_pct:+.1f}%)")
+            hold += 1; reasons.append(f"Above the 50-day average ({dist_sma50_pct:+.1f}%)")
     if bb_position is not None:
         if bb_position >= 0.95:
-            sell += 1; reasons.append("Prezzo al limite superiore delle Bollinger")
+            sell += 1; reasons.append("Price near the upper Bollinger Band")
         elif bb_position <= 0.05:
-            hold += 1; reasons.append("Prezzo al limite inferiore delle Bollinger")
+            hold += 1; reasons.append("Price near the lower Bollinger Band")
     net = sell - hold
     if net >= 2:
-        label = 'VALUTA USCITA'
+        label = 'CONSIDER SELLING'
     elif net <= -1:
-        label = 'MANTIENI'
+        label = 'HOLD'
     else:
-        label = 'DA RIVEDERE'
+        label = 'REVIEW'
     if not reasons:
-        reasons.append("Dati insufficienti per un segnale forte")
+        reasons.append("Insufficient data for a strong signal")
     return {'label': label, 'reasons': reasons, 'sell_pressure': sell, 'hold_pressure': hold}
 
 
@@ -6497,11 +6497,11 @@ def api_favorites_create():
     d = request.get_json(silent=True) or request.form
     ticker = (d.get('ticker') or '').strip().upper()
     if not _valid_favorite_ticker(ticker):
-        return jsonify({'error': 'dati non validi'}), 400
+        return jsonify({'error': 'Invalid data'}), 400
     try:
         added_on = _favorite_date(d.get('added_on'))
     except (AttributeError, ValueError):
-        return jsonify({'error': 'data non valida'}), 400
+        return jsonify({'error': 'Invalid date'}), 400
     _ensure_user_tables()
     db = get_db_manager()
     new_id = None
@@ -6530,7 +6530,7 @@ def api_favorites_import():
     payload = request.get_json(silent=True) or {}
     items = payload.get('favorites') or []
     if not isinstance(items, list) or not items or len(items) > 50:
-        return jsonify({'error': 'preferiti non validi (massimo 50)'}), 400
+        return jsonify({'error': 'Invalid favorites (maximum 50)'}), 400
     values = []
     try:
         for item in items:
@@ -6540,7 +6540,7 @@ def api_favorites_import():
             added_on = _favorite_date(item.get('added_on') or item.get('buy_date'))
             values.append((uid, ticker, added_on))
     except (AttributeError, TypeError, ValueError):
-        return jsonify({'error': 'dati preferito non validi'}), 400
+        return jsonify({'error': 'Invalid favorite data'}), 400
     _ensure_user_tables()
     db = get_db_manager()
     with db:
