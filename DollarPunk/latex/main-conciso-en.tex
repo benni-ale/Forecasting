@@ -43,7 +43,12 @@
 
 \begin{document}
 \maketitle
-\vspace{-1.0em}
+\vspace{-0.6em}
+\begin{center}
+\small Live prototype: \href{https://dollarpunk-26786f215068.herokuapp.com/dashboard}{\textcolor{blue}{dashboard}}
+\quad $\vert$ \quad Semantic graph: \href{https://dollarpunk-26786f215068.herokuapp.com/semantic-graph}{\textcolor{blue}{\texttt{/semantic-graph}}}
+\end{center}
+\vspace{-0.2em}
 
 \section{Motivation and objectives}
 
@@ -131,13 +136,13 @@ Decay treats each news item as independent; in reality a news item relevant to o
 \]
 This is the heat equation with dissipation, and the analogy is substantive, not aesthetic. The second term is the model already validated in production: absent interactions, relevance halves every $h=\ln 2/\lambda$ days. The first captures a fact that decay alone ignores: information relevant to a stock is partly relevant to nearby stocks too---news about a company's main supplier moves its stock, a sector downgrade weighs on the whole sector. As heat flows from hot points to adjacent cold ones in proportion to the temperature difference, relevance flows from heavily covered stocks toward related, lightly covered ones, in proportion to the informational gradient and semantic proximity. The two parameters have immediate physical meaning---$\lambda$ is the speed of forgetting, $D$ the semantic permeability of the market---and it is this readability that distinguishes the model from learned alternatives, whose weights are not interpretable.
 
-Since the space is known only through a finite number of embeddings, one uses the canonical discrete approximation of $-\nabla^2$, the \emph{graph Laplacian} $L=\operatorname{diag}(d_i)-W$, with $n$ tickers as nodes and weights $w_{ij}\ge 0$ given by the cosine similarity between embeddings (thresholded, $W$ symmetric). The PDE becomes a linear system of ODEs,
+Since the space is known only through a finite number of embeddings, one uses the canonical discrete approximation of $-\nabla^2$, the \emph{graph Laplacian} $L=\operatorname{diag}(d_i)-W$, with $n$ tickers as nodes. Edges are admitted only between companies in the same industry; within each industry, weights $w_{ij}\ge 0$ are given by the cosine similarity between embeddings (thresholded, $W$ symmetric), while cross-industry weights are zero. A live technical preview is available at \url{https://dollarpunk-26786f215068.herokuapp.com/semantic-graph}. The PDE becomes a linear system of ODEs,
 \[
 \frac{dR}{dt} = -(D\,L + \lambda I)\,R, \qquad R(t)\in\mathbb{R}^n,
 \qquad\Longrightarrow\qquad
 R(t)=e^{-\lambda t}\,e^{-D t L}\,R(0),
 \]
-and sentiment is transported by evolving, with the same operator, the weighted sentiment $V=S\cdot R$ and setting $S_i=V_i/R_i$, so that the relevance that moves carries its own tone rather than inflating the local one. Rewritten node by node, $\frac{dR_i}{dt}=D\sum_j w_{ij}(R_j-R_i)-\lambda R_i$, the formulation enjoys three provable guarantees, essential for a system that generates operational signals:
+This closed form is the graph diffusion kernel of \textcite{kondor2002diffusion}; diffusion over a data/embedding manifold via the graph Laplacian underlies diffusion maps \parencite{coifman2006diffusion}, and \textcite{chamberlain2021grand} show that graph neural networks are themselves discretizations of such a diffusion PDE---so the interpretable formulation here and the learned GNN baseline are two ends of the same continuum. Sentiment is transported by evolving, with the same operator, the weighted sentiment $V=S\cdot R$ and setting $S_i=V_i/R_i$, so that the relevance that moves carries its own tone rather than inflating the local one. Rewritten node by node, $\frac{dR_i}{dt}=D\sum_j w_{ij}(R_j-R_i)-\lambda R_i$, the formulation enjoys three provable guarantees, essential for a system that generates operational signals:
 \begin{itemize}\setlength\itemsep{0.1em}
   \item total relevance decays \emph{exactly} as in the current model: the flow between two stocks is proportional to the difference $R_j-R_i$, so summing over all nodes the diffusion terms cancel pairwise and $\frac{d}{dt}\sum_i R_i=-\lambda\sum_i R_i$ remains. Diffusion redistributes, it neither creates nor destroys;
   \item relevance stays non-negative: if $R_i\to 0$, every difference $R_j-R_i$ is non-negative and the flow can only come back in;

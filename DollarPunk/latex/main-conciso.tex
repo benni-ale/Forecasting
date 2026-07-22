@@ -43,7 +43,12 @@
 
 \begin{document}
 \maketitle
-\vspace{-1.0em}
+\vspace{-0.6em}
+\begin{center}
+\small Prototipo: \href{https://dollarpunk-26786f215068.herokuapp.com/dashboard}{\textcolor{blue}{dashboard}}
+\quad $\vert$ \quad Grafo semantico: \href{https://dollarpunk-26786f215068.herokuapp.com/semantic-graph}{\textcolor{blue}{\texttt{/semantic-graph}}}
+\end{center}
+\vspace{-0.2em}
 
 \section{Motivazione e obiettivi}
 
@@ -131,7 +136,7 @@ Il decadimento tratta ogni notizia come indipendente; in realtà una notizia ril
 \]
 È l'equazione del calore con dissipazione, e l'analogia è sostanziale, non estetica. Il secondo termine è il modello già validato in produzione: in assenza di interazioni, la rilevanza si dimezza ogni $h=\ln 2/\lambda$ giorni. Il primo cattura un fatto che il decadimento ignora: l'informazione rilevante per un titolo lo è in parte anche per i titoli vicini---una notizia sul principale fornitore di un'azienda ne muove il titolo, un downgrade di settore pesa su tutto il settore. Come il calore fluisce dai punti caldi a quelli freddi adiacenti in proporzione alla differenza di temperatura, la rilevanza fluisce dai titoli molto coperti verso i titoli affini poco coperti, in proporzione al gradiente informativo e alla vicinanza semantica. I due parametri hanno significato fisico immediato---$\lambda$ è la velocità dell'oblio, $D$ la permeabilità semantica del mercato---ed è questa leggibilità a distinguere il modello dalle alternative apprese, i cui pesi non sono interpretabili.
 
-Poiché lo spazio è noto solo attraverso un numero finito di embedding, si usa l'approssimazione discreta canonica di $-\nabla^2$, il \emph{Laplaciano di grafo} $L=\operatorname{diag}(d_i)-W$, con $n$ ticker come nodi e pesi $w_{ij}\ge 0$ dati dalla similarità coseno fra embedding (sogliata, $W$ simmetrica). La PDE diventa un sistema lineare di ODE,
+Poiché lo spazio è noto solo attraverso un numero finito di embedding, si usa l'approssimazione discreta canonica di $-\nabla^2$, il \emph{Laplaciano di grafo} $L=\operatorname{diag}(d_i)-W$, con $n$ ticker come nodi. Gli archi sono ammessi solo fra aziende della stessa industry; al suo interno i pesi $w_{ij}\ge 0$ sono dati dalla similarità coseno fra embedding (sogliata, $W$ simmetrica), mentre i pesi fra industry diverse sono nulli. Un'anteprima tecnica è disponibile all'indirizzo \url{https://dollarpunk-26786f215068.herokuapp.com/semantic-graph}. La PDE diventa un sistema lineare di ODE,
 \[
 \frac{dR}{dt} = -(D\,L + \lambda I)\,R, \qquad R(t)\in\mathbb{R}^n,
 \qquad\Longrightarrow\qquad

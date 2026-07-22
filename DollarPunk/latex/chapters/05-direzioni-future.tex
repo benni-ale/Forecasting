@@ -30,7 +30,7 @@ I due parametri hanno un significato fisico immediato---$\lambda$ è la velocit�
 
 \paragraph{Soluzione discreta.}
 Lo spazio semantico è però noto solo attraverso un numero finito di punti---gli embedding dei ticker---e su un insieme finito di punti l'operatore $-\nabla^2$ ha un'approssimazione discreta canonica: il Laplaciano di grafo.
-Si costruisce quindi il grafo di similarità con gli $n$ ticker come nodi, pesi $w_{ij} \geq 0$ dati dalla similarità coseno tra embedding (sogliata, $W$ simmetrica), gradi $d_i = \sum_j w_{ij}$ e $L = \operatorname{diag}(d_i) - W$.
+Si costruisce quindi il grafo di similarità con gli $n$ ticker come nodi. Gli archi candidati collegano esclusivamente aziende appartenenti alla stessa industry; al suo interno i pesi $w_{ij} \geq 0$ sono dati dalla similarità coseno tra embedding (sogliata, $W$ simmetrica), mentre tra industry diverse $w_{ij}=0$. Le aziende prive di industry sono escluse. I gradi sono $d_i = \sum_j w_{ij}$ e $L = \operatorname{diag}(d_i) - W$. Un'anteprima tecnica del modello è disponibile su \url{https://dollarpunk-26786f215068.herokuapp.com/semantic-graph}.
 La PDE diventa il sistema di equazioni ordinarie
 \[
 \frac{dR}{dt} = -(D\,L + \lambda I)\, R, \qquad R(t) \in \mathbb{R}^n.
