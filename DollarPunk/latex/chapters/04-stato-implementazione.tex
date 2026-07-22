@@ -52,7 +52,7 @@ w_i = 0{,}5^{\,\Delta t_i / h}
 \]
 dove $s_i$ e $r_i$ sono sentiment e relevance dell'articolo $i$, $\Delta t_i$ i giorni dalla pubblicazione e $h$ l'emivita configurabile (default: 7 giorni), equivalente a $\lambda = \ln(2)/h$.
 
-La stessa logica è replicata nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi} e nella pagina portfolio.
+La stessa logica è replicata nell'endpoint \texttt{/api/tickers/<ticker>/sentiment-kpi}, nella pagina di dettaglio del titolo e nella dashboard personale dei preferiti.
 La vista SQL \texttt{ticker\_daily\_sentiment\_view} adotta invece la variante \emph{non normalizzata} (somma decayed dei contributi): come discusso nel Capitolo~\ref{ch:descrizione-progetto}, la media normalizzata misura la \emph{direzione} del sentiment attivo, la somma decayed la sua \emph{intensità}---la coesistenza è una scelta informativa, non una duplicazione.
 
 La diffusione semantica non è ancora operativa; esiste però l'ingrediente chiave: la matrice di similarità coseno tra i profili aziendali (embedding OpenAI), consultabile dalla sezione \textit{Companies}, che non alimenta ancora \texttt{ticker\_cross\_diffused\_sentiment}.
@@ -76,8 +76,12 @@ La rilevazione automatica delle divergenze rende osservabile in tempo reale, per
 
 \section{Interfaccia web e funzionalità utente}
 
-L'area amministrativa (autenticata) permette di lanciare job di ingestion, consultare statistiche, esplorare articoli, eseguire query SQL e gestire l'anagrafica aziende con vettorizzazione batch.
-L'area pubblica (read-only) offre la dashboard giornaliera con ranking dei ticker per KPI di sentiment e filtri configurabili; per ogni ticker una pagina di dettaglio con grafico prezzo--volume e indicatori, serie del KPI, ultime notizie e profilo aziendale; la pagina \textit{Portfolio} monitora una watchlist personalizzata con storico prezzi, sentiment decayed e news.
+L'area amministrativa (autenticata) permette di lanciare job di ingestion, consultare statistiche, esplorare articoli, eseguire query SQL, gestire l'anagrafica aziende con vettorizzazione batch e creare account utente protetti da password.
+L'area pubblica (read-only) offre la dashboard giornaliera con ranking dei ticker per KPI di sentiment e filtri configurabili; i filtri per settore e industria supportano selezioni multiple, inclusi i comandi di selezione e deselezione globale. Per ogni ticker è disponibile una pagina di dettaglio con grafico prezzo--volume e indicatori, serie del KPI, ultime notizie e profilo aziendale.
+
+La precedente metafora di portafoglio è stata sostituita da una \textbf{dashboard dei preferiti}, coerente con la natura informativa del prototipo: non vengono richiesti quantità, prezzo di carico o capitale investito. Gli utenti anonimi possono salvare ticker e data di aggiunta nel browser; dopo l'autenticazione, gli stessi preferiti sono persistiti in PostgreSQL e possono essere importati automaticamente dallo storage locale. Ogni preferito dispone di una scheda con storico prezzo--volume e serie temporale del sentiment, riprendendo le visualizzazioni della dashboard giornaliera ma limitandole alla watchlist personale. Solo agli account autenticati è inoltre mostrata una sintesi giornaliera deterministica (\textit{Hold}, \textit{Review}, \textit{Consider selling}), accompagnata dalle regole attivate su sentiment, RSI, distanza dalla SMA~50 e posizione nelle bande di Bollinger; l'output è presentato esplicitamente come supporto informativo e non come consulenza finanziaria.
+
+L'interfaccia applicativa è stata uniformata in inglese e include un selettore di traduzione globale nella barra di navigazione, così da rendere le pagine accessibili in altre lingue senza duplicare la logica applicativa.
 
 \section{Confronto sintetico: previsto vs.\ implementato}
 
@@ -108,7 +112,7 @@ Analisi sentiment--prezzo & Correlazioni Pearson/Spearman & Grafici separati, no
 \hline
 Backtesting & Strategia long/short, Sharpe & Non implementato \\
 \hline
-Simulazione portafoglio & Capitale, costi, stop-loss & Watchlist + monitoraggio \\
+Dashboard personale & Capitale, costi, stop-loss & Preferiti browser/account, grafici e sintesi giornaliera trasparente \\
 \hline
 LSTM predittivo & Prezzo + sentiment & Non implementato \\
 \hline

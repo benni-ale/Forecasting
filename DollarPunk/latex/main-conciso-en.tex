@@ -1,0 +1,222 @@
+\documentclass[a4paper,11pt]{article}
+
+% --- Encoding and language ---
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{csquotes}
+
+% --- Layout ---
+\usepackage[a4paper, margin=2.4cm]{geometry}
+\usepackage{microtype}
+\usepackage{setspace}
+\setstretch{1.05}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.1em}{0.4em}
+\titlespacing*{\subsection}{0pt}{0.7em}{0.3em}
+\usepackage{float}
+
+% --- Math ---
+\usepackage{amsmath, amssymb}
+
+% --- Code ---
+\usepackage{xcolor}
+\usepackage{listings}
+\lstdefinelanguage{json}{basicstyle=\ttfamily\footnotesize, showstringspaces=false,
+  breaklines=true, frame=lines, backgroundcolor=\color{gray!8}}
+
+% --- Bibliography ---
+\usepackage[style=authoryear, backend=biber, maxcitenames=2]{biblatex}
+\addbibresource{references.bib}
+\setlength{\bibitemsep}{0.15\baselineskip}
+\renewcommand*{\bibfont}{\footnotesize\setstretch{1.0}}
+
+% --- Links ---
+\usepackage[hidelinks, hypertexnames=false]{hyperref}
+
+\title{\vspace{-1.5em}\textbf{DollarPunk}\\[0.3em]
+  {\large Informational relevance as a dynamic field:\\
+  temporal decay and semantic diffusion of sentiment for decision support in finance}}
+\author{Alessandro Beninati}
+\date{Research proposal --- PhD in Economics, Management and Statistics (Statistics curriculum)}
+
+\begin{document}
+\maketitle
+\vspace{-1.0em}
+
+\section{Motivation and objectives}
+
+Financial markets are described every day by a stream of text---news, press releases, analyses, social discussions---that exceeds by orders of magnitude the reading capacity of any analyst. The literature has shown that this stream contains measurable predictive information (Section~\ref{sec:sota}), and industry has turned it into commercial \textit{news analytics} products. These systems, however, are opaque: sentiment and relevance scores are provided as black boxes, with fixed, non-inspectable parameters (for instance the temporal decay of information), and interactions among news items about related companies are generally ignored or delegated to non-interpretable models.
+
+This proposal stems from the intersection of that observation and my professional experience as a data engineer---across ETL processes and cloud migrations for large companies---which showed me how much analytical value stays trapped in unstructured data and how much it matters to have transparent, verifiable pipelines. The objective is twofold. On the \textbf{applied} side, to develop an open system that collects financial news, aggregates per-ticker sentiment with an explicit and parametrizable temporal-decay model, and displays it alongside price signals. On the \textbf{scientific} side, to fill a specific gap in the literature: to model informational relevance as a \emph{dynamic field} that decays over time and \emph{diffuses} across semantically related tickers, formulated in an interpretable way---with physically readable parameters and formal correctness guarantees---rather than learned by black-box architectures. An operational prototype (Section~\ref{sec:prototipo}), backed by an archive of more than 750{,}000 labelled articles since 2018, provides the data and validation infrastructure on which to test these questions empirically.
+
+\section{State of the art}
+\label{sec:sota}
+
+\paragraph{Foundations.} The role of investor sentiment was formalized by \textcite{baker2007investor}, who show its systematic effect on cross-sectional returns, particularly for stocks that are hard to value and to arbitrage. On the textual side, the pioneering study is \textcite{tetlock2007giving}: by quantifying the pessimism of \textit{Wall Street Journal} articles, it finds that a high negative tone in the press anticipates downward pressure on prices, followed by a reversion to fundamentals. The subsequent lexical generation highlights the importance of domain specialization: \textcite{loughran2011liability} show that generic dictionaries mislabel much of the financial lexicon as negative (e.g.\ \textit{liability}, \textit{cost}), introducing the lexicon that remains a standard reference.
+
+\paragraph{Social media.} With the spread of social media in the 2010s, sources broadened: retail investors express opinions on forums, Twitter and blogs, generating a real-time textual stream. \textcite{bollen2011twitter} argue that specific dimensions of the collective mood extracted from Twitter anticipate movements of the Dow Jones; \textcite{mcgurk2020stock} find a positive and significant effect of social sentiment on abnormal returns, in tension with traditional financial theory. The COVID-19 pandemic further catalyzed interest, with sentiment indices built on millions of texts from media and social platforms \parencite{duan2021covid}.
+
+\paragraph{From FinBERT to LLMs.} The introduction of BERT \parencite{devlin2018bert} brought contextual language representations to finance, but adapting to the technical language of the field required specialized models. FinBERT \parencite{araci2019finbert}, pre-trained on financial texts and fine-tuned for sentiment analysis, outperformed previous methods by about 15 points on \textit{Financial PhraseBank}; later versions reach nearly 90\% accuracy on negative sentences \parencite{huang2022finbert}, and it is today a standard for tone analysis, news classification and extraction from filings \parencite{gu2024finbert}. In 2022--2023 attention shifted to general-purpose LLMs: \textcite{lopezlira2024chatgptforecaststockprice} show that GPT-4 predicts price direction from news headlines alone, with ability increasing in model size and strategy returns declining as LLM adoption grows, consistent with improved price efficiency. This pushed toward dedicated financial LLMs such as BloombergGPT \parencite{wu2023bloomberggptlargelanguagemodel} and open-source projects such as FinGPT \parencite{yang2023fingptopensourcefinanciallarge}, which make scoring accessible without proprietary infrastructure.
+
+\paragraph{Instruction tuning and preference optimization.} A direction consolidated since 2023 is the instruction tuning of open-weight LLMs on financial tasks: PIXIU \parencite{xie2023pixiu} introduces FinMA and the FLARE benchmark. The most recent paradigm goes beyond supervised fine-tuning with \textit{preference alignment} techniques: FinDPO \parencite{iacovides2025findpo} applies Direct Preference Optimization to sentiment analysis, outperforming supervised models by 11\% on average. Of particular interest for this project is the proposed \textit{logit-to-score} conversion: discrete predictions are turned into continuous, orderable scores directly usable in portfolio strategies---an idea akin to the continuous \textit{sentiment score} adopted here.
+
+\paragraph{Benchmarks and caveats.} The proliferation of models made evaluation central: FinBen \parencite{xie2024finben} covers 36 datasets across 24 tasks and confirms that LLMs excel at textual analysis but struggle with reasoning and forecasting. Methodological cautions emerge, however: \textcite{bdcc8110143} show that a simple logistic regression outperformed FinBERT and GPT-4 on a sentiment task, and that historical benchmarks such as \textit{Financial PhraseBank} are near saturation and potentially contaminated in pre-training data, pushing toward entity-level \parencite{tang-etal-2023-finentity} and post-cutoff datasets.
+
+\paragraph{Agentic systems and empirical validity.} Since 2024 the frontier has shifted toward \textit{agentic} systems in which several LLMs with specialized roles collaborate: TradingAgents \parencite{xiao2025tradingagents} simulates a trading firm with analysts, debating researchers, traders and risk managers. These results are countered by a critical literature on empirical validity: FINSABER \parencite{li2025finsaber} evaluates LLM strategies over more than twenty years and more than a hundred stocks, controlling for survivorship, look-ahead and data-snooping bias, and shows that the reported advantages shrink drastically over long horizons and broad universes. A specific pitfall is \emph{parametric} look-ahead bias: a model with a recent cutoff has already observed the backtest years, and this knowledge is invisible to controls on the data pipeline. The experimental design of backtesting is therefore a methodologically critical aspect.
+
+\paragraph{News interactions.} A final strand, directly relevant to this proposal, abandons the assumption of independent news: \textcite{wan2021sentimentdiffusion} show that sentiment diffuses along networks of related companies, with measurable price effects, and \textcite{wang2024finin} explicitly model their semantic interactions. The continuous formulation proposed in Section~\ref{sec:metodo} belongs to this strand, but with an interpretable approach still little documented in the literature, distinct from learned graph architectures.
+
+\section{Research questions and contribution}
+
+The project is organized around three questions testable with the data already collected:
+\begin{enumerate}\setlength\itemsep{0.1em}
+  \item \textbf{Decay.} Is the informational half-life of a news item constant, or does it vary with market capitalization, media coverage and market regime? The parameter is estimated by maximizing the lagged correlation between the sentiment KPI and subsequent returns, per ticker or sector.
+  \item \textbf{Diffusion (central contribution).} Does relevance modelled as a field that decays \emph{and} diffuses over the semantic space improve predictive power relative to independent decay? The comparison between the interpretable formulation proposed here and learned alternatives (graph neural networks), whose weights are not readable, constitutes the main scientific contribution.
+  \item \textbf{Incremental value.} Does sentiment add predictive power over technical and price signals, and do divergences between the two anticipate reversals?
+\end{enumerate}
+
+\section{Methodology}
+\label{sec:metodo}
+
+\subsection{Scoring pipeline}
+
+The core is a function that, given a text, returns a structured object: the mentioned tickers and, for each, a \emph{relevance score} and a \emph{sentiment score}:
+
+\begin{lstlisting}[language=json]
+{"title": "...", "source": "Motley Fool", "time_published": "2023-04-30T13:34:00",
+ "ticker_sentiments": [{"ticker": "NKE", "relevance_score": 0.27,
+   "sentiment_score": 0.22, "sentiment": "Somewhat-Bullish"}]}
+\end{lstlisting}
+
+\noindent \textbf{Tickers.} The text--ticker association combines several signals---collection context, Named Entity Recognition, pattern matching (\verb|$AAPL|, \verb|(NASDAQ:AAPL)|) and name--ticker dictionaries---integrated by a \textit{confidence score} (high for direct mentions, low for indirect references). \textbf{Relevance.} Measures how central a ticker is in the text: normalized counting suffices for a prototype, whereas contextual approaches use Transformer attention weights or direct LLM assignment \parencite{lopezlira2024chatgptforecaststockprice}. \textbf{Sentiment.} Maps the tone toward a ticker onto a continuous scale $[-1,+1]$ via FinBERT or LLMs; entity-level sentiment \parencite{tang-etal-2023-finentity} is adopted, more precise than document-level analysis. \textbf{Implementation.} The planned routes are supervised fine-tuning of an open-weight model (FinBERT or an LLM such as LLaMA\,3/Qwen) on the available labelled dataset \parencite{maia201818}, or, without training, RAG with an updatable vector index \parencite{lewis2020retrieval}; absent a dataset, zero-shot \parencite{bdcc8110143} and LLM-assisted annotation of an initial corpus remain.
+
+\subsection{Temporal decay of relevance}
+
+Scores must be distributed over time to obtain a daily measure of active sentiment. An exponential decay is applied to relevance only---sentiment is unchanged but is weighted in proportion to the residual relevance:
+\[
+R_{i,d} = R_{i,0}\, e^{-\lambda \Delta t}, \qquad
+S_{i,d}=S_{i,0}, \qquad
+\text{AvgW}_d = \frac{\sum_i S_{i,0}\, R_{i,d}}{\sum_i R_{i,d}},
+\]
+with $\Delta t$ days since publication and $\lambda$ a decay parameter to be estimated. In production the decay is parametrized via a \emph{half-life} $h$ (weight $w=0.5^{\Delta t/h}$, equivalent to $\lambda=\ln 2/h$ but directly interpretable), consistent with commercial providers \parencite{ravenpack_relevance, ravenpack_forex}. The following example ($\lambda=0.5$; news~2 appears on day~1) illustrates two non-obvious properties:
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.25}
+\small
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{News \#} & \textbf{Day 0} & \textbf{Day 1} & \textbf{Day 2} \\
+\hline
+1 & $S{=}1{.}00,\ R{=}0{.}80$ & $S{=}1{.}00,\ R{=}0{.}485$ & $S{=}1{.}00,\ R{=}0{.}294$ \\
+2 & --- & $S{=}0{.}90,\ R{=}0{.}70$ & $S{=}0{.}90,\ R{=}0{.}425$ \\
+3 & $S{=}0{.}75,\ R{=}0{.}60$ & $S{=}0{.}75,\ R{=}0{.}364$ & $S{=}0{.}75,\ R{=}0{.}221$ \\
+\hline
+\textbf{Weighted average} & $\approx 0{.}893$ & $\approx 0{.}896$ & $\approx 0{.}896$ \\
+\hline
+\textbf{Active mass $\sum_i R_{i,d}$} & $1{.}400$ & $1{.}549$ & $0{.}940$ \\
+\hline
+\end{tabular}
+\end{table}
+
+\noindent The weighted average \emph{does not decay}: it is an average of the observed sentiments with non-negative weights, so it stays between the active minimum and maximum, and until new news arrives the factor $e^{-\lambda}$ cancels between numerator and denominator. What decays is the \emph{total relevance} $\sum_i R_{i,d}$, which contracts by a factor $e^{-\lambda}$ per day and rises only when new news arrives. The two quantities are complementary: the average measures the \emph{direction} of active sentiment, the total relevance its \emph{intensity}, and a complete operational signal requires both.
+
+\subsection{Semantic diffusion: from the PDE to the discrete solution}
+
+Decay treats each news item as independent; in reality a news item relevant to one company also says something about related ones. Represent each content as a point $x$ of the semantic embedding space and let $R(x,t)$ be the active relevance; the model extends the decay with a diffusion term:
+\[
+\frac{\partial R(x,t)}{\partial t} = \underbrace{D\,\nabla^2 R(x,t)}_{\text{propagation}} \;-\; \underbrace{\lambda\, R(x,t)}_{\text{decay}}.
+\]
+This is the heat equation with dissipation, and the analogy is substantive, not aesthetic. The second term is the model already validated in production: absent interactions, relevance halves every $h=\ln 2/\lambda$ days. The first captures a fact that decay alone ignores: information relevant to a stock is partly relevant to nearby stocks too---news about a company's main supplier moves its stock, a sector downgrade weighs on the whole sector. As heat flows from hot points to adjacent cold ones in proportion to the temperature difference, relevance flows from heavily covered stocks toward related, lightly covered ones, in proportion to the informational gradient and semantic proximity. The two parameters have immediate physical meaning---$\lambda$ is the speed of forgetting, $D$ the semantic permeability of the market---and it is this readability that distinguishes the model from learned alternatives, whose weights are not interpretable.
+
+Since the space is known only through a finite number of embeddings, one uses the canonical discrete approximation of $-\nabla^2$, the \emph{graph Laplacian} $L=\operatorname{diag}(d_i)-W$, with $n$ tickers as nodes and weights $w_{ij}\ge 0$ given by the cosine similarity between embeddings (thresholded, $W$ symmetric). The PDE becomes a linear system of ODEs,
+\[
+\frac{dR}{dt} = -(D\,L + \lambda I)\,R, \qquad R(t)\in\mathbb{R}^n,
+\qquad\Longrightarrow\qquad
+R(t)=e^{-\lambda t}\,e^{-D t L}\,R(0),
+\]
+and sentiment is transported by evolving, with the same operator, the weighted sentiment $V=S\cdot R$ and setting $S_i=V_i/R_i$, so that the relevance that moves carries its own tone rather than inflating the local one. Rewritten node by node, $\frac{dR_i}{dt}=D\sum_j w_{ij}(R_j-R_i)-\lambda R_i$, the formulation enjoys three provable guarantees, essential for a system that generates operational signals:
+\begin{itemize}\setlength\itemsep{0.1em}
+  \item total relevance decays \emph{exactly} as in the current model: the flow between two stocks is proportional to the difference $R_j-R_i$, so summing over all nodes the diffusion terms cancel pairwise and $\frac{d}{dt}\sum_i R_i=-\lambda\sum_i R_i$ remains. Diffusion redistributes, it neither creates nor destroys;
+  \item relevance stays non-negative: if $R_i\to 0$, every difference $R_j-R_i$ is non-negative and the flow can only come back in;
+  \item diffused sentiment is a weighted average of observed values, so it cannot fabricate tones more extreme than the real ones---no spurious amplification.
+\end{itemize}
+For $D=0$ the equations decouple and the system reduces exactly to the decay already in production ($w=0.5^{\Delta t/h}$): the case $D=0$ thus provides the natural validation test, since the new pipeline must reproduce the current KPIs exactly. In practice the daily update of $(R,V)$ is the solution of a small sparse linear system, stable for any time step, with the matrix $W$ already available.
+
+\subsection{Empirical validation}
+
+After scoring and aggregation, the sentiment--price relationship is checked with comparative plots and correlations (Pearson, Spearman) at configurable lags; studies such as \textcite{cristescu2023wavelet} find significant correlations between news sentiment and the prices of stocks such as Apple, Microsoft and Tesla. The phase is iterative: with no signal, data or scoring are revised; with even a partial relationship, one proceeds toward more sophisticated models.
+
+Then comes the \textbf{backtesting} of elementary strategies (long if sentiment is positive, flat or short otherwise, entering the day after the signal), evaluated on cumulative return against benchmark, directional accuracy and a simplified Sharpe ratio. The multi-ticker extension adds initial capital, allocation, exit rules and transaction costs: the goal is not to optimize but to check that the strategy holds under credible conditions before investing in predictive models. The whole backtesting is bound to an explicit \textbf{anti-bias protocol} \parencite{li2025finsaber}: only information available at the signal date, passive benchmarks, multiple market regimes, declared transaction costs and---for LLM scorers---evaluation on post-cutoff news, to neutralize parametric look-ahead bias. As predictive models, we will compare LSTMs \parencite{fischer2018deep, ouf2024lstm}, an established standard that several studies show benefits from adding sentiment as an explanatory variable, and zero-shot time-series foundation models \parencite{ansari2024chronos, das2024timesfm}, with or without conditioning on sentiment.
+
+\section{Prototype and available data}
+\label{sec:prototipo}
+
+\subsection{Architecture and collection}
+
+The prototype is entirely in Python: PostgreSQL for persistence, Flask as web server and REST API, Gunicorn for deployment; local configuration with Docker Compose and production exposure on Heroku. Scored collection relies on Alpha Vantage's \texttt{NEWS\_SENTIMENT} endpoint, which for each article returns metadata and, per ticker, relevance, sentiment and label, persisted in the provider's JSON format. Acquisition happens in several modes (parametrized collection, \emph{deep} and \emph{coverage ingestion} with automatic resume, \emph{prune} of the rolling window), each tracked in an executions table.
+
+\subsection{Data model and historical archive}
+
+The central \texttt{articles} table stores each news item with idempotent insertion on the \texttt{url} key; alongside it are \texttt{stock\_prices}, \texttt{companies}, \texttt{company\_embeddings} (vectors of company descriptions) and \texttt{company\_correlation\_matrix} (cached cosine similarity). Two SQL views expand the JSON per (article, ticker) pair and aggregate per ticker and day with decay. Since the production rolling window (1~GB limit) caused the permanent loss of pruned articles, a two-tier architecture was introduced: PostgreSQL as \emph{hot store} (last 30 days) and an analytical DuckDB archive on MotherDuck as \emph{cold store}, fed daily with idempotent insertion and scheduled \emph{before} the prune. At bootstrap the archive held \textbf{more than 750{,}000 per-ticker scored articles since 2018}: this is the empirical base that makes both fine-tuning and the multi-year backtesting required by the anti-bias protocol planable over hundreds of thousands of examples.
+
+\subsection{Technical indicators and KPI}
+
+Decay is operational and the daily per-ticker KPI is $\text{KPI}_d=\big(\sum_i s_i r_i w_i\big)/\big(\sum_i r_i w_i\big)$ with $w_i=0.5^{\Delta t_i/h}$ (default 7-day half-life), replicated in the public APIs. Alongside the informational signal the prototype computes price indicators from the persisted closes---20/50-day moving averages, Bollinger bands \parencite{bollinger2001bollinger}, 14-day RSI \parencite{wilder1978new}, realized volatility---whose statistical foundation is rehabilitated in the literature \parencite{lo2000foundations, neely2014forecasting}. An automatic technical report translates the indicators into a textual reading and compares it with the sentiment KPI, flagging \emph{alignment} or \emph{divergence}: the labels make observable in real time the phenomenon at the center of the third research question \parencite{brock1992simple}. Semantic diffusion is not yet operational, but the key ingredient---the similarity matrix between company profiles---is already available. A second collector (RSS from Italian financial outlets, filtered on FTSE MIB companies) opens the extension to the Italian market.
+
+On the \textbf{interface} side, the authenticated admin area allows launching ingestion jobs, consulting statistics, exploring articles, running SQL queries and managing companies and accounts; the public read-only area offers the daily dashboard, multi-select filters by sector and industry, and a per-ticker detail page with prices, indicators, KPI and news. The earlier portfolio metaphor has been replaced by a favorites dashboard without quantities, cost basis or P\&L: for guests, tickers and add-dates stay in the browser, whereas for accounts they are persisted in the database and accompanied by price--volume and sentiment charts. Only authenticated users are shown a transparent daily summary (hold, review or consider exiting), with the rules triggered on sentiment and technical indicators rather than a black-box recommendation. The interface is in English and features a global translation selector. The prototype thus demonstrates the feasibility of the whole chain and provides the environment in which each application component corresponds to a research question testable with the data already collected.
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.2}
+\small
+\begin{tabular}{|p{4.6cm}|p{3.4cm}|p{5.6cm}|}
+\hline
+\textbf{Component} & \textbf{Planned} & \textbf{Current status} \\
+\hline
+ETL, storage, deploy & Pipeline + PaaS & Implemented (PostgreSQL, Docker, Heroku) \\
+\hline
+Historical archive & --- & Cold store, 750k+ articles since 2018 \\
+\hline
+Temporal decay & $R\cdot e^{-\lambda\Delta t}$ & Half-life $0.5^{\Delta t/h}$ in SQL and API \\
+\hline
+Technical indicators & Predictive input & SMA, Bollinger, RSI, volatility in dashboard \\
+\hline
+Decision support & Integrated validation & Per-account favorites and interpretable daily summary \\
+\hline
+NLP / scoring & FinBERT, RAG, fine-tuning & Delegated to the provider (to be internalized) \\
+\hline
+Semantic diffusion & PDE over news space & Company embeddings only (partial) \\
+\hline
+Backtesting and LSTM & Strategy, Sharpe, forecasting & Not yet implemented \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Research directions}
+
+Beyond the three central questions, the infrastructure enables, at low experimental cost, several developments. The \textbf{empirical estimation of decay} tests whether the half-life varies with capitalization, coverage and regime, also distinguishing \emph{scheduled} news (earnings, guidance) from \emph{unscheduled} news (M\&A, legal actions), whose impact differs \parencite{boudoukh2019information}: the pipeline already classifies articles by topic. The \textbf{multi-scorer benchmark} exploits the tens of thousands of already-labelled (article, ticker) pairs to compare FinBERT zero-shot, an open-weight LLM and the provider's scores on inter-rater agreement and predictive validity, using FinDPO's logit-to-score conversion \parencite{iacovides2025findpo}. \textbf{Media attention} (news volume per ticker) allows an index in the spirit of the Hype Index \parencite{cao2025hypeindexnlpdrivenmeasure}, with the hypothesis that coverage spikes anticipate volatility regardless of polarity. The \textbf{extension to the Italian market} is distinctive because financial NLP is almost exclusively Anglocentric: an entity-level dataset validated on the FTSE~MIB, built with LLM-as-annotator and fine-tuning of a multilingual model, would be a self-standing contribution in the low-resource strand. The pipeline downstream of ingestion---decay, KPI, diffusion, archive, indicators---is already market-agnostic: extending it to the Italian exchange requires replacing only three components (sources, prices, scoring), and the first step is operational with the Italian RSS collector, where price-sensitive releases provide relevance labels that are exact by construction (the issuer coincides with the entity).
+
+\paragraph{Sentiment--technical interaction.} With the technical indicators the prototype exposes for each stock an informational signal and a price one; the question is whether sentiment has \emph{incremental predictive value} over technical signals and whether divergences anticipate reversals. \textcite{neely2014forecasting} offer the direct precedent: technical indicators forecast the risk premium with power comparable and complementary to macroeconomic variables. The proposed design replicates that scheme, replacing the macro variables with sentiment---regressions of returns on sentiment, technical signal and their interaction \parencite{brock1992simple}---exploiting the alignment/divergence labels already produced by the automatic report, which form the cells of the experimental design at nearly zero cost.
+
+\paragraph{Time-series foundation models.} The original proposal identifies the LSTM as the reference predictive model; since 2024 time-series foundation models---Chronos \parencite{ansari2024chronos}, TimesFM \parencite{das2024timesfm}---achieve zero-shot performance comparable to per-dataset supervised models. The low-cost revision of the plan uses a foundation model as a zero-shot baseline and tests whether conditioning on sentiment (as a covariate or light fine-tuning) adds incremental value: the comparison ``LSTM from scratch vs.\ foundation model conditioned on sentiment'' is itself a current research question.
+
+\paragraph{Statistical framework and reproducibility.} Consistent with the Statistics curriculum, inference will be treated with the rigor the recent literature requires. The predictive validity of sentiment will be assessed with significance tests robust to the autocorrelation and heteroskedasticity of financial series (Newey--West standard errors), controlling the multiple testing induced by exploring many tickers, lags and hyperparameters (False Discovery Rate control procedures) to avoid the data-snooping that inflates backtest results. The estimation of the decay parameter and of the permeability $D$ will be accompanied by confidence intervals via block bootstrap, which preserves temporal dependence. Operationally, the whole chain---collection, scoring, aggregation, backtest---is versioned and containerized, with the immutable historical cold-store archive as a reproducible base: every result is reconstructable from tracked data and code, a requirement today indispensable for the empirical credibility of text-based strategies.
+
+\section{Three-year work plan}
+
+\begin{itemize}\setlength\itemsep{0.15em}
+  \item \textbf{Year 1.} Internal NLP module (FinBERT/LLM) and multi-scorer benchmark on the labelled corpus; empirical estimation of the decay parameter; statistical sentiment--price analysis with time lags.
+  \item \textbf{Year 2.} Implementation and validation of the semantic-diffusion model (Section~\ref{sec:metodo}) with comparison against learned graph baselines; backtester compliant with the anti-bias protocol; entity-level extension to the Italian market (FTSE MIB).
+  \item \textbf{Year 3.} Integration with predictive models (LSTM vs.\ foundation models conditioned on sentiment); study of the sentiment $\times$ media-attention and sentiment $\times$ technical-signal interactions; writing up of results and dissemination.
+\end{itemize}
+
+\section{Summary}
+
+The guiding thread of the project is the transformation of a monitoring prototype into an experimental platform: each application component already built---collection, decay, KPI, technical indicators, historical archive---corresponds to a statistically testable research question, and the main practical constraint (a broad history on which to train and validate) has already been removed by the cold store. The contribution sits at the intersection of financial NLP, time-series statistics and interpretable modelling: on one side the empirical estimation of informational parameters (relevance half-life, semantic permeability of the market) today set arbitrarily by commercial providers; on the other a validation protocol robust to the biases afflicting the recent literature on LLM-based strategies. The element of greatest originality remains the modelling of informational relevance as a dynamic field that decays and diffuses over the semantic space---endowed with a discrete formulation, a closed-form solution and proven correctness guarantees---testable end-to-end on the data infrastructure already built, with the case $D=0$ coinciding with the production system and guaranteeing its continuity.
+
+\printbibliography
+
+\end{document}
