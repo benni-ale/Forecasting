@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS company_correlation_matrix (
     id SERIAL PRIMARY KEY,
     model_name TEXT NOT NULL,
     tickers TEXT[] NOT NULL,  -- Ordered list of tickers (defines matrix order)
-    matrix_data JSONB NOT NULL,  -- The correlation matrix as JSON array of arrays
+    matrix_data JSONB NOT NULL,  -- Industry-blocked similarity matrix; cross-industry cells are zero
     calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     companies_count INTEGER NOT NULL,
     UNIQUE(model_name)

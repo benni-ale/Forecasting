@@ -79,7 +79,7 @@ PUBLIC_ENDPOINTS = {
     'public_dashboard', 'api_dashboard_stocks',
     'view_articles', 'api_articles', 'view_article_detail',
     'public_companies', 'public_ticker_detail', 'api_ticker_sentiment_kpi', 'api_ticker_technicals', 'get_companies',
-    'about',
+    'about', 'semantic_graph',
     'login', 'logout', 'static',
     'account_login', 'account_logout',
     'holdings_page',
@@ -1381,6 +1381,14 @@ def about():
         default_kpi_window=DEFAULT_KPI_WINDOW_DAYS,
         default_kpi_half_life=DEFAULT_KPI_HALF_LIFE,
     )
+
+
+@app.route('/semantic-graph')
+def semantic_graph():
+    """Placeholder page for the upcoming semantic-diffusion graph / Laplacian
+    view (work in progress). Documents the model so the page is informative
+    even before the interactive visualisation ships."""
+    return render_template('semantic_graph.html')
 
 
 @app.route('/tickers')
@@ -5930,13 +5938,29 @@ def cosine_similarity(vec1, vec2):
     return float(dot_product / (norm1 * norm2))
 
 
+def same_industry(industry_a, industry_b):
+    """True only when both companies have the same explicit industry."""
+    if not industry_a or not industry_b:
+        return False
+    return str(industry_a).strip().casefold() == str(industry_b).strip().casefold()
+
+
+def industry_constrained_similarity(vec1, vec2, industry_a, industry_b):
+    """Cosine similarity inside one industry; zero means no cross-industry edge."""
+    if not same_industry(industry_a, industry_b):
+        return 0.0
+    return cosine_similarity(vec1, vec2)
+
+
 @app.route('/api/companies/correlation-matrix', methods=['GET'])
 def get_correlation_matrix():
     """
-    API endpoint to get correlation matrix (cosine similarity) for vectorized companies.
+    API endpoint for an industry-constrained cosine-similarity matrix.
     
     Returns a matrix where each cell [i][j] represents the cosine similarity
-    between company i and company j embeddings.
+    between company i and company j embeddings when both belong to the same
+    industry. Cross-industry cells are zero, ready to be used as absent graph
+    edges by the future semantic-diffusion pipeline.
     
     The matrix is cached in the database and recalculated only when embeddings change.
     Use ?force_recalculate=true to force recalculation.
@@ -5948,6 +5972,7 @@ def get_correlation_matrix():
         import json
         
         model_name = request.args.get('model_name', 'text-embedding-3-small').strip()
+        cache_model_name = f'{model_name}:same-industry-v1'
         force_recalculate = request.args.get('force_recalculate', 'false').lower() == 'true'
         limit = int(request.args.get('limit', 500))  # Limit to avoid memory issues
         
@@ -5965,11 +5990,13 @@ def get_correlation_matrix():
                     c.ticker,
                     c.name,
                     c.sector,
+                    TRIM(c.industry) AS industry,
                     ce.embedding_vector
                 FROM companies c
                 INNER JOIN company_embeddings ce ON c.ticker = ce.ticker
                 WHERE ce.model_name = %s
                 AND ce.embedding_vector IS NOT NULL
+                AND NULLIF(TRIM(c.industry), '') IS NOT NULL
                 AND (
                     c.business_description IS NULL
                     OR (
@@ -5979,7 +6006,7 @@ def get_correlation_matrix():
                         AND LENGTH(TRIM(c.business_description)) > 5
                     )
                 )
-                ORDER BY c.ticker
+                ORDER BY LOWER(TRIM(c.industry)), c.ticker
                 LIMIT %s
             """, (model_name, limit))
             
@@ -6004,7 +6031,8 @@ def get_correlation_matrix():
             tickers = [row[0] for row in companies_data]
             names = [row[1] for row in companies_data]
             sectors = [row[2] for row in companies_data]
-            embeddings = [row[3] for row in companies_data]
+            industries = [row[3] for row in companies_data]
+            embeddings = [row[4] for row in companies_data]
             n = len(embeddings)
             
             # Check if cached matrix exists and is up-to-date
@@ -6017,7 +6045,7 @@ def get_correlation_matrix():
                         companies_count
                     FROM company_correlation_matrix
                     WHERE model_name = %s
-                """, (model_name,))
+                """, (cache_model_name,))
                 
                 cached_result = cursor.fetchone()
                 
@@ -6029,13 +6057,15 @@ def get_correlation_matrix():
                         list(cached_tickers) == tickers and
                         cached_matrix_data is not None):
                         
-                        # Check if any embeddings were updated after matrix calculation
+                        # Industry is part of the graph topology, so both embedding
+                        # and company-metadata updates invalidate the cached matrix.
                         cursor.execute("""
-                            SELECT COUNT(*) 
-                            FROM company_embeddings 
-                            WHERE model_name = %s 
-                            AND updated_at > %s
-                        """, (model_name, calculated_at))
+                            SELECT COUNT(*)
+                            FROM company_embeddings ce
+                            INNER JOIN companies c ON c.ticker = ce.ticker
+                            WHERE ce.model_name = %s
+                            AND (ce.updated_at > %s OR c.last_updated > %s)
+                        """, (model_name, calculated_at, calculated_at))
                         
                         updated_count = cursor.fetchone()[0]
                         
@@ -6050,10 +6080,12 @@ def get_correlation_matrix():
                                 'tickers': tickers,
                                 'names': names,
                                 'sectors': sectors,
+                                'industries': industries,
                                 'matrix': matrix,
                                 'model_name': model_name,
                                 'size': n,
                                 'available_models': available_models,
+                                'same_industry_only': True,
                                 'cached': True,
                                 'calculated_at': calculated_at.isoformat() if calculated_at else None
                             })
@@ -6063,12 +6095,12 @@ def get_correlation_matrix():
                         logger.info(f"Cache invalid: company count or tickers changed (cached: {cached_count}, current: {n})")
             
             # Need to calculate matrix
-            logger.info(f"Calculating correlation matrix for {n} companies using 20 worker threads")
+            logger.info(f"Calculating same-industry correlation matrix for {n} companies")
             
             # Calculate cosine similarity matrix using parallel threads
             similarity_matrix = [None] * n  # Pre-allocate matrix
             
-            def calculate_row_chunk(worker_id, row_indices, embeddings_list, result_dict):
+            def calculate_row_chunk(worker_id, row_indices, embeddings_list, industries_list, result_dict):
                 """Calculate similarity for a chunk of rows."""
                 logger.info(f"Correlation worker {worker_id}: processing {len(row_indices)} rows")
                 chunk_results = {}
@@ -6080,7 +6112,10 @@ def get_correlation_matrix():
                             # Same company = perfect similarity
                             similarity = 1.0
                         else:
-                            similarity = cosine_similarity(embeddings_list[i], embeddings_list[j])
+                            similarity = industry_constrained_similarity(
+                                embeddings_list[i], embeddings_list[j],
+                                industries_list[i], industries_list[j]
+                            )
                         row.append(round(similarity, 4))
                     chunk_results[i] = row
                 
@@ -6114,7 +6149,7 @@ def get_correlation_matrix():
             for worker_num, row_indices in worker_tasks:
                 thread = threading.Thread(
                     target=calculate_row_chunk,
-                    args=(worker_num, row_indices, embeddings, results_dict),
+                    args=(worker_num, row_indices, embeddings, industries, results_dict),
                     daemon=True
                 )
                 thread.start()
@@ -6144,9 +6179,9 @@ def get_correlation_matrix():
                         matrix_data = EXCLUDED.matrix_data,
                         companies_count = EXCLUDED.companies_count,
                         calculated_at = CURRENT_TIMESTAMP
-                """, (model_name, tickers, matrix_json, n))
+                """, (cache_model_name, tickers, matrix_json, n))
                 db_manager.conn.commit()
-                logger.info(f"Correlation matrix saved to database cache for {model_name}")
+                logger.info(f"Same-industry correlation matrix saved for {model_name}")
             except Exception as e:
                 logger.warning(f"Could not save correlation matrix to cache: {str(e)}")
                 db_manager.conn.rollback()
@@ -6159,10 +6194,12 @@ def get_correlation_matrix():
                 'tickers': tickers,
                 'names': names,
                 'sectors': sectors,
+                'industries': industries,
                 'matrix': similarity_matrix,
                 'model_name': model_name,
                 'size': n,
                 'available_models': available_models,
+                'same_industry_only': True,
                 'cached': False,
                 'calculated_at': datetime.now().isoformat()
             })
@@ -6187,11 +6224,12 @@ def get_correlation_matrix_from_db(model_name):
                 return None
             
             cursor = db_manager.conn.cursor()
+            cache_model_name = f'{model_name}:same-industry-v1'
             cursor.execute("""
                 SELECT tickers, matrix_data
                 FROM company_correlation_matrix
                 WHERE model_name = %s
-            """, (model_name,))
+            """, (cache_model_name,))
             
             result = cursor.fetchone()
             cursor.close()

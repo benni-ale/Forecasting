@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Semantic Graph - DollarPunk{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-2 mb-2">
+    <h3 class="mb-0"><i class="bi bi-diagram-3"></i> Semantic Diffusion Graph</h3>
+    <span class="badge bg-warning text-dark">Work in progress</span>
+</div>
+
+<div class="alert alert-warning">
+    <i class="bi bi-cone-striped"></i>
+    This page is under construction. It will host the interactive visualisation of the
+    <strong>semantic-diffusion model</strong> at the core of the research project. Below is what it will show and how it works.
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><i class="bi bi-lightbulb"></i> The idea</div>
+    <div class="card-body">
+        <p class="mb-2">
+            News relevance for a stock is, in part, relevant to <em>semantically related</em> stocks too. The model treats
+            informational relevance as a field that both <strong>decays</strong> over time and <strong>diffuses</strong>
+            across a graph of companies, but only among companies in the <strong>same industry</strong> — the discrete heat equation
+        </p>
+        <p class="text-center my-3" style="font-family: 'Cambria Math', Georgia, serif; font-size: 1.05rem;">
+            dR/dt = &minus;( D&middot;L + &lambda;I ) R ,
+            &nbsp;&nbsp; R(t) = e<sup>&minus;&lambda;t</sup> e<sup>&minus;DtL</sup> R(0)
+        </p>
+        <p class="mb-0 small text-muted">
+            where <strong>L = diag(d<sub>i</sub>) &minus; W</strong> is the graph Laplacian, <strong>&lambda;</strong> the speed
+            of forgetting (half-life), and <strong>D</strong> the semantic permeability of the market. With <strong>D = 0</strong>
+            the model collapses to the time-decay KPI already in production — a built-in sanity check.
+        </p>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-gear"></i> How the graph is built</div>
+            <div class="card-body">
+                <ol class="mb-0 small">
+                    <li><strong>Industry gate.</strong> Candidate edges exist only between companies assigned to the same
+                        industry; companies without an industry are excluded.</li>
+                    <li><strong>Similarity.</strong> Within each industry, cosine similarity between the OpenAI embeddings of company
+                        descriptions (already cached in <code>company_correlation_matrix</code>).</li>
+                    <li><strong>Sparsify.</strong> Keep each node's top-<em>k</em> neighbours (k-NN) or a threshold &tau;;
+                        clamp negatives to 0.</li>
+                    <li><strong>Symmetrise.</strong> W = &frac12;(A + A<sup>&#8868;</sup>) so the graph is undirected.</li>
+                    <li><strong>Laplacian.</strong> L = diag(row sums) &minus; W (unnormalised, to keep exact mass
+                        conservation).</li>
+                    <li><strong>Diffuse.</strong> One implicit-Euler step per day evolves (R, V=S&middot;R); the sparse
+                        solve is cheap for a few hundred tickers.</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-eye"></i> What you'll see here</div>
+            <div class="card-body">
+                <ul class="mb-0 small">
+                    <li>Interactive <strong>company similarity graph</strong> (nodes = tickers, edges = strong same-industry semantic links).</li>
+                    <li><strong>Diffusion demo</strong>: inject a relevance pulse on one ticker and watch it spread to
+                        neighbours day by day.</li>
+                    <li>Heatmaps of the similarity matrix <strong>W</strong> and Laplacian <strong>L</strong>.</li>
+                    <li>Controls for <em>k</em>, threshold, D and the half-life, with a live <strong>D = 0</strong> toggle.</li>
+                    <li>Feeds the <code>ticker_cross_diffused_sentiment</code> table consumed by the dashboard KPI.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<p class="text-muted small mt-3">
+    The mathematical formulation follows the graph diffusion kernel (Kondor &amp; Lafferty, 2002), diffusion maps
+    (Coifman &amp; Lafon, 2006), and connects to graph neural diffusion (GRAND, Chamberlain et al., 2021) — the interpretable
+    counterpart of a learned GNN.
+</p>
+{% endblock %}

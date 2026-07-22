@@ -242,6 +242,9 @@
                         <a class="nav-link {% if request.path == '/about' %}active{% endif %}" href="/about"><i class="bi bi-info-circle"></i> About</a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/semantic-graph' %}active{% endif %}" href="/semantic-graph"><i class="bi bi-diagram-3"></i> Semantic Graph</a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.path == '/holdings' %}active{% endif %}" href="/holdings"><i class="bi bi-star"></i> Favorites</a>
                     </li>
                     {% if is_admin %}

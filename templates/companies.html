@@ -171,7 +171,7 @@
     <!-- Correlation Matrix View Controls -->
     <div class="card mb-3" id="correlationViewControls" style="display: none;">
         <div class="card-header">
-            <h5 class="mb-0"><i class="bi bi-grid-3x3-gap"></i> Correlation Matrix</h5>
+            <h5 class="mb-0"><i class="bi bi-grid-3x3-gap"></i> Industry-Constrained Similarity Matrix</h5>
         </div>
         <div class="card-body">
             <div class="row">
@@ -184,14 +184,13 @@
                         <i class="bi bi-calculator"></i> Calculate Correlation Matrix
                     </button>
                     <small class="form-text text-muted mt-2 d-block">
-                        Calculates cosine similarity matrix between all vectorized companies. This may take a while for large datasets.
+                        Calculates cosine similarity only between vectorized companies in the same industry. Companies without an industry are excluded.
                     </small>
                 </div>
                 <div class="col-md-6">
                     <h6 class="mb-3">Matrix Information</h6>
                     <div class="alert alert-info">
-                        <i class="bi bi-info-circle"></i> The correlation matrix shows how similar companies are based on their business descriptions.
-                        Higher values indicate more similar companies.
+                        <i class="bi bi-info-circle"></i> Companies are grouped by industry. Cross-industry cells are zero because no graph edge exists between them; within each block, higher values mean more similar business descriptions.
                     </div>
                 </div>
             </div>
@@ -1114,7 +1113,7 @@ function handleViewModeChange() {
         // Don't auto-load correlation matrix, wait for user to click calculate
         const chartDiv = document.getElementById('correlationMatrixChart');
         if (chartDiv) {
-            chartDiv.innerHTML = '<div class="alert alert-info text-center p-5"><i class="bi bi-info-circle"></i><br><br>Click "Calculate Correlation Matrix" above to generate the correlation matrix.<br><small class="text-muted">This will calculate cosine similarity between all vectorized companies.</small></div>';
+            chartDiv.innerHTML = '<div class="alert alert-info text-center p-5"><i class="bi bi-info-circle"></i><br><br>Click "Calculate Correlation Matrix" above to generate the matrix.<br><small class="text-muted">Similarity is calculated only between companies in the same industry.</small></div>';
         }
     }
     
@@ -1142,7 +1141,7 @@ async function loadCorrelationMatrix() {
             throw new Error(data.error);
         }
         
-        const { tickers, names, sectors, matrix, size, available_models } = data;
+        const { tickers, names, industries, matrix, size, available_models } = data;
         
         // Update model selector with available models
         if (available_models && available_models.length > 0) {
@@ -1161,17 +1160,27 @@ async function loadCorrelationMatrix() {
         
         // Prepare data for Plotly heatmap
         const hoverText = [];
+        const displayMatrix = [];
         for (let i = 0; i < size; i++) {
             const row = [];
+            const displayRow = [];
             for (let j = 0; j < size; j++) {
                 const similarity = matrix[i][j];
                 const ticker1 = tickers[i];
                 const ticker2 = tickers[j];
                 const name1 = names[i] || ticker1;
                 const name2 = names[j] || ticker2;
-                row.push(`${name1} (${ticker1})<br>${name2} (${ticker2})<br>Similarity: ${similarity.toFixed(4)}`);
+                const industry1 = industries[i];
+                const industry2 = industries[j];
+                const isSameIndustry = industry1.trim().toLocaleLowerCase() === industry2.trim().toLocaleLowerCase();
+                const relationship = isSameIndustry
+                    ? `Industry: ${industry1}<br>Similarity: ${similarity.toFixed(4)}`
+                    : `No edge: different industries<br>${industry1} / ${industry2}`;
+                row.push(`${name1} (${ticker1})<br>${name2} (${ticker2})<br>${relationship}`);
+                displayRow.push(isSameIndustry ? similarity : null);
             }
             hoverText.push(row);
+            displayMatrix.push(displayRow);
         }
         
         // Create ticker labels with names (truncate long names)
@@ -1182,7 +1191,7 @@ async function loadCorrelationMatrix() {
         });
         
         const trace = {
-            z: matrix,
+            z: displayMatrix,
             x: labels,
             y: labels,
             type: 'heatmap',
@@ -1193,6 +1202,7 @@ async function loadCorrelationMatrix() {
             ],
             text: hoverText,
             hovertemplate: '%{text}<extra></extra>',
+            hoverongaps: false,
             colorbar: {
                 title: 'Cosine Similarity',
                 titleside: 'right'
@@ -1204,7 +1214,7 @@ async function loadCorrelationMatrix() {
             plot_bgcolor: '#272822',
             font: { color: '#f8f8f2' },
             title: {
-                text: `Company Embedding Correlation Matrix (${modelName})<br><sub>Cosine Similarity between ${size} companies</sub>`,
+                text: `Same-Industry Company Similarity Matrix (${modelName})<br><sub>${size} companies; cross-industry graph edges excluded</sub>`,
                 font: { size: 16, color: '#f8f8f2' }
             },
             xaxis: {
